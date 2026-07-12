@@ -193,8 +193,13 @@ emailsRouter.post("/:id/summary", requireAuth, async (req, res) => {
   if (!email) return res.status(404).json({ error: "Email not found" });
   const { force } = genOptsSchema.parse(req.body ?? {});
   if (!force && email.aiSummary) return res.json({ summary: email.aiSummary });
-  const result = await summarizeEmailThread(req.user!.employeeId, email.id, threadContentFor(email));
-  return res.json(result);
+  try {
+    const result = await summarizeEmailThread(req.user!.employeeId, email.id, threadContentFor(email));
+    return res.json(result);
+  } catch (err: any) {
+    console.error("[AI summary] failed:", err);
+    return res.status(500).json({ error: "Failed to generate summary. Check GROQ_API_KEY is configured correctly." });
+  }
 });
 
 emailsRouter.post("/:id/priority", requireAuth, async (req, res) => {
@@ -204,8 +209,13 @@ emailsRouter.post("/:id/priority", requireAuth, async (req, res) => {
   if (!force && email.aiPriorityScore != null) {
     return res.json({ priorityScore: email.aiPriorityScore, priorityRationale: email.aiPriorityRationale });
   }
-  const result = await scoreEmailPriority(req.user!.employeeId, email.id, threadContentFor(email));
-  return res.json(result);
+  try {
+    const result = await scoreEmailPriority(req.user!.employeeId, email.id, threadContentFor(email));
+    return res.json(result);
+  } catch (err: any) {
+    console.error("[AI priority] failed:", err);
+    return res.status(500).json({ error: "Failed to score priority. Check GROQ_API_KEY is configured correctly." });
+  }
 });
 
 emailsRouter.post("/:id/suggested-reply", requireAuth, async (req, res) => {
@@ -213,8 +223,13 @@ emailsRouter.post("/:id/suggested-reply", requireAuth, async (req, res) => {
   if (!email) return res.status(404).json({ error: "Email not found" });
   const { force } = genOptsSchema.parse(req.body ?? {});
   if (!force && email.aiSuggestedReply) return res.json({ suggestedReply: email.aiSuggestedReply });
-  const result = await suggestEmailReply(req.user!.employeeId, email.id, threadContentFor(email));
-  return res.json(result);
+  try {
+    const result = await suggestEmailReply(req.user!.employeeId, email.id, threadContentFor(email));
+    return res.json(result);
+  } catch (err: any) {
+    console.error("[AI suggested-reply] failed:", err);
+    return res.status(500).json({ error: "Failed to generate suggested reply. Check GROQ_API_KEY is configured correctly." });
+  }
 });
 
 const outcomeSchema = z.object({ aiActionId: z.string(), accepted: z.boolean() });
