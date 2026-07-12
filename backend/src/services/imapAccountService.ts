@@ -28,6 +28,23 @@ const NEVER_EXPIRES = new Date("2099-12-31T00:00:00Z");
  * verification; here we have to do it ourselves by opening a real
  * connection and immediately closing it).
  */
+// ImapFlow has no built-in connect-timeout option (only a post-connect
+// idle/socketTimeout), and nodemailer's default connectionTimeout is a full
+// 2 minutes. Left unbounded, a wrong host/port (or one that silently drops
+// packets instead of refusing the connection) makes the "Connect Email"
+// button hang for minutes before the user ever sees an error. 10s is
+// generous for any real IMAP/SMTP server on a normal network.
+const VERIFY_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${VERIFY_TIMEOUT_MS / 1000}s — check the host and port.`)), VERIFY_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 async function verifyImap(input: ImapConnectInput) {
   const client = new ImapFlow({
     host: input.imapHost,
@@ -36,8 +53,15 @@ async function verifyImap(input: ImapConnectInput) {
     auth: { user: input.imapUser, pass: input.imapPass },
     logger: false,
   });
-  await client.connect();
-  await client.logout();
+  try {
+    await withTimeout(client.connect(), "IMAP connection");
+    await client.logout();
+  } catch (err) {
+    // If connect() itself timed out, the socket may still be open in the
+    // background — force it closed so it doesn't linger past the request.
+    client.close();
+    throw err;
+  }
 }
 
 async function verifySmtp(input: ImapConnectInput) {
@@ -46,8 +70,11 @@ async function verifySmtp(input: ImapConnectInput) {
     port: input.smtpPort,
     secure: input.smtpSecure,
     auth: { user: input.smtpUser, pass: input.smtpPass },
+    connectionTimeout: VERIFY_TIMEOUT_MS,
+    greetingTimeout: VERIFY_TIMEOUT_MS,
+    socketTimeout: VERIFY_TIMEOUT_MS,
   });
-  await transport.verify();
+  await withTimeout(transport.verify(), "SMTP connection");
 }
 
 /**
@@ -57,8 +84,7 @@ async function verifySmtp(input: ImapConnectInput) {
  * connectGmailAccount's upsert-by-employeeId already behaves.
  */
 export async function connectImapAccount(employeeId: string, companyId: string, input: ImapConnectInput) {
-  await verifyImap(input);
-  await verifySmtp(input);
+  await Promise.all([verifyImap(input), verifySmtp(input)]);
 
   const existingForMailbox = await prisma.gmailAccount.findUnique({ where: { emailAddress: input.email } });
   if (existingForMailbox && existingForMailbox.employeeId !== employeeId) {
