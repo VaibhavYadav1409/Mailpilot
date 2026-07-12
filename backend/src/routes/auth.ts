@@ -53,7 +53,7 @@ authRouter.post("/login", async (req, res) => {
   res.cookie(COOKIE_NAME, refreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
+    sameSite: "none",
     maxAge: 1000 * 60 * 60 * 24 * 30,
   });
 
@@ -94,7 +94,7 @@ authRouter.post("/refresh", async (req, res) => {
   res.cookie(COOKIE_NAME, rotated.refreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
+    sameSite: "none",
     maxAge: 1000 * 60 * 60 * 24 * 30,
   });
 
