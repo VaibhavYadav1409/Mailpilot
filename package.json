@@ -1,0 +1,27 @@
+{
+  "name": "mailpilot-enterprise",
+  "version": "1.0.0",
+  "description": "MailPilot Enterprise — Unified email management platform with admin dashboard and employee app",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "admin-dashboard",
+    "employee-app"
+  ],
+  "scripts": {
+    "dev": "pnpm -r dev",
+    "build": "pnpm -r build",
+    "start": "pnpm -r start",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "format": "pnpm -r format",
+    "clean": "pnpm -r clean",
+    "db:push": "pnpm -C backend db:push",
+    "db:migrate": "pnpm -C backend prisma:migrate",
+    "db:seed": "pnpm -C backend prisma:seed"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=10.0.0"
+  }
+}

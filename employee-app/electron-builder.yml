@@ -1,0 +1,19 @@
+appId: com.mailpilot.enterprise
+
+productName: MailPilot
+
+directories:
+  output: release
+
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+
+win:
+  target:
+    - nsis
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

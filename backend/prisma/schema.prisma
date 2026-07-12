@@ -1,0 +1,349 @@
+// MailPilot Enterprise — unified schema
+// Replaces: admin's Prisma/Postgres schema (kept as base) + integrated's Drizzle/MySQL schema (discarded)
+// Multi-tenant: every row that matters is scoped by companyId, either directly or via a relation.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & org structure
+// ---------------------------------------------------------------------------
+
+enum Role {
+  CEO
+  COO
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum EmployeeStatus {
+  ONLINE
+  OFFLINE
+  IDLE
+  SUSPENDED
+}
+
+model Company {
+  id          String            @id @default(uuid())
+  name        String
+  logoUrl     String?
+  status      String            @default("ACTIVE") // ACTIVE, SUSPENDED
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  departments Department[]
+  employees   Employee[]
+  gmailAccounts GmailAccount[]
+  settings    CompanySettings?
+  auditLogs   AuditLog[]
+  reports     Report[]
+  notifications Notification[]
+}
+
+model CompanySettings {
+  id                   String   @id @default(uuid())
+  companyId            String   @unique
+  company              Company  @relation(fields: [companyId], references: [id])
+  businessHoursStart   String   @default("09:00")
+  businessHoursEnd     String   @default("17:00")
+  performanceThreshold Float    @default(70.0)
+  notificationRules    Json?
+  updatedAt            DateTime @updatedAt
+}
+
+model Department {
+  id          String     @id @default(uuid())
+  name        String
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id])
+  managerId   String?
+  manager     Employee?  @relation("DepartmentManager", fields: [managerId], references: [id])
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  employees   Employee[]
+}
+
+// Employee IS the User — a single login identity per person, scoped to one company.
+model Employee {
+  id              String         @id @default(uuid())
+  employeeCode    String         // company-assigned ID, e.g. "EMP-0042"
+  email           String         @unique // login email, distinct from the Gmail account they work from
+  password        String
+  firstName       String
+  lastName        String
+  role            Role           @default(EMPLOYEE)
+
+  companyId       String
+  company         Company        @relation(fields: [companyId], references: [id])
+  departmentId    String?
+  department      Department?    @relation(fields: [departmentId], references: [id])
+  managedDepartments Department[] @relation("DepartmentManager")
+
+  status          EmployeeStatus @default(OFFLINE)
+  lastActiveAt    DateTime?
+  timezone        String         @default("UTC")
+
+  gmailAccount    GmailAccount?
+  sessions        Session[]
+  auditLogs       AuditLog[]
+  aiActions       AIAction[]
+  replies         Reply[]
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@unique([companyId, employeeCode])
+  @@index([companyId, departmentId])
+}
+
+// ---------------------------------------------------------------------------
+// Permissions (fine-grained, on top of Role for anything role alone can't express)
+// ---------------------------------------------------------------------------
+
+model Permission {
+  id     String @id @default(uuid())
+  key    String @unique // e.g. "employees.suspend", "reports.export"
+  label  String
+}
+
+// ---------------------------------------------------------------------------
+// Gmail connection — exactly one per employee (per the spec)
+// ---------------------------------------------------------------------------
+
+enum GmailConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+  TOKEN_EXPIRED
+  REVOKED
+}
+
+// Added during the employee-app REST re-integration (July 2026): the original
+// schema only supported Gmail OAuth. The employee-app UI also ships an
+// "Connect Any Email (IMAP)" flow and a "paste email manually" flow, so this
+// model now represents any of the three, distinguished by `provider`. For
+// IMAP, `accessToken` holds the encrypted IMAP password and `refreshToken`
+// holds the encrypted SMTP password (reusing the existing encrypted-string
+// columns/crypto.ts rather than adding parallel ones). For MANUAL accounts
+// neither field is meaningful. `tokenExpiresAt` only drives Gmail's refresh
+// logic; IMAP/MANUAL set it far in the future so that code path never
+// triggers for them.
+enum MailAccountProvider {
+  GMAIL
+  IMAP
+  MANUAL
+}
+
+model GmailAccount {
+  id              String                 @id @default(uuid())
+  employeeId      String                 @unique
+  employee        Employee               @relation(fields: [employeeId], references: [id])
+  companyId       String
+  company         Company                @relation(fields: [companyId], references: [id])
+
+  provider        MailAccountProvider    @default(GMAIL)
+  emailAddress    String                 @unique // e.g. support@company.com
+  accessToken     String                 // AES-256-GCM encrypted — see backend/src/lib/crypto.ts
+  refreshToken    String                 // AES-256-GCM encrypted
+  tokenExpiresAt  DateTime
+  status          GmailConnectionStatus  @default(CONNECTED)
+  lastSyncedAt    DateTime?
+
+  // IMAP/SMTP connection details (null for GMAIL/MANUAL providers)
+  imapHost        String?
+  imapPort        Int?
+  imapUser        String?
+  imapSecure      Boolean?
+  smtpHost        String?
+  smtpPort        Int?
+  smtpUser        String?
+  smtpSecure      Boolean?
+
+  emails          Email[]
+
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  @@index([companyId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Email data & AI activity
+// ---------------------------------------------------------------------------
+
+model Email {
+  id              String         @id @default(uuid())
+  gmailAccountId  String
+  gmailAccount    GmailAccount   @relation(fields: [gmailAccountId], references: [id])
+  gmailMessageId  String         // Gmail's own message ID (or a generated id for IMAP/manual), for dedupe on sync
+  threadId        String?
+  fromAddress     String
+  fromName        String?
+  toAddresses     String?        // JSON-encoded string[]
+  subject         String?
+  receivedAt      DateTime
+  isRead          Boolean        @default(false)
+  isReplied       Boolean        @default(false)
+  repliedAt       DateTime?
+
+  // Added during the REST re-integration so the employee-app's rich email
+  // viewer, star/trash actions, and cached AI insights have somewhere to
+  // live server-side instead of only existing in a local client cache.
+  bodyText        String?        @db.Text
+  snippet         String?
+  isStarred       Boolean        @default(false)
+  isTrashed       Boolean        @default(false)
+
+  aiSummary            String?   @db.Text
+  aiPriorityScore      Int?
+  aiPriorityRationale  String?   @db.Text
+  aiSuggestedReply     String?   @db.Text
+
+  category        EmailCategory?
+  replies         Reply[]
+  aiActions       AIAction[]
+  attachments     Attachment[]
+
+  @@unique([gmailAccountId, gmailMessageId])
+  @@index([gmailAccountId, receivedAt])
+  @@index([gmailAccountId, isReplied])
+}
+
+// Inbound attachment metadata. The bytes themselves live in attachmentStorage
+// (local disk or S3, see backend/src/lib/attachmentStorage.ts — same
+// local/S3-driver pattern as generated reports) — this row is just the
+// pointer + enough metadata to render an attachment list without fetching
+// the bytes. `storageKey` is what attachmentStorage.ts uses to read the file
+// back; it is NOT guaranteed to equal `id` (kept separate so storage layout
+// can change without a data migration).
+model Attachment {
+  id          String   @id @default(uuid())
+  emailId     String
+  email       Email    @relation(fields: [emailId], references: [id])
+  filename    String
+  mimeType    String
+  sizeBytes   Int
+  storageKey  String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([emailId])
+}
+
+model EmailCategory {
+  id      String  @id @default(uuid())
+  emailId String  @unique
+  email   Email   @relation(fields: [emailId], references: [id])
+  label   String  // e.g. "Urgent", "Billing", "Support Request"
+  source  String  // "AI" or "MANUAL"
+  confidence Float?
+}
+
+model Reply {
+  id           String   @id @default(uuid())
+  emailId      String
+  email        Email    @relation(fields: [emailId], references: [id])
+  employeeId   String
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  wasAIDraft   Boolean  @default(false)
+  wasAIEdited  Boolean  @default(false)
+  sentAt       DateTime @default(now())
+  replyTimeSec Int      // computed server-side: sentAt - email.receivedAt
+
+  @@index([employeeId, sentAt])
+}
+
+model AIAction {
+  id         String   @id @default(uuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  emailId    String?
+  email      Email?   @relation(fields: [emailId], references: [id])
+  actionType String   // "SUMMARY" | "CATEGORIZE" | "SUGGEST_REPLY" | "PRIORITY_SCORE"
+  accepted   Boolean? // null until the employee accepts/rejects a suggestion
+  createdAt  DateTime @default(now())
+
+  @@index([employeeId, actionType, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Analytics — always computed server-side from Email/Reply/AIAction, never
+// self-reported by the desktop client (this is the key change from the old
+// adminSync.ts, which trusted client-calculated numbers).
+// ---------------------------------------------------------------------------
+
+model DailyAnalytics {
+  id                  String   @id @default(uuid())
+  employeeId          String
+  date                DateTime @db.Date
+  emailsReceived      Int      @default(0)
+  emailsRead          Int      @default(0)
+  emailsReplied       Int      @default(0)
+  avgReplyTimeSec     Int?
+  manualReplies       Int      @default(0)
+  aiReplies           Int      @default(0)
+  aiAcceptanceRate    Float?
+  productivityScore   Float?
+
+  @@unique([employeeId, date])
+  @@index([date])
+}
+
+// ---------------------------------------------------------------------------
+// Sessions, audit, notifications, reports
+// ---------------------------------------------------------------------------
+
+model Session {
+  id           String   @id @default(uuid())
+  employeeId   String
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  refreshToken String   @unique
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id])
+  employeeId String?
+  employee   Employee? @relation(fields: [employeeId], references: [id])
+  action     String   // e.g. "EMPLOYEE_SUSPENDED", "ROLE_CHANGED"
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([companyId, createdAt])
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id])
+  type       String   // "GMAIL_DISCONNECTED" | "EMPLOYEE_INACTIVE" | "PENDING_OVERFLOW" | "SERVER_ERROR" ...
+  severity   String   @default("INFO") // INFO | WARNING | CRITICAL
+  message    String
+  readAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([companyId, createdAt])
+}
+
+model Report {
+  id         String   @id @default(uuid())
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id])
+  scope      String   // "COMPANY" | "DEPARTMENT" | "EMPLOYEE"
+  scopeId    String?  // departmentId or employeeId depending on scope
+  period     String   // "DAILY" | "WEEKLY" | "MONTHLY"
+  periodStart DateTime
+  periodEnd   DateTime
+  fileUrl    String?  // generated PDF/CSV, if exported
+  createdAt  DateTime @default(now())
+}

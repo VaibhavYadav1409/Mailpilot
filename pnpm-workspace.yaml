@@ -1,0 +1,39 @@
+packages:
+  - "backend"
+  - "admin-dashboard"
+  - "employee-app"
+
+allowBuilds:
+  "@prisma/client": true
+  "@prisma/engines": true
+  prisma: true
+  electron: false
+  esbuild: true
+  electron-winstaller: true
+
+# Fixes a pnpm virtual-store ambiguity: packages like next-themes/sonner ship
+# .d.ts files that reference "react" for types but declare no @types/react
+# peer dependency. With two @types/react majors in this workspace (18.x for
+# admin-dashboard, 19.x for employee-app), pnpm's central .pnpm/node_modules
+# fallback resolved these to an arbitrary version, causing spurious
+# ReactNode/bigint type-identity errors in employee-app. Injecting an explicit
+# peer here forces pnpm to resolve each instance against its actual consumer.
+packageExtensions:
+  next-themes@*:
+    peerDependencies:
+      "@types/react": "*"
+  sonner@*:
+    peerDependencies:
+      "@types/react": "*"
+  cmdk@*:
+    peerDependencies:
+      "@types/react": "*"
+  vaul@*:
+    peerDependencies:
+      "@types/react": "*"
+  input-otp@*:
+    peerDependencies:
+      "@types/react": "*"
+  lucide-react@*:
+    peerDependencies:
+      "@types/react": "*"

@@ -1,0 +1,155 @@
+@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
+:root {
+  --background: #F7F7F5;
+  --foreground: #12141C;
+  --surface: #FFFFFF;
+  --surface-border: #E4E6EC;
+}
+
+.dark {
+  --background: #090B10;
+  --foreground: #E9EAEF;
+  --surface: #12151E;
+  --surface-border: #1F2432;
+}
+
+* {
+  border-color: var(--surface-border);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(59, 91, 255, 0.25);
+}
+
+/* Slim, quiet scrollbars fit for a dense operations dashboard */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--surface-border);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(59, 91, 255, 0.55);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------------------------------------------------------------------- *
+ * Panels — the base card surface used throughout the console. Kept as the
+ * `.glass-card` class name for drop-in compatibility with existing markup,
+ * restyled from a generic frosted-glass card into a flatter, hairline-bordered
+ * instrument panel with a faint top highlight.
+ * ---------------------------------------------------------------------- */
+.glass-card {
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: 1rem;
+  box-shadow: 0 1px 2px rgba(11, 13, 20, 0.04), 0 16px 32px -24px rgba(11, 13, 20, 0.25);
+  position: relative;
+}
+.dark .glass-card {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 20px 40px -28px rgba(0, 0, 0, 0.65);
+}
+
+/* Corner-tick accent — an instrument-panel calibration mark. Applied
+   sparingly (stat cards, hero panels) as the app's one signature flourish. */
+.panel-ticks::before,
+.panel-ticks::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-color: var(--surface-border);
+  opacity: 0.9;
+  pointer-events: none;
+}
+.panel-ticks::before {
+  top: 10px;
+  left: 10px;
+  border-top: 1.5px solid;
+  border-left: 1.5px solid;
+  border-color: rgb(59 91 255 / 0.35);
+}
+.panel-ticks::after {
+  bottom: 10px;
+  right: 10px;
+  border-bottom: 1.5px solid;
+  border-right: 1.5px solid;
+  border-color: rgb(59 91 255 / 0.35);
+}
+
+.eyebrow {
+  @apply text-[11px] font-semibold tracking-[0.16em] uppercase text-primary/80 font-mono;
+}
+
+.font-tabular {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Beacon — small pulsing status dot used for "live" / "online" states */
+.beacon-dot {
+  position: relative;
+  display: inline-flex;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+.beacon-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: inherit;
+  animation: beacon-ring 2.2s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+}
+
+.btn-primary {
+  @apply bg-primary text-white px-4 py-2 rounded-lg font-medium transition-all hover:bg-primary-600 active:scale-[0.97] shadow-[0_1px_2px_rgba(11,13,20,0.05),0_8px_20px_-10px_rgba(59,91,255,0.55)] disabled:opacity-50 disabled:active:scale-100;
+}
+
+.btn-secondary {
+  @apply flex items-center gap-2 px-4 py-2 border border-gray-200 dark:border-gray-800 rounded-lg font-medium text-sm hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors active:scale-[0.97];
+}
+
+.badge {
+  @apply inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full font-medium;
+}
+
+.input-field {
+  @apply w-full px-3.5 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-sm outline-none transition-shadow focus:ring-2 focus:ring-primary/25 focus:border-primary/40 placeholder:text-gray-400;
+}

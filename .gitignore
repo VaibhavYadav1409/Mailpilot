@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+/.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Testing
+coverage/
+.nyc_output/
+
+# Cache
+.eslintcache
+.turbo/
+
+# Prisma generated client (regenerated via `prisma generate`)
+**/src/generated/
+*.bak
+
+# Electron build output
+dist-electron/
+release/
+
+# Local report storage
+generated-reports/
+
+# Environment files with real values, beyond the .local pattern already covered
+.env.production
