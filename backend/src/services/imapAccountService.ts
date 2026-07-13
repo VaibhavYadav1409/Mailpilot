@@ -84,7 +84,19 @@ async function verifySmtp(input: ImapConnectInput) {
  * connectGmailAccount's upsert-by-employeeId already behaves.
  */
 export async function connectImapAccount(employeeId: string, companyId: string, input: ImapConnectInput) {
-  await Promise.all([verifyImap(input), verifySmtp(input)]);
+  // When IMAP_SEND_DRIVER=resend, outbound mail never actually goes through
+  // this account's SMTP server (see emailActions.ts) — it's relayed via
+  // Resend's HTTPS API instead. Verifying raw SMTP here would then do
+  // nothing but risk a false-negative timeout on hosts (like Render's free
+  // tier) that block outbound SMTP ports, even though sending will work
+  // fine. So skip it in that mode; IMAP (reading) is still verified for
+  // real, since that's unaffected and still needed.
+  const sendDriver = (process.env.IMAP_SEND_DRIVER ?? "smtp").toLowerCase();
+  if (sendDriver === "resend") {
+    await verifyImap(input);
+  } else {
+    await Promise.all([verifyImap(input), verifySmtp(input)]);
+  }
 
   const existingForMailbox = await prisma.gmailAccount.findUnique({ where: { emailAddress: input.email } });
   if (existingForMailbox && existingForMailbox.employeeId !== employeeId) {

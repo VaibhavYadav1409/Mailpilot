@@ -97,6 +97,42 @@ async function sendViaSmtp(
   });
 }
 
+// Alternative to sendViaSmtp for IMAP-connected accounts, used when
+// IMAP_SEND_DRIVER=resend. Render's free (and some paid) tiers block
+// outbound SMTP ports 25/465/587 but not HTTPS, so raw SMTP sending can
+// hang/timeout regardless of credentials. This relays outbound mail through
+// Resend's HTTPS API instead — the same API already used for MailPilot's
+// own system emails (see lib/email.ts) — which is never port-blocked.
+//
+// This does NOT send "as" the employee's real address at the protocol
+// level, since that would require verifying their domain's SPF/DKIM with
+// Resend (DNS access MailPilot may not have). Instead it sends from
+// MailPilot's own already-verified RESEND_FROM address, with Reply-To set
+// to the employee's real mailbox — so replies land correctly in their
+// inbox, at the cost of the recipient seeing MailPilot's address in "From"
+// rather than the employee's own. No attachment support yet (Resend's
+// attachments param isn't wired up here); attachments silently drop.
+async function sendViaResendRelay(opts: { to: string; from: string; subject: string; body: string; attachments?: ReplyAttachment[] }) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error("IMAP_SEND_DRIVER=resend but RESEND_API_KEY is not set.");
+  }
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from: process.env.RESEND_FROM ?? "MailPilot <no-reply@example.com>",
+      to: [opts.to],
+      reply_to: opts.from,
+      subject: opts.subject,
+      text: opts.body,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Resend API error (${res.status}): ${await res.text()}`);
+  }
+}
+
 /**
  * Sends a reply to an email and records it as a Reply row so analytics can
  * compute real reply times — this is the one place `replyTimeSec` is
@@ -129,6 +165,14 @@ export async function sendReply(
       subject,
       body,
       threadId: email.threadId ?? undefined,
+      attachments: opts.attachments,
+    });
+  } else if ((process.env.IMAP_SEND_DRIVER ?? "smtp").toLowerCase() === "resend") {
+    await sendViaResendRelay({
+      to: email.fromAddress,
+      from: email.gmailAccount.emailAddress,
+      subject,
+      body,
       attachments: opts.attachments,
     });
   } else {
