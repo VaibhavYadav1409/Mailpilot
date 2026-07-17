@@ -23,7 +23,7 @@ const employeeSummary = {
   createdAt: true,
   departmentId: true,
   department: { select: { id: true, name: true } },
-  gmailAccounts: { where: { isActive: true }, take: 1, select: { emailAddress: true, status: true, lastSyncedAt: true } },
+  gmailAccounts: { where: { isActive: true }, take: 1, select: { id: true, emailAddress: true, status: true, lastSyncedAt: true } },
 } as const;
 
 // Employee.gmailAccounts is a one-to-many relation (an employee can have
@@ -40,6 +40,33 @@ function withActiveGmailAccount<T extends { gmailAccounts?: unknown[] }>(
 }
 
 /**
+ * Bulk pending/replied counts for a set of active GmailAccount ids, in a
+ * single groupBy — avoids an N+1 query per employee row when the list view
+ * wants these counts inline (the per-employee /overview route already does
+ * a deeper breakdown for the expanded panel, but that's too expensive to
+ * run once per row just for the summary table).
+ */
+async function getInboxCounts(gmailAccountIds: string[]): Promise<Record<string, { pending: number; replied: number }>> {
+  if (gmailAccountIds.length === 0) return {};
+
+  const grouped = await prisma.email.groupBy({
+    by: ["gmailAccountId", "isReplied"],
+    where: { gmailAccountId: { in: gmailAccountIds }, isTrashed: false },
+    _count: { _all: true },
+  });
+
+  const counts: Record<string, { pending: number; replied: number }> = {};
+  for (const id of gmailAccountIds) counts[id] = { pending: 0, replied: 0 };
+  for (const row of grouped) {
+    const bucket = counts[row.gmailAccountId];
+    if (!bucket) continue;
+    if (row.isReplied) bucket.replied = row._count._all;
+    else bucket.pending = row._count._all;
+  }
+  return counts;
+}
+
+/**
  * GET / — list employees the caller is allowed to see.
  * CEO/COO/ADMIN: whole company. MANAGER: own department. EMPLOYEE: self only
  * (employeeScopeFilter already encodes all three, so this route never has to
@@ -51,7 +78,19 @@ employeesRouter.get("/", requireAuth, async (req, res) => {
     select: employeeSummary,
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
-  return res.json(employees.map(withActiveGmailAccount));
+
+  const flattened = employees.map(withActiveGmailAccount);
+  const accountIds = flattened
+    .map((e) => (e.gmailAccount as { id?: string } | null)?.id)
+    .filter((id): id is string => !!id);
+  const counts = await getInboxCounts(accountIds);
+
+  return res.json(
+    flattened.map((e) => {
+      const accountId = (e.gmailAccount as { id?: string } | null)?.id;
+      return { ...e, inboxCounts: accountId ? counts[accountId] : { pending: 0, replied: 0 } };
+    })
+  );
 });
 
 employeesRouter.get("/:id", requireAuth, async (req, res) => {

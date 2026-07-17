@@ -15,6 +15,7 @@ interface Employee {
   status: 'ONLINE' | 'OFFLINE' | 'IDLE' | 'SUSPENDED';
   department: { id: string; name: string } | null;
   gmailAccount: { emailAddress: string; status: string; lastSyncedAt: string | null } | null;
+  inboxCounts: { pending: number; replied: number };
 }
 
 export const EmployeeTable = () => {
@@ -91,6 +92,8 @@ export const EmployeeTable = () => {
               <th className="px-6 py-3.5">Department</th>
               <th className="px-6 py-3.5">Status</th>
               <th className="px-6 py-3.5">Gmail</th>
+              <th className="px-6 py-3.5">Pending</th>
+              <th className="px-6 py-3.5">Replied</th>
               <th className="px-6 py-3.5">Last Sync</th>
               <th className="px-6 py-3.5"></th>
             </tr>
@@ -144,6 +147,25 @@ export const EmployeeTable = () => {
                   >
                     {employee.gmailAccount?.status ?? 'NOT CONNECTED'}
                   </span>
+                  {employee.gmailAccount?.emailAddress && (
+                    <div className="text-xs text-gray-500 mt-1">{employee.gmailAccount.emailAddress}</div>
+                  )}
+                </td>
+                <td className="px-6 py-4">
+                  {employee.gmailAccount ? (
+                    <span className={cn('text-sm font-tabular font-medium', employee.inboxCounts.pending > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400')}>
+                      {employee.inboxCounts.pending}
+                    </span>
+                  ) : (
+                    <span className="text-sm text-gray-400">—</span>
+                  )}
+                </td>
+                <td className="px-6 py-4">
+                  {employee.gmailAccount ? (
+                    <span className="text-sm font-tabular text-gray-500">{employee.inboxCounts.replied}</span>
+                  ) : (
+                    <span className="text-sm text-gray-400">—</span>
+                  )}
                 </td>
                 <td className="px-6 py-4 text-sm font-tabular text-gray-500">
                   {employee.gmailAccount?.lastSyncedAt
@@ -200,7 +222,7 @@ export const EmployeeTable = () => {
               </tr>
               {expandedId === employee.id && (
                 <tr>
-                  <td colSpan={6} className="px-6 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
+                  <td colSpan={8} className="px-6 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
                     <EmployeeOverviewPanel employeeId={employee.id} />
                   </td>
                 </tr>
