@@ -80,20 +80,44 @@ async function fetchGmailAttachment(messageId: string, attachmentId: string, acc
 
 /**
  * Lists message ids matching a Gmail search query, paginating through up to
- * `maxResults` ids. Shared by the inbox listing (below) and the Sent-label
- * listing used for reply detection, since both are "give me ids for this
- * query" with the same shape of request.
+ * `maxResults` ids in total. Shared by the inbox listing (below) and the
+ * Sent-label listing used for reply detection, since both are "give me ids
+ * for this query" with the same shape of request.
+ *
+ * Gmail's messages.list endpoint caps a single page at 100 results and
+ * signals more via `nextPageToken` — this previously wasn't followed, so
+ * any query matching more than 100 messages (e.g. `in:sent after:X` on a
+ * busy mailbox, easily hit on a first sync scanning the last 30 days)
+ * silently dropped everything past the first page. For reply detection
+ * that meant sent messages beyond #100 were never matched back to their
+ * inbound emails, leaving genuinely-replied emails stuck showing as
+ * Pending. Now follows nextPageToken (each page still capped at Gmail's
+ * 100-per-request max) until either the API stops returning a token or the
+ * accumulated total reaches `maxResults`.
  */
-async function listGmailMessageIds(query: string, accessToken: string, maxResults = 100): Promise<string[]> {
-  const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
-  listUrl.searchParams.set("maxResults", String(maxResults));
-  listUrl.searchParams.set("includeSpamTrash", "false");
-  listUrl.searchParams.set("q", query);
+async function listGmailMessageIds(query: string, accessToken: string, maxResults = 500): Promise<string[]> {
+  const ids: string[] = [];
+  let pageToken: string | undefined;
 
-  const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!listRes.ok) throw new Error(`Failed to list Gmail messages: ${await listRes.text()}`);
-  const { messages = [] } = (await listRes.json()) as { messages?: { id: string }[] };
-  return messages.map((m) => m.id);
+  do {
+    const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+    listUrl.searchParams.set("maxResults", String(Math.min(100, maxResults - ids.length)));
+    listUrl.searchParams.set("includeSpamTrash", "false");
+    listUrl.searchParams.set("q", query);
+    if (pageToken) listUrl.searchParams.set("pageToken", pageToken);
+
+    const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!listRes.ok) throw new Error(`Failed to list Gmail messages: ${await listRes.text()}`);
+    const { messages = [], nextPageToken } = (await listRes.json()) as {
+      messages?: { id: string }[];
+      nextPageToken?: string;
+    };
+
+    ids.push(...messages.map((m) => m.id));
+    pageToken = nextPageToken;
+  } while (pageToken && ids.length < maxResults);
+
+  return ids;
 }
 
 /**
