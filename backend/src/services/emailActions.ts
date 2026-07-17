@@ -1,7 +1,19 @@
-import nodemailer from "nodemailer";
 import { prisma } from "../lib/db";
 import { getValidAccessToken } from "./gmailAccountService";
-import { decryptToken } from "../lib/crypto";
+import { recordReply } from "./replyTracking";
+
+// Conditional Sending business rule (see project spec "Conditional Sending
+// Based on Account Type"): IMAP/SMTP-connected mailboxes are read-only in
+// MailPilot, full stop — no SMTP send, no Resend relay, regardless of how
+// much SMTP detail is on file or which IMAP_SEND_DRIVER is configured.
+// Employees reply from their own client (Gmail Web, Outlook, Apple Mail,
+// etc.) and MailPilot detects those replies during sync instead. Only a
+// connected GMAIL (OAuth) account can send through MailPilot.
+//
+// Mirrored in employee-app/src/pages/Home.tsx as FALLBACK_SEND_DISABLED_MESSAGE
+// and served as the source of truth via GET /api/gmail/status#sendDisabledMessage.
+export const IMAP_SEND_DISABLED_MESSAGE =
+  "Sending emails from MailPilot is not available for IMAP accounts. Please reply using your preferred email client. MailPilot will automatically sync and track your replies.";
 
 export interface ReplyAttachment {
   filename: string;
@@ -71,68 +83,6 @@ async function sendViaGmail(
   if (!res.ok) throw new Error(`Failed to send reply: ${await res.text()}`);
 }
 
-async function sendViaSmtp(
-  account: { smtpHost: string | null; smtpPort: number | null; smtpSecure: boolean | null; smtpUser: string | null; refreshToken: string },
-  opts: { to: string; from: string; subject: string; body: string; attachments?: ReplyAttachment[] }
-) {
-  if (!account.smtpHost || !account.smtpPort || !account.smtpUser) {
-    throw new Error("This mailbox is missing SMTP connection details. Please reconnect.");
-  }
-  const transport = nodemailer.createTransport({
-    host: account.smtpHost,
-    port: account.smtpPort,
-    secure: account.smtpSecure ?? true,
-    auth: { user: account.smtpUser, pass: decryptToken(account.refreshToken) },
-  });
-  await transport.sendMail({
-    to: opts.to,
-    from: opts.from,
-    subject: opts.subject,
-    text: opts.body,
-    attachments: (opts.attachments ?? []).map((a) => ({
-      filename: a.filename,
-      content: Buffer.from(a.data, "base64"),
-      contentType: a.mimeType,
-    })),
-  });
-}
-
-// Alternative to sendViaSmtp for IMAP-connected accounts, used when
-// IMAP_SEND_DRIVER=resend. Render's free (and some paid) tiers block
-// outbound SMTP ports 25/465/587 but not HTTPS, so raw SMTP sending can
-// hang/timeout regardless of credentials. This relays outbound mail through
-// Resend's HTTPS API instead — the same API already used for MailPilot's
-// own system emails (see lib/email.ts) — which is never port-blocked.
-//
-// This does NOT send "as" the employee's real address at the protocol
-// level, since that would require verifying their domain's SPF/DKIM with
-// Resend (DNS access MailPilot may not have). Instead it sends from
-// MailPilot's own already-verified RESEND_FROM address, with Reply-To set
-// to the employee's real mailbox — so replies land correctly in their
-// inbox, at the cost of the recipient seeing MailPilot's address in "From"
-// rather than the employee's own. No attachment support yet (Resend's
-// attachments param isn't wired up here); attachments silently drop.
-async function sendViaResendRelay(opts: { to: string; from: string; subject: string; body: string; attachments?: ReplyAttachment[] }) {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    throw new Error("IMAP_SEND_DRIVER=resend but RESEND_API_KEY is not set.");
-  }
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      from: process.env.RESEND_FROM ?? "MailPilot <no-reply@example.com>",
-      to: [opts.to],
-      reply_to: opts.from,
-      subject: opts.subject,
-      text: opts.body,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Resend API error (${res.status}): ${await res.text()}`);
-  }
-}
-
 /**
  * Sends a reply to an email and records it as a Reply row so analytics can
  * compute real reply times — this is the one place `replyTimeSec` is
@@ -167,22 +117,12 @@ export async function sendReply(
       threadId: email.threadId ?? undefined,
       attachments: opts.attachments,
     });
-  } else if ((process.env.IMAP_SEND_DRIVER ?? "smtp").toLowerCase() === "resend") {
-    await sendViaResendRelay({
-      to: email.fromAddress,
-      from: email.gmailAccount.emailAddress,
-      subject,
-      body,
-      attachments: opts.attachments,
-    });
+  } else if (email.gmailAccount.provider === "IMAP") {
+    // Conditional Sending: IMAP mailboxes are read-only in MailPilot,
+    // regardless of SMTP details on file or IMAP_SEND_DRIVER config.
+    throw new Error(IMAP_SEND_DISABLED_MESSAGE);
   } else {
-    await sendViaSmtp(email.gmailAccount, {
-      to: email.fromAddress,
-      from: email.gmailAccount.emailAddress,
-      subject,
-      body,
-      attachments: opts.attachments,
-    });
+    throw new Error("This mailbox has no connected send path.");
   }
 
   const sentAt = new Date();
@@ -199,7 +139,11 @@ export async function sendReply(
     },
   });
 
-  await prisma.email.update({ where: { id: emailId }, data: { isReplied: true, repliedAt: sentAt } });
+  // Funnels through the same code path sync-detected replies use, so
+  // firstResponseAt/lastReplyAt/replyTimeSec/pendingDurationSec stay
+  // consistent regardless of which source (MailPilot or an external client)
+  // answered the thread.
+  await recordReply(emailId, [sentAt]);
 
   return reply;
 }

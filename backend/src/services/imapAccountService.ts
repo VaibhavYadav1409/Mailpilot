@@ -1,5 +1,4 @@
 import { ImapFlow } from "imapflow";
-import nodemailer from "nodemailer";
 import { prisma } from "../lib/db";
 import { encryptToken } from "../lib/crypto";
 
@@ -10,11 +9,16 @@ export interface ImapConnectInput {
   imapUser: string;
   imapPass: string;
   imapSecure: boolean;
-  smtpHost: string;
-  smtpPort: number;
-  smtpUser: string;
-  smtpPass: string;
-  smtpSecure: boolean;
+  // Optional and, as of the Conditional Sending rule (see emailActions.ts —
+  // IMAP_SEND_DISABLED_MESSAGE), never used to send: IMAP-connected mailboxes
+  // are read-only in MailPilot full stop. Kept only so the UI can display
+  // what SMTP server the employee's client uses; never verified, never
+  // required, never touched by any send path.
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUser?: string;
+  smtpPass?: string;
+  smtpSecure?: boolean;
 }
 
 // Far-future sentinel — IMAP accounts don't use Gmail's access-token refresh
@@ -64,19 +68,6 @@ async function verifyImap(input: ImapConnectInput) {
   }
 }
 
-async function verifySmtp(input: ImapConnectInput) {
-  const transport = nodemailer.createTransport({
-    host: input.smtpHost,
-    port: input.smtpPort,
-    secure: input.smtpSecure,
-    auth: { user: input.smtpUser, pass: input.smtpPass },
-    connectionTimeout: VERIFY_TIMEOUT_MS,
-    greetingTimeout: VERIFY_TIMEOUT_MS,
-    socketTimeout: VERIFY_TIMEOUT_MS,
-  });
-  await withTimeout(transport.verify(), "SMTP connection");
-}
-
 /**
  * Connects (or re-connects) an employee's mailbox via IMAP/SMTP. Enforces
  * the same "exactly one mail account per employee" rule as Gmail — connecting
@@ -84,19 +75,12 @@ async function verifySmtp(input: ImapConnectInput) {
  * connectGmailAccount's upsert-by-employeeId already behaves.
  */
 export async function connectImapAccount(employeeId: string, companyId: string, input: ImapConnectInput) {
-  // When IMAP_SEND_DRIVER=resend, outbound mail never actually goes through
-  // this account's SMTP server (see emailActions.ts) — it's relayed via
-  // Resend's HTTPS API instead. Verifying raw SMTP here would then do
-  // nothing but risk a false-negative timeout on hosts (like Render's free
-  // tier) that block outbound SMTP ports, even though sending will work
-  // fine. So skip it in that mode; IMAP (reading) is still verified for
-  // real, since that's unaffected and still needed.
-  const sendDriver = (process.env.IMAP_SEND_DRIVER ?? "smtp").toLowerCase();
-  if (sendDriver === "resend") {
-    await verifyImap(input);
-  } else {
-    await Promise.all([verifyImap(input), verifySmtp(input)]);
-  }
+  // Only IMAP (reading) is verified — SMTP is never used to send (see
+  // IMAP_SEND_DISABLED_MESSAGE in emailActions.ts), so there's nothing to
+  // verify there, and verifying it anyway would risk a false-negative
+  // timeout on hosts that block outbound SMTP ports for a feature that's
+  // disabled regardless.
+  await verifyImap(input);
 
   const existingForMailbox = await prisma.gmailAccount.findUnique({ where: { emailAddress: input.email } });
   if (existingForMailbox && existingForMailbox.employeeId !== employeeId) {
@@ -111,7 +95,7 @@ export async function connectImapAccount(employeeId: string, companyId: string, 
       provider: "IMAP",
       emailAddress: input.email,
       accessToken: encryptToken(input.imapPass),
-      refreshToken: encryptToken(input.smtpPass),
+      refreshToken: encryptToken(input.smtpPass ?? ""), // refreshToken column is required; empty when no SMTP details were given
       tokenExpiresAt: NEVER_EXPIRES,
       status: "CONNECTED",
       imapHost: input.imapHost,
@@ -128,7 +112,7 @@ export async function connectImapAccount(employeeId: string, companyId: string, 
       provider: "IMAP",
       emailAddress: input.email,
       accessToken: encryptToken(input.imapPass),
-      refreshToken: encryptToken(input.smtpPass),
+      refreshToken: encryptToken(input.smtpPass ?? ""), // refreshToken column is required; empty when no SMTP details were given
       tokenExpiresAt: NEVER_EXPIRES,
       status: "CONNECTED",
       imapHost: input.imapHost,

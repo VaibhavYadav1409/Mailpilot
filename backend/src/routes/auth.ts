@@ -9,6 +9,21 @@ import { emitToCompany } from "../sockets";
 
 export const authRouter = Router();
 
+// Browsers reject any cookie marked SameSite=None unless it is also Secure —
+// so these two flags must always toggle together, not just `secure` alone.
+// In production (cross-site: Vercel admin dashboard / Electron app talking to
+// a Render backend on a different origin) that means SameSite=None + Secure.
+// In local dev (plain http://localhost, no TLS) Secure can't be set, so we
+// fall back to SameSite=Lax — which still works because different localhost
+// ports are treated as "same-site" by browsers, only "cross-site" requests
+// are restricted under Lax.
+const isProd = process.env.NODE_ENV === "production";
+const REFRESH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: isProd,
+  sameSite: (isProd ? "none" : "lax") as "none" | "lax",
+} as const;
+
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
@@ -51,9 +66,7 @@ authRouter.post("/login", async (req, res) => {
   emitToCompany(employee.companyId, "employee:status-changed", { employeeId: employee.id, status: "ONLINE" });
 
   res.cookie(COOKIE_NAME, refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "none",
+    ...REFRESH_COOKIE_OPTIONS,
     maxAge: 1000 * 60 * 60 * 24 * 30,
   });
 
@@ -92,9 +105,7 @@ authRouter.post("/refresh", async (req, res) => {
   });
 
   res.cookie(COOKIE_NAME, rotated.refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "none",
+    ...REFRESH_COOKIE_OPTIONS,
     maxAge: 1000 * 60 * 60 * 24 * 30,
   });
 

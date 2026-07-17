@@ -21,6 +21,17 @@ import { startScheduler } from "./scheduler";
 
 const app = express();
 
+// Render (like Heroku/Vercel) terminates TLS and proxies requests through an
+// internal load balancer. Without this, Express's req.ip — and anything built
+// on it, like the login rate limiter below — resolves to the proxy's own
+// address for every single request, not the real client's. That means the
+// 20-attempts/15-minutes login limiter would either lump every user in the
+// company into one shared bucket (one lockout affects everyone) or, with
+// express-rate-limit v7's built-in misconfiguration check, throw a
+// validation error and 500 the /login route outright. `1` trusts exactly one
+// hop (Render's own proxy) and reads the real client IP from X-Forwarded-For.
+app.set("trust proxy", 1);
+
 app.use(helmet());
 app.use(compression());
 app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",") ?? true, credentials: true }));

@@ -5,8 +5,8 @@ import api from '@/services/api';
 import { StatCard } from '@/components/dashboard/StatCard';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { useDepartmentPerformance } from '@/hooks/useDepartmentPerformance';
-import { Users, Mail, Clock, CheckCircle } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Users, Mail, Clock, CheckCircle, Reply } from 'lucide-react';
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 interface CompanyOverview {
   totalEmployees: number;
@@ -14,10 +14,25 @@ interface CompanyOverview {
   employeesOffline: number;
   connectedGmailAccounts: number;
   emailsToday: number;
+  repliesToday: number;
   unreadEmails: number;
   pendingReplies: number;
   avgResponseTimeSec: number | null;
   aiActionsToday: number;
+}
+
+interface TrendPoint {
+  date: string;
+  emailsReceived: number;
+  emailsReplied: number;
+  avgReplyTimeSec: number | null;
+  avgProductivityScore: number | null;
+}
+
+function formatTrendDate(dateStr: string) {
+  // dateStr is YYYY-MM-DD (UTC) — format as e.g. "Jul 14" for the axis.
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 function formatSeconds(sec: number | null) {
@@ -45,6 +60,15 @@ export default function DashboardPage() {
     refetchInterval: 30_000,
   });
 
+  const { data: trends, isLoading: trendsLoading } = useQuery({
+    queryKey: ['dashboard-trends', 'weekly'],
+    queryFn: async () => {
+      const { data } = await api.get<TrendPoint[]>('/analytics/company/trends', { params: { range: 'weekly' } });
+      return data;
+    },
+    refetchInterval: 60_000,
+  });
+
   const { chartData: departmentChartData, isLoading: departmentsLoading } = useDepartmentPerformance();
 
   if (isLoading) {
@@ -60,13 +84,6 @@ export default function DashboardPage() {
     );
   }
 
-  const activityData = [
-    { name: 'Received', value: stats?.emailsToday ?? 0 },
-    { name: 'Unread', value: stats?.unreadEmails ?? 0 },
-    { name: 'Pending reply', value: stats?.pendingReplies ?? 0 },
-    { name: 'AI actions', value: stats?.aiActionsToday ?? 0 },
-  ];
-
   return (
     <div className="p-8 space-y-8 max-w-[1400px]">
       <PageHeader
@@ -75,33 +92,36 @@ export default function DashboardPage() {
         subtitle="Welcome back — here's what's happening across the fleet today."
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         <StatCard title="Total Employees" value={stats?.totalEmployees ?? 0} icon={Users} />
         <StatCard title="Online Now" value={stats?.employeesOnline ?? 0} icon={CheckCircle} live />
         <StatCard title="Emails Today" value={stats?.emailsToday ?? 0} icon={Mail} />
+        <StatCard title="Replies Today" value={stats?.repliesToday ?? 0} icon={Reply} />
         <StatCard title="Avg Response Time" value={formatSeconds(stats?.avgResponseTimeSec ?? null)} icon={Clock} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="glass-card p-6 h-[400px]">
-          <h3 className="text-[15px] font-semibold mb-6">Today's Email Activity</h3>
-          {/*
-            The old chart here was "Email Trends" over time, backed by an
-            empty array (data={[]}) — there was never a real endpoint behind
-            it. There's still no company-wide day-by-day trend endpoint, so
-            rather than reintroduce a fake time series, this shows today's
-            real counts. A proper trend line is a good Phase 8 candidate once
-            there's a bucketed-by-day company rollup to query.
-          */}
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={activityData}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--surface-border)" />
-              <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#9AA1B5' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 12, fill: '#9AA1B5' }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(59,91,255,0.06)' }} />
-              <Bar dataKey="value" fill="#3B5BFF" radius={[6, 6, 0, 0]} maxBarSize={56} />
-            </BarChart>
-          </ResponsiveContainer>
+          <h3 className="text-[15px] font-semibold mb-6">Email Trends (7 days)</h3>
+          {trendsLoading ? (
+            <div className="h-full flex items-center justify-center text-gray-400 text-sm">Loading…</div>
+          ) : !trends || trends.every((t) => t.emailsReceived === 0 && t.emailsReplied === 0) ? (
+            <div className="h-full flex items-center justify-center text-gray-400 text-sm">
+              No synced email activity yet this week.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trends.map((t) => ({ ...t, label: formatTrendDate(t.date) }))}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--surface-border)" />
+                <XAxis dataKey="label" tick={{ fontSize: 12, fill: '#9AA1B5' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 12, fill: '#9AA1B5' }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip contentStyle={chartTooltipStyle} cursor={{ stroke: 'var(--surface-border)' }} />
+                <Legend wrapperStyle={{ fontSize: '12px' }} />
+                <Line type="monotone" dataKey="emailsReceived" name="Received" stroke="#3B5BFF" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="emailsReplied" name="Replied" stroke="#22C55E" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         <div className="glass-card p-6 h-[400px]">

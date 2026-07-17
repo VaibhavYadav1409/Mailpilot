@@ -12,11 +12,14 @@ const connectSchema = z.object({
   imapUser: z.string().min(1),
   imapPass: z.string().min(1),
   imapSecure: z.boolean().default(true),
-  smtpHost: z.string().min(1),
-  smtpPort: z.coerce.number().int().positive(),
-  smtpUser: z.string().min(1),
-  smtpPass: z.string().min(1),
-  smtpSecure: z.boolean().default(true),
+  // Optional: IMAP mailboxes never send through MailPilot (see
+  // IMAP_SEND_DISABLED_MESSAGE in emailActions.ts), so SMTP details are
+  // never verified and aren't required to connect a read-only mailbox.
+  smtpHost: z.string().min(1).optional(),
+  smtpPort: z.coerce.number().int().positive().optional(),
+  smtpUser: z.string().min(1).optional(),
+  smtpPass: z.string().min(1).optional(),
+  smtpSecure: z.boolean().default(true).optional(),
 });
 
 // POST /api/auth/imap — verifies the credentials by actually connecting,

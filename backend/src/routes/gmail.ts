@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { requireAuth } from "../middleware/auth";
 import { buildAuthUrl, isGoogleConfigured } from "../services/googleOAuth";
 import { connectGmailAccount, disconnectGmailAccount } from "../services/gmailAccountService";
+import { IMAP_SEND_DISABLED_MESSAGE } from "../services/emailActions";
 import { prisma } from "../lib/db";
 
 export const gmailRouter = Router();
@@ -73,11 +74,21 @@ gmailRouter.get("/status", requireAuth, async (req, res) => {
     select: { emailAddress: true, status: true, lastSyncedAt: true, provider: true },
   });
   const connected = !!account && account.status === "CONNECTED";
+
+  // Conditional Sending (see IMAP_SEND_DISABLED_MESSAGE in emailActions.ts,
+  // the single source of truth for both the error thrown by sendReply and
+  // this status flag): only a connected GMAIL account can send through
+  // MailPilot. No connected account, or a MANUAL/IMAP one, means the
+  // employee-app should hide/disable Reply, Compose, Forward, and Send.
+  const canSend = connected && account?.provider === "GMAIL";
+
   return res.json({
     account,
     connected,
     email: account?.emailAddress ?? null,
     provider: account?.provider?.toLowerCase() ?? null,
     googleConfigured: isGoogleConfigured(),
+    canSend,
+    sendDisabledMessage: canSend ? null : IMAP_SEND_DISABLED_MESSAGE,
   });
 });

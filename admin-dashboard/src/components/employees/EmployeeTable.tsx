@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck } from 'lucide-react';
-import { useState } from 'react';
+import { useState, Fragment } from 'react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
 
@@ -20,6 +20,7 @@ interface Employee {
 export const EmployeeTable = () => {
   const [search, setSearch] = useState('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
 
@@ -96,8 +97,9 @@ export const EmployeeTable = () => {
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
             {filteredEmployees?.map((employee) => (
-              <tr key={employee.id} className="hover:bg-gray-50/60 dark:hover:bg-gray-900/40 transition-colors group">
-                <td className="px-6 py-4">
+              <Fragment key={employee.id}>
+              <tr className="hover:bg-gray-50/60 dark:hover:bg-gray-900/40 transition-colors group">
+                <td className="px-6 py-4 cursor-pointer" onClick={() => setExpandedId(expandedId === employee.id ? null : employee.id)}>
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-primary/10 ring-1 ring-primary/15 flex items-center justify-center text-primary font-bold text-xs shrink-0">
                       {employee.firstName[0]}
@@ -196,6 +198,14 @@ export const EmployeeTable = () => {
                   )}
                 </td>
               </tr>
+              {expandedId === employee.id && (
+                <tr>
+                  <td colSpan={6} className="px-6 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
+                    <EmployeeOverviewPanel employeeId={employee.id} />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -203,3 +213,85 @@ export const EmployeeTable = () => {
     </div>
   );
 };
+
+interface EmployeeOverview {
+  lastSync: string | null;
+  provider: string;
+  emailsReceivedToday: number;
+  emailsRepliedToday: number;
+  emailsReceivedThisWeek: number;
+  emailsRepliedThisWeek: number;
+  pendingEmails: number;
+  unansweredEmails: number;
+  unreadEmails: number;
+  readEmails: number;
+  activeConversations: number;
+  closedConversations: number;
+  avgReplyTimeSec: number | null;
+  firstResponseTimeSec: number | null;
+  lastReplyAt: string | null;
+}
+
+function formatSeconds(sec: number | null) {
+  if (sec === null) return '—';
+  const minutes = Math.round(sec / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${(minutes / 60).toFixed(1)}h`;
+}
+
+function formatTimestamp(iso: string | null) {
+  if (!iso) return 'Never';
+  return new Date(iso).toLocaleString();
+}
+
+/**
+ * Live per-employee snapshot shown when a row is expanded in EmployeeTable.
+ * Backed by GET /analytics/employees/:id/overview (analyticsQuery.ts —
+ * getEmployeeOverview), which reads Email/GmailAccount directly rather than
+ * the DailyAnalytics rollup, so this is always current as of the last sync
+ * — not just as of the last daily rollup job run.
+ */
+function EmployeeOverviewPanel({ employeeId }: { employeeId: string }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['employee-overview', employeeId],
+    queryFn: async () => {
+      const { data } = await api.get<EmployeeOverview>(`/analytics/employees/${employeeId}/overview`);
+      return data;
+    },
+  });
+
+  if (isLoading) {
+    return <div className="text-sm text-gray-400 py-2">Loading employee analytics…</div>;
+  }
+  if (error) {
+    return <div className="text-sm text-gray-400 py-2">No mail account connected for this employee yet.</div>;
+  }
+  if (!data) return null;
+
+  const stats: { label: string; value: string }[] = [
+    { label: 'Last sync', value: formatTimestamp(data.lastSync) },
+    { label: 'Emails received today', value: String(data.emailsReceivedToday) },
+    { label: 'Emails replied today', value: String(data.emailsRepliedToday) },
+    { label: 'Emails received this week', value: String(data.emailsReceivedThisWeek) },
+    { label: 'Emails replied this week', value: String(data.emailsRepliedThisWeek) },
+    { label: 'Pending / unanswered', value: String(data.pendingEmails) },
+    { label: 'Unread', value: String(data.unreadEmails) },
+    { label: 'Read', value: String(data.readEmails) },
+    { label: 'Active conversations', value: String(data.activeConversations) },
+    { label: 'Closed conversations', value: String(data.closedConversations) },
+    { label: 'Avg reply time', value: formatSeconds(data.avgReplyTimeSec) },
+    { label: 'First response time', value: formatSeconds(data.firstResponseTimeSec) },
+    { label: 'Last reply', value: formatTimestamp(data.lastReplyAt) },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3 py-3">
+      {stats.map((s) => (
+        <div key={s.label}>
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 font-mono">{s.label}</div>
+          <div className="text-sm font-medium mt-0.5">{s.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}

@@ -76,6 +76,12 @@ export default function Home() {
   });
   const isConnected = gmailStatus.data?.connected;
   const googleConfigured = gmailStatus.data?.googleConfigured ?? true; // assume true until loaded, to avoid a flash
+  // Conditional Sending: assume true until the status query resolves, same
+  // "avoid a flash" reasoning as googleConfigured above — the reply box
+  // still hides once gmailStatus.data lands, this just avoids it flickering
+  // on for connected Gmail users on every page load.
+  const canSend = gmailStatus.data?.canSend ?? true;
+  const sendDisabledMessage = gmailStatus.data?.sendDisabledMessage ?? null;
 
   const emails = useQuery({
     queryKey: ["emails", filter, search.trim()],
@@ -493,10 +499,16 @@ export default function Home() {
               {/* Email */}
               <div className="lg:col-span-3 p-6 overflow-y-auto border-r space-y-4">
                 {/* Action bar */}
-                <div className="flex items-center gap-2 pb-2 border-b">
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setShowReply(v => !v)}>
-                    <CornerUpLeft className="w-3.5 h-3.5" /> Reply
-                  </Button>
+                <div className="flex items-center gap-2 pb-2 border-b flex-wrap">
+                  {canSend ? (
+                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setShowReply(v => !v)}>
+                      <CornerUpLeft className="w-3.5 h-3.5" /> Reply
+                    </Button>
+                  ) : (
+                    <p className="text-xs text-muted-foreground italic max-w-md">
+                      {sendDisabledMessage}
+                    </p>
+                  )}
                   <Button size="sm" variant="outline" className="gap-1.5"
                     onClick={() => patchMutation.mutate({ id: selectedEmail.id, data: { isRead: !selectedEmail.isRead } })}>
                     {selectedEmail.isRead ? <><EyeOff className="w-3.5 h-3.5" />Mark Unread</> : <><Eye className="w-3.5 h-3.5" />Mark Read</>}
@@ -568,7 +580,7 @@ export default function Home() {
                 <AttachmentList emailId={selectedEmail.id} attachments={selectedEmail.attachments} />
 
                 {/* Reply box */}
-                {showReply && (
+                {showReply && canSend && (
                   <Card className="p-4 space-y-3 border-primary">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-medium flex items-center gap-2">
@@ -631,6 +643,7 @@ export default function Home() {
                 {selectedId && (
                   <AIInsightsPanel
                     messageId={selectedId}
+                    canSend={canSend}
                     onSuggestedReplySelect={(reply) => {
                       setReplyBody(reply);
                       setShowReply(true);

@@ -192,7 +192,21 @@ model Email {
   receivedAt      DateTime
   isRead          Boolean        @default(false)
   isReplied       Boolean        @default(false)
-  repliedAt       DateTime?
+  repliedAt       DateTime?      // timestamp of the most recent reply, from whichever source set it last
+
+  // Reply-tracking fields (added for sync-based reply detection — see
+  // services/replyTracking.ts). Populated from TWO sources that both funnel
+  // through recordReply(): (1) sendReply() in emailActions.ts, when the
+  // employee replies through MailPilot itself, and (2) matchSyncedReplies()
+  // in emailSync.ts, when sync finds an outgoing message (Gmail "Sent" label
+  // or IMAP Sent/Sent Items folder) that answers this thread — the case this
+  // was actually built for, since most IMAP employees reply from their own
+  // mail client, not MailPilot. Never trust client input for these; always
+  // computed server-side from receivedAt vs. the detected/recorded send time.
+  firstResponseAt     DateTime?  // first reply ever recorded for this email, from either source
+  lastReplyAt          DateTime? // most recent reply recorded (thread may get several)
+  replyTimeSec          Int?     // firstResponseAt - receivedAt, in seconds — the "first response time" metric
+  pendingDurationSec   Int?      // for still-unreplied emails: time-since-received as of the last sync run; cleared once replied
 
   // Added during the REST re-integration so the employee-app's rich email
   // viewer, star/trash actions, and cached AI insights have somewhere to
@@ -215,6 +229,7 @@ model Email {
   @@unique([gmailAccountId, gmailMessageId])
   @@index([gmailAccountId, receivedAt])
   @@index([gmailAccountId, isReplied])
+  @@index([gmailAccountId, threadId])
 }
 
 // Inbound attachment metadata. The bytes themselves live in attachmentStorage

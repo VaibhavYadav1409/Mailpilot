@@ -10,6 +10,11 @@ import { toast } from "sonner";
 interface AIInsightsPanelProps {
   messageId: string;
   onSuggestedReplySelect?: (reply: string) => void;
+  // Conditional Sending: MailPilot has no compose field to insert into for
+  // IMAP/manual accounts (Reply is hidden — see Home.tsx), so "Insert" would
+  // be a dead affordance there. Defaults to true so existing Gmail callers
+  // don't need to pass it.
+  canSend?: boolean;
 }
 
 /**
@@ -21,6 +26,7 @@ interface AIInsightsPanelProps {
 export function AIInsightsPanel({
   messageId,
   onSuggestedReplySelect,
+  canSend = true,
 }: AIInsightsPanelProps) {
   const [expandedSections, setExpandedSections] = useState({
     summary: true,
@@ -298,22 +304,25 @@ export function AIInsightsPanel({
                     generateSuggestedReply.data?.suggestedReply}
                 </p>
                 <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    onClick={handleInsertReply}
-                    className="flex-1"
-                    aria-label="Insert suggested reply into compose field"
-                  >
-                    Insert
-                  </Button>
+                  {canSend && (
+                    <Button
+                      size="sm"
+                      onClick={handleInsertReply}
+                      className="flex-1"
+                      aria-label="Insert suggested reply into compose field"
+                    >
+                      Insert
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={handleCopyReply}
-                    className="flex-shrink-0"
+                    className={canSend ? "flex-shrink-0" : "flex-1"}
                     aria-label="Copy suggested reply to clipboard"
                   >
                     <Copy className="h-4 w-4" />
+                    {!canSend && <span className="ml-2">Copy to paste in your email client</span>}
                   </Button>
                   <Button
                     size="sm"

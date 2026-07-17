@@ -21,16 +21,6 @@ vi.mock("imapflow", () => ({
   })),
 }));
 
-// Mock nodemailer
-const mockSmtpVerify = vi.fn();
-vi.mock("nodemailer", () => ({
-  default: {
-    createTransport: vi.fn().mockImplementation(() => ({
-      verify: mockSmtpVerify,
-    })),
-  },
-}));
-
 // Import service and prisma after mocking
 const { connectImapAccount, getOrCreateManualAccount } = await import("../src/services/imapAccountService");
 const { prisma } = await import("../src/lib/db");
@@ -60,8 +50,7 @@ describe("imapAccountService", () => {
     it("successfully connects and upserts an IMAP account", async () => {
       mockImapConnect.mockResolvedValue(undefined);
       mockImapLogout.mockResolvedValue(undefined);
-      mockSmtpVerify.mockResolvedValue(true);
-      
+
       vi.mocked(prisma.gmailAccount.findUnique).mockResolvedValue(null);
       vi.mocked(prisma.gmailAccount.upsert).mockResolvedValue({
         id: "acc-1",
@@ -72,7 +61,6 @@ describe("imapAccountService", () => {
       const result = await connectImapAccount(employeeId, companyId, mockInput);
 
       expect(mockImapConnect).toHaveBeenCalled();
-      expect(mockSmtpVerify).toHaveBeenCalled();
       expect(prisma.gmailAccount.upsert).toHaveBeenCalledWith(expect.objectContaining({
         where: { employeeId },
         create: expect.objectContaining({
@@ -85,8 +73,7 @@ describe("imapAccountService", () => {
 
     it("throws error if email is already connected to another employee", async () => {
       mockImapConnect.mockResolvedValue(undefined);
-      mockSmtpVerify.mockResolvedValue(true);
-      
+
       vi.mocked(prisma.gmailAccount.findUnique).mockResolvedValue({
         employeeId: "other-emp",
       } as any);

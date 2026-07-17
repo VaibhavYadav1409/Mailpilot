@@ -34,6 +34,7 @@ export async function getCompanyOverview(companyId: string) {
     onlineEmployees,
     connectedGmailAccounts,
     emailsToday,
+    repliesToday,
     unreadEmails,
     pendingReplies,
     aiActionsToday,
@@ -44,6 +45,14 @@ export async function getCompanyOverview(companyId: string) {
     prisma.gmailAccount.count({ where: { companyId, status: "CONNECTED" } }),
     prisma.email.count({
       where: { gmailAccount: { companyId }, receivedAt: { gte: start, lt: end } },
+    }),
+    // Total replies today — counted by when the reply itself landed
+    // (repliedAt, set by recordReply from either a sync-detected reply or a
+    // MailPilot-sent one), not by when the original email arrived. An email
+    // received yesterday and replied today counts toward today's replies,
+    // same convention emailsToday uses the other direction for received.
+    prisma.email.count({
+      where: { gmailAccount: { companyId }, isReplied: true, repliedAt: { gte: start, lt: end } },
     }),
     prisma.email.count({
       where: { gmailAccount: { companyId }, receivedAt: { gte: start, lt: end }, isRead: false },
@@ -81,6 +90,7 @@ export async function getCompanyOverview(companyId: string) {
     employeesOffline: totalEmployees - onlineEmployees,
     connectedGmailAccounts,
     emailsToday,
+    repliesToday,
     unreadEmails,
     pendingReplies,
     avgResponseTimeSec,
@@ -132,6 +142,191 @@ export async function getEmployeeAnalytics(employeeId: string, start: Date, end:
     orderBy: { date: "asc" },
   });
   return rows;
+}
+
+function daysInRange(range: "daily" | "weekly" | "monthly"): number {
+  if (range === "daily") return 1;
+  if (range === "monthly") return 30;
+  return 7;
+}
+
+interface TrendPoint {
+  date: string; // YYYY-MM-DD (UTC)
+  emailsReceived: number;
+  emailsReplied: number;
+  avgReplyTimeSec: number | null;
+  avgProductivityScore: number | null;
+}
+
+/**
+ * Company-wide day-by-day trend series for the Admin Dashboard's "Daily /
+ * Weekly / Monthly trends" chart. Was previously backed by nothing — the
+ * dashboard rendered today's point-in-time counts as a flat bar chart and
+ * left a comment noting there was no real time-series endpoint. This
+ * buckets DailyAnalytics (already populated per-employee per-day by
+ * runDailyAnalyticsRollup — see analyticsEngine.ts) by date across every
+ * employee in the company, one point per day.
+ *
+ * Note this is a rollup of *rollups*: DailyAnalytics.avgReplyTimeSec is
+ * itself an average of that employee's replies for the day, so
+ * avgReplyTimeSec here is an average-of-averages across employees, not a
+ * recomputed company-wide mean weighted by reply count. Good enough for a
+ * trend line; flagging in case someone later wants the weighted version for
+ * a precise metric elsewhere.
+ */
+export async function getCompanyTrends(companyId: string, range: "daily" | "weekly" | "monthly" = "weekly"): Promise<TrendPoint[]> {
+  const days = daysInRange(range);
+  const today = new Date();
+  const rangeStartDate = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - (days - 1)));
+
+  const employeeIds = (
+    (await prisma.employee.findMany({ where: { companyId }, select: { id: true } })) as EmployeeIdRow[]
+  ).map((e: EmployeeIdRow) => e.id);
+
+  const rows: (DailyAnalyticsRow & { date: Date })[] = employeeIds.length
+    ? ((await prisma.dailyAnalytics.findMany({
+        where: { employeeId: { in: employeeIds }, date: { gte: rangeStartDate } },
+        select: {
+          date: true,
+          emailsReceived: true,
+          emailsReplied: true,
+          avgReplyTimeSec: true,
+          productivityScore: true,
+        },
+      })) as unknown as (DailyAnalyticsRow & { date: Date })[])
+    : [];
+
+  const byDate = new Map<string, (DailyAnalyticsRow & { date: Date })[]>();
+  for (const row of rows) {
+    const key = row.date.toISOString().slice(0, 10);
+    const bucket = byDate.get(key) ?? [];
+    bucket.push(row);
+    byDate.set(key, bucket);
+  }
+
+  const points: TrendPoint[] = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(rangeStartDate.getTime() + i * 24 * 60 * 60 * 1000);
+    const key = d.toISOString().slice(0, 10);
+    const dayRows = byDate.get(key) ?? [];
+
+    const emailsReceived = dayRows.reduce((s, r) => s + r.emailsReceived, 0);
+    const emailsReplied = dayRows.reduce((s, r) => s + r.emailsReplied, 0);
+    const replyTimes = dayRows.map((r) => r.avgReplyTimeSec).filter((v): v is number => v !== null);
+    const scores = dayRows.map((r) => r.productivityScore).filter((v): v is number => v !== null);
+
+    points.push({
+      date: key,
+      emailsReceived,
+      emailsReplied,
+      avgReplyTimeSec: replyTimes.length ? Math.round(replyTimes.reduce((s, v) => s + v, 0) / replyTimes.length) : null,
+      avgProductivityScore: scores.length ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length) : null,
+    });
+  }
+  return points;
+}
+
+/**
+ * Live per-employee snapshot — the counterpart to getCompanyOverview, but
+ * scoped to one employee's mailbox instead of the whole company. Unlike
+ * getEmployeeAnalytics (which reads the historical DailyAnalytics rollup),
+ * this reads Email/GmailAccount directly so "active vs. closed
+ * conversations," "last sync," and "last reply time" are always live —
+ * DailyAnalytics only has a `date` granularity and doesn't carry
+ * firstResponseAt/lastReplyAt at all.
+ *
+ * "Pending" and "unanswered" are the same underlying count (not-yet-replied
+ * emails) under the two labels the spec uses interchangeably — there's no
+ * behavioral difference implied anywhere else in the spec, so rather than
+ * invent a second, arbitrary definition (e.g. "unanswered" = pending past
+ * some age threshold) this keeps them as one number under two keys. If a
+ * distinct SLA-breach definition is wanted later, pendingDurationSec
+ * (Email — see replyTracking.ts) is exactly what to threshold on.
+ */
+export async function getEmployeeOverview(employeeId: string) {
+  const { start: todayStart, end: todayEnd } = todayRange();
+  const now = new Date();
+  const weekStart = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+  const account = await prisma.gmailAccount.findUnique({
+    where: { employeeId },
+    select: { id: true, lastSyncedAt: true, provider: true, status: true },
+  });
+  if (!account) return null;
+
+  const [
+    emailsReceivedToday,
+    emailsRepliedToday,
+    emailsReceivedThisWeek,
+    emailsRepliedThisWeek,
+    pendingEmails,
+    unreadEmails,
+    readEmails,
+    activeConversations,
+    closedConversations,
+    replyStats,
+  ] = await Promise.all([
+    prisma.email.count({ where: { gmailAccountId: account.id, receivedAt: { gte: todayStart, lt: todayEnd } } }),
+    prisma.email.count({ where: { gmailAccountId: account.id, isReplied: true, repliedAt: { gte: todayStart, lt: todayEnd } } }),
+    prisma.email.count({ where: { gmailAccountId: account.id, receivedAt: { gte: weekStart } } }),
+    prisma.email.count({ where: { gmailAccountId: account.id, isReplied: true, repliedAt: { gte: weekStart } } }),
+    prisma.email.count({ where: { gmailAccountId: account.id, isReplied: false } }),
+    prisma.email.count({ where: { gmailAccountId: account.id, isRead: false } }),
+    prisma.email.count({ where: { gmailAccountId: account.id, isRead: true } }),
+    // "Conversation" = thread. Distinct threadIds among not-yet-replied vs.
+    // replied emails — an email with no threadId (manual/pasted, or a
+    // provider that never set one) counts as its own single-message thread
+    // via its own id, so it isn't silently dropped from either count.
+    prisma.email.findMany({
+      where: { gmailAccountId: account.id, isReplied: false },
+      select: { id: true, threadId: true },
+    }),
+    prisma.email.findMany({
+      where: { gmailAccountId: account.id, isReplied: true },
+      select: { id: true, threadId: true },
+    }),
+    prisma.email.aggregate({
+      where: { gmailAccountId: account.id, isReplied: true, replyTimeSec: { not: null } },
+      _avg: { replyTimeSec: true },
+    }),
+  ]);
+
+  const activeThreadIds = new Set(activeConversations.map((e) => e.threadId ?? e.id));
+  const closedThreadIds = new Set(closedConversations.map((e) => e.threadId ?? e.id));
+
+  const lastReply = await prisma.email.findFirst({
+    where: { gmailAccountId: account.id, lastReplyAt: { not: null } },
+    orderBy: { lastReplyAt: "desc" },
+    select: { lastReplyAt: true },
+  });
+
+  // avgReplyTimeSec and firstResponseTimeSec are the same number today:
+  // Email.replyTimeSec is defined (see recordReply in replyTracking.ts) as
+  // firstResponseAt - receivedAt, i.e. it *is* first-response time, not a
+  // running average across every reply in a thread. Not duplicating the
+  // query under a second label to avoid implying they're independently
+  // measured — if "average reply time across all replies in a thread"
+  // becomes a distinct requirement later, that needs its own column (the
+  // Reply model, not Email, would be the source for it).
+  const avgReplyTimeSec = replyStats._avg.replyTimeSec !== null ? Math.round(replyStats._avg.replyTimeSec) : null;
+
+  return {
+    lastSync: account.lastSyncedAt,
+    provider: account.provider,
+    emailsReceivedToday,
+    emailsRepliedToday,
+    emailsReceivedThisWeek,
+    emailsRepliedThisWeek,
+    pendingEmails,
+    unansweredEmails: pendingEmails,
+    unreadEmails,
+    readEmails,
+    activeConversations: activeThreadIds.size,
+    closedConversations: closedThreadIds.size,
+    avgReplyTimeSec,
+    firstResponseTimeSec: avgReplyTimeSec,
+    lastReplyAt: lastReply?.lastReplyAt ?? null,
+  };
 }
 
 function rangeStart(range: "daily" | "weekly" | "monthly"): Date {

@@ -129,6 +129,12 @@ export interface GmailStatus {
   email: string | null;
   provider: "gmail" | "imap" | "manual" | null;
   googleConfigured: boolean;
+  // Conditional Sending: only a connected Gmail account can send through
+  // MailPilot. IMAP/manual accounts are read-only — sendDisabledMessage is
+  // set (and canSend is false) whenever Reply/Compose/Forward/Send should
+  // be hidden or disabled in the UI.
+  canSend: boolean;
+  sendDisabledMessage: string | null;
 }
 
 export const gmailApi = {

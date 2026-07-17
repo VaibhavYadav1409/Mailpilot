@@ -1,8 +1,15 @@
 import { prisma } from "../lib/db";
 import { getValidAccessToken } from "./gmailAccountService";
-import { fetchImapMessages } from "./imapSync";
+import { fetchImapMessages, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority } from "./aiPipeline";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
+import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
+
+/** A Gmail Sent-labeled message, reduced to just what thread-based reply matching needs. */
+interface GmailSentMeta {
+  threadId: string;
+  internalDate: Date;
+}
 
 interface ParsedAttachment {
   filename: string;
@@ -71,6 +78,43 @@ async function fetchGmailAttachment(messageId: string, attachmentId: string, acc
   return Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
+/**
+ * Lists message ids matching a Gmail search query, paginating through up to
+ * `maxResults` ids. Shared by the inbox listing (below) and the Sent-label
+ * listing used for reply detection, since both are "give me ids for this
+ * query" with the same shape of request.
+ */
+async function listGmailMessageIds(query: string, accessToken: string, maxResults = 100): Promise<string[]> {
+  const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+  listUrl.searchParams.set("maxResults", String(maxResults));
+  listUrl.searchParams.set("includeSpamTrash", "false");
+  listUrl.searchParams.set("q", query);
+
+  const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!listRes.ok) throw new Error(`Failed to list Gmail messages: ${await listRes.text()}`);
+  const { messages = [] } = (await listRes.json()) as { messages?: { id: string }[] };
+  return messages.map((m) => m.id);
+}
+
+/**
+ * Fetches just the threadId/internalDate for a Sent-labeled Gmail message —
+ * used exclusively for reply detection (matchGmailReplies), so there's no
+ * need to pull the full body/headers the way fetchGmailMessage does for
+ * inbound mail.
+ */
+async function fetchGmailSentMeta(id: string, accessToken: string): Promise<GmailSentMeta | null> {
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=minimal`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) return null;
+  const msg = (await res.json()) as any;
+  if (!msg.threadId) return null;
+  return {
+    threadId: msg.threadId,
+    internalDate: msg.internalDate ? new Date(parseInt(msg.internalDate, 10)) : new Date(),
+  };
+}
+
 async function fetchGmailMessage(id: string, accessToken: string): Promise<ParsedMessage | null> {
   const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -132,28 +176,26 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
   if (account.provider === "MANUAL") return { synced: 0 };
 
   let parsedMessages: ParsedMessage[] = [];
+  // Populated below for GMAIL accounts, used in the reply-detection phase
+  // after inbound sync so we don't have to recompute the access token/window.
+  let gmailAccessToken: string | null = null;
+  let gmailSinceEpochSec = 0;
 
   if (account.provider === "GMAIL") {
     const accessToken = await getValidAccessToken(employeeId);
     if (!accessToken) return { synced: 0 };
+    gmailAccessToken = accessToken;
 
-    const sinceEpochSec = account.lastSyncedAt
+    gmailSinceEpochSec = account.lastSyncedAt
       ? Math.floor(account.lastSyncedAt.getTime() / 1000)
       : Math.floor((Date.now() - 1000 * 60 * 60 * 24 * 30) / 1000); // first sync: last 30 days
 
-    const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
-    listUrl.searchParams.set("maxResults", "100");
-    listUrl.searchParams.set("includeSpamTrash", "false");
-    listUrl.searchParams.set("q", `after:${sinceEpochSec}`);
-
-    const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!listRes.ok) throw new Error(`Failed to list Gmail messages: ${await listRes.text()}`);
-    const { messages = [] } = (await listRes.json()) as { messages?: { id: string }[] };
+    const messageIds = await listGmailMessageIds(`after:${gmailSinceEpochSec}`, accessToken);
 
     const BATCH_SIZE = 10;
-    for (let i = 0; i < messages.length; i += BATCH_SIZE) {
-      const batch = messages.slice(i, i + BATCH_SIZE);
-      const fetched = await Promise.all(batch.map(({ id }) => fetchGmailMessage(id, accessToken)));
+    for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
+      const batch = messageIds.slice(i, i + BATCH_SIZE);
+      const fetched = await Promise.all(batch.map((id) => fetchGmailMessage(id, accessToken)));
       for (const m of fetched) if (m) parsedMessages.push(m);
     }
   } else {
@@ -232,6 +274,47 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
     );
   }
 
+  // Reply detection: look at what this employee sent (Gmail's Sent label,
+  // or the IMAP account's Sent/Sent Items folder) and match it back to
+  // inbound emails it answered. Candidates are every Email row on this
+  // account — not just unreplied ones — since a thread can get more than
+  // one reply over time and lastReplyAt should keep moving forward.
+  try {
+    const candidates: ReplyCandidate[] = await prisma.email.findMany({
+      where: { gmailAccountId: account.id },
+      select: { id: true, gmailMessageId: true, threadId: true, receivedAt: true },
+    });
+
+    let matches: Map<string, Date[]>;
+
+    if (account.provider === "GMAIL" && gmailAccessToken) {
+      const sentIds = await listGmailMessageIds(`in:sent after:${gmailSinceEpochSec}`, gmailAccessToken);
+      const sentMeta: GmailSentMeta[] = [];
+      const BATCH_SIZE = 10;
+      for (let i = 0; i < sentIds.length; i += BATCH_SIZE) {
+        const batch = sentIds.slice(i, i + BATCH_SIZE);
+        const fetched = await Promise.all(batch.map((id) => fetchGmailSentMeta(id, gmailAccessToken!)));
+        for (const m of fetched) if (m) sentMeta.push(m);
+      }
+      matches = matchGmailReplies(sentMeta, candidates);
+    } else if (account.provider === "IMAP") {
+      const sentMessages = await fetchImapSentMessages(account);
+      matches = matchImapReplies(sentMessages, candidates);
+    } else {
+      matches = new Map();
+    }
+
+    for (const [emailId, timestamps] of matches) {
+      await recordReply(emailId, timestamps);
+    }
+  } catch (e) {
+    // Reply detection is a "nice to have" layered on top of inbox sync, not
+    // a blocker for it — a failure here shouldn't prevent the inbox sync
+    // that already ran above from being marked complete.
+    console.error(`[replyTracking] failed to detect replies for account ${account.id}:`, e);
+  }
+
+  await refreshPendingDurations(account.id);
   await prisma.gmailAccount.update({ where: { id: account.id }, data: { lastSyncedAt: new Date() } });
 
   return { synced };

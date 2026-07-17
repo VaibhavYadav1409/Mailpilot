@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/db";
 import { requireAuth } from "../middleware/auth";
 import { requireMinRole, canActOnEmployee } from "../middleware/rbac";
-import { getCompanyOverview, getDepartmentAnalytics, getEmployeeAnalytics, getLeaderboard } from "../services/analyticsQuery";
+import { getCompanyOverview, getCompanyTrends, getDepartmentAnalytics, getEmployeeAnalytics, getEmployeeOverview, getLeaderboard } from "../services/analyticsQuery";
 import { runDailyAnalyticsRollup } from "../services/analyticsEngine";
 
 export const analyticsRouter = Router();
@@ -23,6 +23,22 @@ function resolveRange(q: { start?: Date; end?: Date }) {
 analyticsRouter.get("/company/overview", requireAuth, requireMinRole("MANAGER"), async (req, res) => {
   const overview = await getCompanyOverview(req.user!.companyId);
   return res.json(overview);
+});
+
+/**
+ * Company-wide day-by-day trend series — backs the Admin Dashboard's
+ * "Daily/Weekly/Monthly trends" chart. Manager and above, same scoping as
+ * the overview route above.
+ */
+const trendsQuerySchema = z.object({
+  range: z.enum(["daily", "weekly", "monthly"]).default("weekly"),
+});
+analyticsRouter.get("/company/trends", requireAuth, requireMinRole("MANAGER"), async (req, res) => {
+  const parsed = trendsQuerySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid range" });
+
+  const trends = await getCompanyTrends(req.user!.companyId, parsed.data.range);
+  return res.json(trends);
 });
 
 /** Department rollup — Managers can only view their own department; Admin+ can view any department in their company. */
@@ -59,6 +75,22 @@ analyticsRouter.get("/employees/:id", requireAuth, async (req, res) => {
   const { start, end } = resolveRange(parsed.data);
   const rows = await getEmployeeAnalytics(req.params.id, start, end);
   return res.json({ employeeId: req.params.id, range: { start, end }, days: rows });
+});
+
+/**
+ * Live per-employee snapshot (last sync, active/closed conversations,
+ * first response time, etc.) — the counterpart to /company/overview, scoped
+ * to one employee. Same access rule as the historical /employees/:id route
+ * above. Read live from Email/GmailAccount rather than the DailyAnalytics
+ * rollup — see getEmployeeOverview in analyticsQuery.ts for why.
+ */
+analyticsRouter.get("/employees/:id/overview", requireAuth, async (req, res) => {
+  const allowed = await canActOnEmployee(req.user!, req.params.id);
+  if (!allowed) return res.status(403).json({ error: "You do not have permission to view this employee" });
+
+  const overview = await getEmployeeOverview(req.params.id);
+  if (!overview) return res.status(404).json({ error: "No mail account connected for this employee" });
+  return res.json(overview);
 });
 
 /**

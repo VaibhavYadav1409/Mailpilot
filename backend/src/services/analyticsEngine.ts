@@ -52,7 +52,7 @@ export async function computeEmployeeDailyAnalytics(employeeId: string, date: Da
   const gmailAccount = await prisma.gmailAccount.findUnique({ where: { employeeId } });
   if (!gmailAccount) return null;
 
-  const [emailsReceived, emailsRead, emailsReplied, replies, aiSuggestions] = await Promise.all([
+  const [emailsReceived, emailsRead, emailsReplied, repliedEmails, replies, aiSuggestions] = await Promise.all([
     prisma.email.count({
       where: { gmailAccountId: gmailAccount.id, receivedAt: { gte: start, lt: end } },
     }),
@@ -62,6 +62,23 @@ export async function computeEmployeeDailyAnalytics(employeeId: string, date: Da
     prisma.email.count({
       where: { gmailAccountId: gmailAccount.id, receivedAt: { gte: start, lt: end }, isReplied: true },
     }),
+    // Reply-time source of truth: Email.replyTimeSec, populated by
+    // recordReply() (services/replyTracking.ts) from BOTH sendReply
+    // (MailPilot-sent) and sync-detected replies (Gmail Sent label / IMAP
+    // Sent folder). Reading from `replies` (below) alone would silently
+    // exclude IMAP employees, who can't send through MailPilot at all and
+    // would otherwise always show a null avg reply time.
+    prisma.email.findMany({
+      where: {
+        gmailAccountId: gmailAccount.id,
+        receivedAt: { gte: start, lt: end },
+        isReplied: true,
+        replyTimeSec: { not: null },
+      },
+      select: { replyTimeSec: true },
+    }) as Promise<{ replyTimeSec: number | null }[]>,
+    // Still needed for the manual/AI reply split, since that distinction
+    // only exists for replies actually sent through MailPilot.
     prisma.reply.findMany({
       where: { employeeId, sentAt: { gte: start, lt: end } },
       select: { replyTimeSec: true, wasAIDraft: true },
@@ -79,12 +96,11 @@ export async function computeEmployeeDailyAnalytics(employeeId: string, date: Da
 
   const manualReplies = replies.filter((r: { wasAIDraft: boolean }) => !r.wasAIDraft).length;
   const aiReplies = replies.filter((r: { wasAIDraft: boolean }) => r.wasAIDraft).length;
+  const replyTimes = repliedEmails
+    .map((e) => e.replyTimeSec)
+    .filter((v): v is number => v !== null);
   const avgReplyTimeSec =
-    replies.length > 0
-      ? Math.round(
-          replies.reduce((sum: number, r: { replyTimeSec: number }) => sum + r.replyTimeSec, 0) / replies.length,
-        )
-      : null;
+    replyTimes.length > 0 ? Math.round(replyTimes.reduce((sum, v) => sum + v, 0) / replyTimes.length) : null;
   const aiAcceptanceRate =
     aiSuggestions.length > 0
       ? aiSuggestions.filter((a: { accepted: boolean | null }) => a.accepted).length / aiSuggestions.length
