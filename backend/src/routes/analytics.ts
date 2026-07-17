@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/db";
 import { requireAuth } from "../middleware/auth";
 import { requireMinRole, canActOnEmployee } from "../middleware/rbac";
-import { getCompanyOverview, getCompanyTrends, getDepartmentAnalytics, getEmployeeAnalytics, getEmployeeOverview, getLeaderboard } from "../services/analyticsQuery";
+import { getCompanyOverview, getCompanyTrends, getDepartmentAnalytics, getEmployeeAnalytics, getEmployeeOverview, getEmployeeEmailList, getLeaderboard } from "../services/analyticsQuery";
 import { runDailyAnalyticsRollup } from "../services/analyticsEngine";
 
 export const analyticsRouter = Router();
@@ -91,6 +91,29 @@ analyticsRouter.get("/employees/:id/overview", requireAuth, async (req, res) => 
   const overview = await getEmployeeOverview(req.params.id);
   if (!overview) return res.status(404).json({ error: "No mail account connected for this employee" });
   return res.json(overview);
+});
+
+const emailListQuerySchema = z.object({
+  status: z.enum(["pending", "replied"]),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().min(1).max(50).default(20),
+});
+
+/**
+ * Subject/sender/date list backing the Pending/Replied counts in the admin
+ * employee table — same RBAC as /overview above. Deliberately thin: no
+ * bodyText/snippet, see getEmployeeEmailList's doc comment for why.
+ */
+analyticsRouter.get("/employees/:id/emails", requireAuth, async (req, res) => {
+  const allowed = await canActOnEmployee(req.user!, req.params.id);
+  if (!allowed) return res.status(403).json({ error: "You do not have permission to view this employee" });
+
+  const parsed = emailListQuerySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid query params" });
+
+  const result = await getEmployeeEmailList(req.params.id, parsed.data.status, parsed.data.limit, parsed.data.cursor);
+  if (!result) return res.status(404).json({ error: "No mail account connected for this employee" });
+  return res.json(result);
 });
 
 /**

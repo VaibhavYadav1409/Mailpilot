@@ -329,6 +329,47 @@ export async function getEmployeeOverview(employeeId: string) {
   };
 }
 
+/**
+ * Subject/sender/date list of an employee's pending or replied emails, for
+ * the admin dashboard's expanded row view. Deliberately excludes
+ * bodyText/snippet — the rest of this file only ever exposes aggregated
+ * counts/timings to admins/managers (see the ownership comment in
+ * routes/emails.ts: raw inbox content is employee-only). This is a
+ * narrow, explicit exception that surfaces just enough to identify *which*
+ * email is pending/replied, not what it says.
+ */
+export async function getEmployeeEmailList(
+  employeeId: string,
+  status: "pending" | "replied",
+  limit = 20,
+  cursor?: string
+) {
+  const account = await prisma.gmailAccount.findFirst({
+    where: { employeeId, isActive: true },
+    select: { id: true },
+  });
+  if (!account) return null;
+
+  const emails = await prisma.email.findMany({
+    where: { gmailAccountId: account.id, isTrashed: false, isReplied: status === "replied" },
+    orderBy: status === "replied" ? { repliedAt: "desc" } : { receivedAt: "desc" },
+    take: limit + 1,
+    ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+    select: {
+      id: true,
+      subject: true,
+      fromAddress: true,
+      fromName: true,
+      receivedAt: true,
+      repliedAt: true,
+      pendingDurationSec: true,
+    },
+  });
+
+  const nextCursor = emails.length > limit ? emails[limit].id : null;
+  return { emails: emails.slice(0, limit), nextCursor };
+}
+
 function rangeStart(range: "daily" | "weekly" | "monthly"): Date {
   const now = new Date();
   if (range === "daily") return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));

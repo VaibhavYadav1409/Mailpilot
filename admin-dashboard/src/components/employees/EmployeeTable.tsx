@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck } from 'lucide-react';
-import { useState, Fragment } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
 
@@ -22,6 +22,10 @@ export const EmployeeTable = () => {
   const [search, setSearch] = useState('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedTab, setExpandedTab] = useState<{ id: string; tab: 'overview' | 'pending' | 'replied' }>({
+    id: '',
+    tab: 'overview',
+  });
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
 
@@ -102,7 +106,11 @@ export const EmployeeTable = () => {
             {filteredEmployees?.map((employee) => (
               <Fragment key={employee.id}>
               <tr className="hover:bg-gray-50/60 dark:hover:bg-gray-900/40 transition-colors group">
-                <td className="px-6 py-4 cursor-pointer" onClick={() => setExpandedId(expandedId === employee.id ? null : employee.id)}>
+                <td className="px-6 py-4 cursor-pointer" onClick={() => {
+                  const willExpand = expandedId !== employee.id;
+                  setExpandedId(willExpand ? employee.id : null);
+                  if (willExpand) setExpandedTab({ id: employee.id, tab: 'overview' });
+                }}>
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-primary/10 ring-1 ring-primary/15 flex items-center justify-center text-primary font-bold text-xs shrink-0">
                       {employee.firstName[0]}
@@ -153,16 +161,33 @@ export const EmployeeTable = () => {
                 </td>
                 <td className="px-6 py-4">
                   {employee.gmailAccount ? (
-                    <span className={cn('text-sm font-tabular font-medium', employee.inboxCounts.pending > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400')}>
+                    <button
+                      onClick={() => {
+                        setExpandedId(employee.id);
+                        setExpandedTab({ id: employee.id, tab: 'pending' });
+                      }}
+                      className={cn(
+                        'text-sm font-tabular font-medium hover:underline underline-offset-2',
+                        employee.inboxCounts.pending > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400'
+                      )}
+                    >
                       {employee.inboxCounts.pending}
-                    </span>
+                    </button>
                   ) : (
                     <span className="text-sm text-gray-400">—</span>
                   )}
                 </td>
                 <td className="px-6 py-4">
                   {employee.gmailAccount ? (
-                    <span className="text-sm font-tabular text-gray-500">{employee.inboxCounts.replied}</span>
+                    <button
+                      onClick={() => {
+                        setExpandedId(employee.id);
+                        setExpandedTab({ id: employee.id, tab: 'replied' });
+                      }}
+                      className="text-sm font-tabular text-gray-500 hover:underline underline-offset-2"
+                    >
+                      {employee.inboxCounts.replied}
+                    </button>
                   ) : (
                     <span className="text-sm text-gray-400">—</span>
                   )}
@@ -223,7 +248,10 @@ export const EmployeeTable = () => {
               {expandedId === employee.id && (
                 <tr>
                   <td colSpan={8} className="px-6 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
-                    <EmployeeOverviewPanel employeeId={employee.id} />
+                    <EmployeeOverviewPanel
+                      employeeId={employee.id}
+                      initialTab={expandedTab.id === employee.id ? expandedTab.tab : 'overview'}
+                    />
                   </td>
                 </tr>
               )}
@@ -272,8 +300,27 @@ function formatTimestamp(iso: string | null) {
  * getEmployeeOverview), which reads Email/GmailAccount directly rather than
  * the DailyAnalytics rollup, so this is always current as of the last sync
  * — not just as of the last daily rollup job run.
+ *
+ * The Pending/Replied tabs go one level deeper via a separate endpoint
+ * (getEmployeeEmailList) — deliberately thin (subject/sender/date only, no
+ * body/snippet), since raw email content stays employee-only elsewhere in
+ * this app; this is a narrow, explicit exception just to identify which
+ * email a count refers to.
  */
-function EmployeeOverviewPanel({ employeeId }: { employeeId: string }) {
+function EmployeeOverviewPanel({
+  employeeId,
+  initialTab = 'overview',
+}: {
+  employeeId: string;
+  initialTab?: 'overview' | 'pending' | 'replied';
+}) {
+  const [tab, setTab] = useState<'overview' | 'pending' | 'replied'>(initialTab);
+
+  // Re-sync if the user clicks a different count cell while this row is already expanded.
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
+
   const { data, isLoading, error } = useQuery({
     queryKey: ['employee-overview', employeeId],
     queryFn: async () => {
@@ -307,13 +354,93 @@ function EmployeeOverviewPanel({ employeeId }: { employeeId: string }) {
   ];
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3 py-3">
-      {stats.map((s) => (
-        <div key={s.label}>
-          <div className="text-[11px] uppercase tracking-wide text-gray-400 font-mono">{s.label}</div>
-          <div className="text-sm font-medium mt-0.5">{s.value}</div>
+    <div className="py-3">
+      <div className="flex items-center gap-1 mb-3 border-b border-gray-100 dark:border-gray-800">
+        {(['overview', 'pending', 'replied'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={cn(
+              'px-3 py-2 text-xs font-medium capitalize border-b-2 -mb-px transition-colors',
+              tab === t
+                ? 'border-primary text-primary'
+                : 'border-transparent text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+            )}
+          >
+            {t === 'overview' ? 'Overview' : t === 'pending' ? `Pending (${data.pendingEmails})` : 'Replied'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'overview' && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3">
+          {stats.map((s) => (
+            <div key={s.label}>
+              <div className="text-[11px] uppercase tracking-wide text-gray-400 font-mono">{s.label}</div>
+              <div className="text-sm font-medium mt-0.5">{s.value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(tab === 'pending' || tab === 'replied') && (
+        <EmployeeEmailList employeeId={employeeId} status={tab} />
+      )}
+    </div>
+  );
+}
+
+interface EmployeeEmailListItem {
+  id: string;
+  subject: string | null;
+  fromAddress: string;
+  fromName: string | null;
+  receivedAt: string;
+  repliedAt: string | null;
+  pendingDurationSec: number | null;
+}
+
+function EmployeeEmailList({ employeeId, status }: { employeeId: string; status: 'pending' | 'replied' }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['employee-emails', employeeId, status],
+    queryFn: async () => {
+      const { data } = await api.get<{ emails: EmployeeEmailListItem[]; nextCursor: string | null }>(
+        `/analytics/employees/${employeeId}/emails`,
+        { params: { status, limit: 20 } }
+      );
+      return data;
+    },
+  });
+
+  if (isLoading) return <div className="text-sm text-gray-400 py-2">Loading emails…</div>;
+  if (error) return <div className="text-sm text-gray-400 py-2">Couldn't load emails.</div>;
+  if (!data || data.emails.length === 0) {
+    return <div className="text-sm text-gray-400 py-2">No {status} emails.</div>;
+  }
+
+  return (
+    <div className="divide-y divide-gray-100 dark:divide-gray-800">
+      {data.emails.map((e) => (
+        <div key={e.id} className="py-2.5 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-sm font-medium truncate">{e.subject || '(no subject)'}</div>
+            <div className="text-xs text-gray-500 truncate">{e.fromName ? `${e.fromName} · ${e.fromAddress}` : e.fromAddress}</div>
+          </div>
+          <div className="text-xs text-gray-400 font-tabular shrink-0 text-right">
+            {status === 'pending' ? (
+              <>
+                <div>{new Date(e.receivedAt).toLocaleString()}</div>
+                {e.pendingDurationSec != null && <div>waiting {formatSeconds(e.pendingDurationSec)}</div>}
+              </>
+            ) : (
+              <div>replied {formatTimestamp(e.repliedAt)}</div>
+            )}
+          </div>
         </div>
       ))}
+      {data.nextCursor && (
+        <div className="text-xs text-gray-400 pt-2">Showing most recent 20 — more exist.</div>
+      )}
     </div>
   );
 }
