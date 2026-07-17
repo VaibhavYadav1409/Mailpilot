@@ -92,7 +92,7 @@ model Employee {
   lastActiveAt    DateTime?
   timezone        String         @default("UTC")
 
-  gmailAccount    GmailAccount?
+  gmailAccounts   GmailAccount[]
   sessions        Session[]
   auditLogs       AuditLog[]
   aiActions       AIAction[]
@@ -144,7 +144,12 @@ enum MailAccountProvider {
 
 model GmailAccount {
   id              String                 @id @default(uuid())
-  employeeId      String                 @unique
+  // NOT unique: an employee can have more than one mail account row over
+  // time (account switching — e.g. IMAP first, then Gmail later). Exactly
+  // one row per employee should have isActive=true at any moment; that's
+  // the one sync/send/status actually operate on. Inactive rows are kept
+  // (not deleted) so their already-synced Email history stays intact.
+  employeeId      String
   employee        Employee               @relation(fields: [employeeId], references: [id])
   companyId       String
   company         Company                @relation(fields: [companyId], references: [id])
@@ -155,6 +160,7 @@ model GmailAccount {
   refreshToken    String                 // AES-256-GCM encrypted
   tokenExpiresAt  DateTime
   status          GmailConnectionStatus  @default(CONNECTED)
+  isActive        Boolean                @default(true)
   lastSyncedAt    DateTime?
 
   // IMAP/SMTP connection details (null for GMAIL/MANUAL providers)
@@ -173,6 +179,7 @@ model GmailAccount {
   updatedAt       DateTime               @updatedAt
 
   @@index([companyId, status])
+  @@index([employeeId, isActive])
 }
 
 // ---------------------------------------------------------------------------

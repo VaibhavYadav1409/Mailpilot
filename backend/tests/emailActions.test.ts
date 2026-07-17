@@ -52,6 +52,7 @@ describe("emailActions", () => {
       employeeId,
       emailAddress: "employee@company.com",
       provider: "GMAIL",
+      isActive: true,
     },
   };
 
@@ -83,7 +84,7 @@ describe("emailActions", () => {
     expect(result.id).toBe("reply-1");
   });
 
-  it("sends reply via SMTP successfully", async () => {
+  it("blocks sending for IMAP accounts (Conditional Sending — read-only in MailPilot)", async () => {
     const imapEmail = {
       ...mockEmail,
       gmailAccount: {
@@ -96,17 +97,12 @@ describe("emailActions", () => {
       },
     };
     vi.mocked(prisma.email.findUnique).mockResolvedValue(imapEmail as any);
-    mockSendMail.mockResolvedValue({});
-    vi.mocked(prisma.reply.create).mockResolvedValue({ id: "reply-smtp" } as any);
 
-    await sendReply(employeeId, emailId, body, { wasAIDraft: true, wasAIEdited: false });
+    await expect(sendReply(employeeId, emailId, body, { wasAIDraft: true, wasAIEdited: false }))
+      .rejects.toThrow(/not available for IMAP accounts/);
 
-    expect(mockSendMail).toHaveBeenCalledWith(expect.objectContaining({
-      to: imapEmail.fromAddress,
-      subject: "Re: Original Subject",
-      text: body,
-    }));
-    expect(prisma.reply.create).toHaveBeenCalled();
+    expect(mockSendMail).not.toHaveBeenCalled();
+    expect(prisma.reply.create).not.toHaveBeenCalled();
   });
 
   it("throws error if email does not belong to employee", async () => {
@@ -122,7 +118,7 @@ describe("emailActions", () => {
   it("throws error for MANUAL provider", async () => {
     vi.mocked(prisma.email.findUnique).mockResolvedValue({
       ...mockEmail,
-      gmailAccount: { employeeId, provider: "MANUAL" },
+      gmailAccount: { employeeId, provider: "MANUAL", isActive: true },
     } as any);
 
     await expect(sendReply(employeeId, emailId, body, { wasAIDraft: false, wasAIEdited: false }))

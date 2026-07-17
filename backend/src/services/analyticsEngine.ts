@@ -49,7 +49,7 @@ function computeProductivityScore(opts: {
 export async function computeEmployeeDailyAnalytics(employeeId: string, date: Date) {
   const { start, end } = dayRange(date);
 
-  const gmailAccount = await prisma.gmailAccount.findUnique({ where: { employeeId } });
+  const gmailAccount = await prisma.gmailAccount.findFirst({ where: { employeeId, isActive: true } });
   if (!gmailAccount) return null;
 
   const [emailsReceived, emailsRead, emailsReplied, repliedEmails, replies, aiSuggestions] = await Promise.all([
@@ -149,7 +149,7 @@ export async function computeEmployeeDailyAnalytics(employeeId: string, date: Da
  */
 export async function runDailyAnalyticsRollup(date: Date = new Date()) {
   const accounts = await prisma.gmailAccount.findMany({
-    where: { status: "CONNECTED" },
+    where: { status: "CONNECTED", isActive: true },
     select: { employeeId: true },
   });
 

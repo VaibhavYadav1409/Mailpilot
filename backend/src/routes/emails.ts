@@ -25,7 +25,7 @@ export const emailsRouter = Router();
  */
 
 async function getOwnGmailAccountOr404(employeeId: string) {
-  const account = await prisma.gmailAccount.findUnique({ where: { employeeId } });
+  const account = await prisma.gmailAccount.findFirst({ where: { employeeId, isActive: true } });
   if (!account) return null;
   return account;
 }

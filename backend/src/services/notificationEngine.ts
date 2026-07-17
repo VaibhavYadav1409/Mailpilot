@@ -58,7 +58,7 @@ async function checkEmployeeInactivity(companyId: string, rules: Required<Notifi
       companyId,
       status: { not: "SUSPENDED" },
       OR: [{ lastActiveAt: null }, { lastActiveAt: { lt: cutoff } }],
-      gmailAccount: { isNot: null }, // only flag employees actually expected to be working the inbox
+      gmailAccounts: { some: { isActive: true } }, // only flag employees actually expected to be working the inbox
     },
     select: { id: true, firstName: true, lastName: true },
   });
@@ -77,7 +77,7 @@ async function checkEmployeeInactivity(companyId: string, rules: Required<Notifi
 /** Employees sitting on more unreplied emails than the configured threshold. */
 async function checkPendingOverflow(companyId: string, rules: Required<NotificationRules>) {
   const accounts = await prisma.gmailAccount.findMany({
-    where: { companyId, status: "CONNECTED" },
+    where: { companyId, status: "CONNECTED", isActive: true },
     select: { id: true, employeeId: true },
   });
 

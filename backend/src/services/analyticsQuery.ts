@@ -42,7 +42,7 @@ export async function getCompanyOverview(companyId: string) {
   ] = await Promise.all([
     prisma.employee.count({ where: { companyId } }),
     prisma.employee.count({ where: { companyId, status: "ONLINE" } }),
-    prisma.gmailAccount.count({ where: { companyId, status: "CONNECTED" } }),
+    prisma.gmailAccount.count({ where: { companyId, status: "CONNECTED", isActive: true } }),
     prisma.email.count({
       where: { gmailAccount: { companyId }, receivedAt: { gte: start, lt: end } },
     }),
@@ -248,8 +248,8 @@ export async function getEmployeeOverview(employeeId: string) {
   const now = new Date();
   const weekStart = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
 
-  const account = await prisma.gmailAccount.findUnique({
-    where: { employeeId },
+  const account = await prisma.gmailAccount.findFirst({
+    where: { employeeId, isActive: true },
     select: { id: true, lastSyncedAt: true, provider: true, status: true },
   });
   if (!account) return null;

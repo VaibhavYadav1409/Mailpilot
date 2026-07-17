@@ -103,6 +103,15 @@ export async function sendReply(
   if (email.gmailAccount.employeeId !== employeeId) {
     throw new Error("This email does not belong to your connected mail account");
   }
+  if (!email.gmailAccount.isActive) {
+    // Account switching: this email was synced from a mailbox the employee
+    // has since moved away from (see isActive on GmailAccount). Sending
+    // would use the *currently* active account's credentials via
+    // getValidAccessToken(employeeId) below, which don't belong to this
+    // email's thread — so this has to be blocked rather than silently
+    // sending from the wrong mailbox.
+    throw new Error("This email is from a mail account that's no longer active. Reconnect it to reply.");
+  }
 
   const subject = email.subject ? `Re: ${email.subject.replace(/^Re:\s*/i, "")}` : "Re:";
 

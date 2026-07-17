@@ -69,8 +69,8 @@ gmailRouter.post("/disconnect", requireAuth, async (req, res) => {
 });
 
 gmailRouter.get("/status", requireAuth, async (req, res) => {
-  const account = await prisma.gmailAccount.findUnique({
-    where: { employeeId: req.user!.employeeId },
+  const account = await prisma.gmailAccount.findFirst({
+    where: { employeeId: req.user!.employeeId, isActive: true },
     select: { emailAddress: true, status: true, lastSyncedAt: true, provider: true },
   });
   const connected = !!account && account.status === "CONNECTED";

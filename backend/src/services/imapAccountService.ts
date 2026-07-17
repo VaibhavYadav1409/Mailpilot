@@ -1,6 +1,7 @@
 import { ImapFlow } from "imapflow";
 import { prisma } from "../lib/db";
 import { encryptToken } from "../lib/crypto";
+import { deactivateOtherAccounts } from "./gmailAccountService";
 
 export interface ImapConnectInput {
   email: string;
@@ -69,10 +70,10 @@ async function verifyImap(input: ImapConnectInput) {
 }
 
 /**
- * Connects (or re-connects) an employee's mailbox via IMAP/SMTP. Enforces
- * the same "exactly one mail account per employee" rule as Gmail — connecting
- * IMAP after a prior Gmail/manual account replaces it, matching how
- * connectGmailAccount's upsert-by-employeeId already behaves.
+ * Connects (or re-connects) an employee's mailbox via IMAP/SMTP. An
+ * employee can have other accounts on file already (a prior Gmail
+ * connection, say) — those stay as inactive history; this one becomes the
+ * new active account. See deactivateOtherAccounts in gmailAccountService.ts.
  */
 export async function connectImapAccount(employeeId: string, companyId: string, input: ImapConnectInput) {
   // Only IMAP (reading) is verified — SMTP is never used to send (see
@@ -87,55 +88,41 @@ export async function connectImapAccount(employeeId: string, companyId: string, 
     throw new Error(`${input.email} is already connected to a different employee. Disconnect it there first.`);
   }
 
-  const account = await prisma.gmailAccount.upsert({
-    where: { employeeId },
-    create: {
-      employeeId,
-      companyId,
-      provider: "IMAP",
-      emailAddress: input.email,
-      accessToken: encryptToken(input.imapPass),
-      refreshToken: encryptToken(input.smtpPass ?? ""), // refreshToken column is required; empty when no SMTP details were given
-      tokenExpiresAt: NEVER_EXPIRES,
-      status: "CONNECTED",
-      imapHost: input.imapHost,
-      imapPort: input.imapPort,
-      imapUser: input.imapUser,
-      imapSecure: input.imapSecure,
-      smtpHost: input.smtpHost,
-      smtpPort: input.smtpPort,
-      smtpUser: input.smtpUser,
-      smtpSecure: input.smtpSecure,
-      lastSyncedAt: null,
-    },
-    update: {
-      provider: "IMAP",
-      emailAddress: input.email,
-      accessToken: encryptToken(input.imapPass),
-      refreshToken: encryptToken(input.smtpPass ?? ""), // refreshToken column is required; empty when no SMTP details were given
-      tokenExpiresAt: NEVER_EXPIRES,
-      status: "CONNECTED",
-      imapHost: input.imapHost,
-      imapPort: input.imapPort,
-      imapUser: input.imapUser,
-      imapSecure: input.imapSecure,
-      smtpHost: input.smtpHost,
-      smtpPort: input.smtpPort,
-      smtpUser: input.smtpUser,
-      smtpSecure: input.smtpSecure,
-    },
-  });
+  const data = {
+    provider: "IMAP" as const,
+    emailAddress: input.email,
+    accessToken: encryptToken(input.imapPass),
+    refreshToken: encryptToken(input.smtpPass ?? ""), // refreshToken column is required; empty when no SMTP details were given
+    tokenExpiresAt: NEVER_EXPIRES,
+    status: "CONNECTED" as const,
+    isActive: true,
+    imapHost: input.imapHost,
+    imapPort: input.imapPort,
+    imapUser: input.imapUser,
+    imapSecure: input.imapSecure,
+    smtpHost: input.smtpHost,
+    smtpPort: input.smtpPort,
+    smtpUser: input.smtpUser,
+    smtpSecure: input.smtpSecure,
+  };
+
+  const account = existingForMailbox
+    ? await prisma.gmailAccount.update({ where: { id: existingForMailbox.id }, data })
+    : await prisma.gmailAccount.create({ data: { employeeId, companyId, lastSyncedAt: null, ...data } });
+
+  await deactivateOtherAccounts(employeeId, account.id);
 
   return { id: account.id, emailAddress: account.emailAddress, status: account.status };
 }
 
 /**
- * Ensures the employee has *some* mail account row to attach manually-pasted
- * emails to (Email.gmailAccountId is a required FK). Only used for the
- * "paste email manually" flow when no real account is connected yet.
+ * Ensures the employee has *some* active mail account row to attach
+ * manually-pasted emails to (Email.gmailAccountId is a required FK). Only
+ * used for the "paste email manually" flow when no real account is
+ * connected yet.
  */
 export async function getOrCreateManualAccount(employeeId: string, companyId: string) {
-  const existing = await prisma.gmailAccount.findUnique({ where: { employeeId } });
+  const existing = await prisma.gmailAccount.findFirst({ where: { employeeId, isActive: true } });
   if (existing) return existing;
 
   return prisma.gmailAccount.create({
@@ -148,6 +135,7 @@ export async function getOrCreateManualAccount(employeeId: string, companyId: st
       refreshToken: encryptToken(""),
       tokenExpiresAt: NEVER_EXPIRES,
       status: "CONNECTED",
+      isActive: true,
     },
   });
 }

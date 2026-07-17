@@ -171,7 +171,7 @@ async function fetchGmailMessage(id: string, accessToken: string): Promise<Parse
  * by POST /api/emails.
  */
 export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: number }> {
-  const account = await prisma.gmailAccount.findUnique({ where: { employeeId } });
+  const account = await prisma.gmailAccount.findFirst({ where: { employeeId, isActive: true } });
   if (!account || account.status !== "CONNECTED") return { synced: 0 };
   if (account.provider === "MANUAL") return { synced: 0 };
 

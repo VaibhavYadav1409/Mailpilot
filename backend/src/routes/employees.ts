@@ -23,8 +23,21 @@ const employeeSummary = {
   createdAt: true,
   departmentId: true,
   department: { select: { id: true, name: true } },
-  gmailAccount: { select: { emailAddress: true, status: true, lastSyncedAt: true } },
+  gmailAccounts: { where: { isActive: true }, take: 1, select: { emailAddress: true, status: true, lastSyncedAt: true } },
 } as const;
+
+// Employee.gmailAccounts is a one-to-many relation (an employee can have
+// switched accounts over time), but the admin dashboard only ever needs
+// "the one currently in use" — this flattens the (at most one, thanks to
+// the isActive:true filter in employeeSummary) selected row back to a
+// singular `gmailAccount` field so the frontend's existing
+// `employee.gmailAccount?.status` etc. keeps working unchanged.
+function withActiveGmailAccount<T extends { gmailAccounts?: unknown[] }>(
+  employee: T
+): Omit<T, "gmailAccounts"> & { gmailAccount: unknown } {
+  const { gmailAccounts, ...rest } = employee;
+  return { ...rest, gmailAccount: gmailAccounts?.[0] ?? null };
+}
 
 /**
  * GET / — list employees the caller is allowed to see.
@@ -38,7 +51,7 @@ employeesRouter.get("/", requireAuth, async (req, res) => {
     select: employeeSummary,
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
-  return res.json(employees);
+  return res.json(employees.map(withActiveGmailAccount));
 });
 
 employeesRouter.get("/:id", requireAuth, async (req, res) => {
@@ -61,7 +74,7 @@ employeesRouter.get("/:id", requireAuth, async (req, res) => {
     take: 30,
   });
 
-  return res.json({ ...employee, dailyAnalytics });
+  return res.json({ ...withActiveGmailAccount(employee), dailyAnalytics });
 });
 
 const createSchema = z.object({
@@ -129,7 +142,7 @@ employeesRouter.post("/", requireAuth, requireMinRole("ADMIN"), async (req, res)
 
   void sendTempPasswordEmail(employee.email, tempPassword, false);
 
-  return res.status(201).json({ employee, tempPassword });
+  return res.status(201).json({ employee: withActiveGmailAccount(employee), tempPassword });
 });
 
 const updateSchema = z.object({
@@ -178,7 +191,7 @@ employeesRouter.patch("/:id", requireAuth, requireMinRole("ADMIN"), async (req, 
   // open dashboards immediately, not just after their next poll).
   emitToCompany(req.user!.companyId, "employee:updated", { employeeId: employee.id, status: employee.status });
 
-  return res.json(employee);
+  return res.json(withActiveGmailAccount(employee));
 });
 
 /** POST /:id/reset-password — Admin+ only. Returns the new temp password once; it is never stored in plaintext. */
