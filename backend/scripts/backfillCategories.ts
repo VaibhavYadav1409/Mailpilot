@@ -12,15 +12,30 @@
  *
  * Usage:
  *   npx tsx scripts/backfillCategories.ts
+ *   npx tsx scripts/backfillCategories.ts --include-other
  *
- * Safe to re-run: it only processes rows where category is still null, so
- * re-running after a partial run (or after an interruption) just picks up
- * where it left off.
+ * Safe to re-run: by default it only processes rows where category is
+ * still null, so re-running after a partial run (or after an interruption)
+ * just picks up where it left off.
+ *
+ * --include-other also re-processes rows already labeled "Other". Before
+ * categorizeEmail's label matching was hardened to be case/whitespace
+ * insensitive, a model response like "Promotional" (instead of the exact
+ * string "Spam/Promotional") silently fell back to "Other" — so mail that
+ * really is promotional may be stuck under "Other" from a run before that
+ * fix. This flag re-classifies that bucket; leave it off for a normal
+ * incremental run since it re-spends an LLM call on every "Other" email,
+ * not just uncategorized ones.
  */
 import { PrismaClient } from "../src/generated/prisma";
 import { categorizeEmail } from "../src/services/aiPipeline";
 
 const prisma = new PrismaClient();
+
+const includeOther = process.argv.includes("--include-other");
+const whereClause = includeOther
+  ? { OR: [{ category: null }, { category: { label: "Other" } }] }
+  : { category: null };
 
 // Keep this modest — categorizeEmail calls out to an LLM per email, and
 // this may be sweeping up months of backlog across every employee at once.
@@ -57,25 +72,29 @@ async function processBatch(
 }
 
 async function main() {
-  const total = await prisma.email.count({ where: { category: null } });
-  console.log(`[backfill] ${total} uncategorized emails to process`);
+  const total = await prisma.email.count({ where: whereClause });
+  console.log(`[backfill] ${total} email(s) to process${includeOther ? " (including existing 'Other')" : ""}`);
   if (total === 0) {
-    console.log("[backfill] nothing to do — every email already has a category");
+    console.log("[backfill] nothing to do");
     return;
   }
 
   let totalOk = 0;
   let totalFailed = 0;
   let processedSoFar = 0;
+  let cursor: string | undefined;
 
   while (true) {
     const emails = await prisma.email.findMany({
-      where: { category: null },
+      where: whereClause,
+      orderBy: { id: "asc" },
       take: BATCH_SIZE,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
       select: { id: true, bodyText: true, gmailAccount: { select: { employeeId: true } } },
     });
 
     if (emails.length === 0) break;
+    cursor = emails[emails.length - 1].id;
 
     const { ok, failed } = await processBatch(emails, processedSoFar, total);
     totalOk += ok;

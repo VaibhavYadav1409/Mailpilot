@@ -32,6 +32,29 @@ export async function latestActionIds(emailId: string) {
   };
 }
 
+// Normalized (lowercased, trimmed) taxonomy string -> canonical label, so a
+// model response of "promotional", "Spam / Promotional", or "SPAM/PROMOTIONAL"
+// still resolves correctly instead of silently falling back to "Other". The
+// exact-string match this replaced meant any deviation in the model's casing
+// or spacing left genuinely promotional mail uncategorized — invisible to
+// the employee-app's "hide promotional from All" filter, since that filter
+// only strips emails already labeled exactly "Spam/Promotional".
+const NORMALIZED_TAXONOMY: Record<string, (typeof CATEGORY_TAXONOMY)[number]> = {};
+for (const label of CATEGORY_TAXONOMY) {
+  NORMALIZED_TAXONOMY[label.toLowerCase().trim()] = label;
+}
+// A few common ways a model might phrase the promotional category without
+// matching the canonical string at all.
+for (const alias of ["promotional", "promotions", "spam", "spam / promotional", "marketing", "newsletter"]) {
+  NORMALIZED_TAXONOMY[alias] = "Spam/Promotional";
+}
+
+function resolveCategoryLabel(raw: unknown): (typeof CATEGORY_TAXONOMY)[number] {
+  if (typeof raw !== "string") return "Other";
+  const normalized = raw.toLowerCase().trim();
+  return NORMALIZED_TAXONOMY[normalized] ?? "Other";
+}
+
 /**
  * AI categorization — runs automatically right after sync so the inbox is
  * pre-labeled before the employee opens it.
@@ -52,7 +75,7 @@ export async function categorizeEmail(employeeId: string, emailId: string, threa
   let confidence = 0.5;
   try {
     const parsed = JSON.parse(response.choices[0]?.message.content ?? "{}");
-    if (CATEGORY_TAXONOMY.includes(parsed.label)) label = parsed.label;
+    label = resolveCategoryLabel(parsed.label);
     confidence = Math.max(0, Math.min(1, parsed.confidence ?? 0.5));
   } catch {
     // Fall back to "Other" / 0.5 rather than throwing — a bad categorization
