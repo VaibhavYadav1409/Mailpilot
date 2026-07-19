@@ -13,7 +13,7 @@ import {
   Mail, LogOut, Loader2, RefreshCw, Inbox,
   Eye, EyeOff, Send, MessageSquare, MessageSquareOff,
   CheckCircle, AlertCircle, User, X, PlusCircle,
-  Star, Trash2, Reply, CornerUpLeft, Search, Tag, Settings, Paperclip, ChevronDown, ChevronUp, Mails
+  Star, Trash2, Reply, CornerUpLeft, Search, Tag, Settings, Paperclip, ChevronDown, ChevronUp, Mails, ArrowLeft
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
@@ -209,6 +209,10 @@ export default function Home() {
   };
 
   const handleSelectEmail = (id: string, isRead: boolean) => {
+    // Push a history entry so the device/browser back button (and the
+    // in-app Back button on mobile, which just calls history.back()) closes
+    // the open email and returns to the list instead of leaving the app.
+    if (!selectedId) window.history.pushState({ mailpilotView: "email" }, "");
     setSelectedId(id);
     setShowManual(false);
     setShowReply(false);
@@ -218,6 +222,20 @@ export default function Home() {
       patchMutation.mutate({ id, data: { isRead: true } });
     }
   };
+
+  // Let the browser/device Back button close an open email or the "paste
+  // email" form and return to the list, rather than navigating away from
+  // the app entirely (the previous behavior, since neither view had its own
+  // route or way back).
+  useEffect(() => {
+    const onPopState = () => {
+      setSelectedId(null);
+      setShowManual(false);
+      setShowReply(false);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const selectedListItem: EmailRecord | null = emails.data?.find((e) => e.id === selectedId) ?? null;
 
@@ -374,8 +392,11 @@ export default function Home() {
       <ImapConnectDialog open={imapOpen} onOpenChange={setImapOpen} onSuccess={handleImapSuccess} />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <div className="w-80 shrink-0 border-r flex flex-col bg-card">
+        {/* Sidebar — on mobile this is the only pane shown until an email
+            (or the paste-email form) is opened, at which point it's hidden
+            in favor of the detail pane's Back button; both panes show
+            side-by-side from md breakpoint up regardless of selection. */}
+        <div className={`${selectedEmail || showManual ? "hidden md:flex" : "flex"} w-full md:w-80 shrink-0 border-r flex-col bg-card`}>
           <div className="p-3 border-b">
             <div className="relative">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -407,7 +428,7 @@ export default function Home() {
 
           {!isConnected && (
             <div className="px-3 pt-3">
-              <Button size="sm" className="w-full gap-2" onClick={() => setShowManual(true)}>
+              <Button size="sm" className="w-full gap-2" onClick={() => { window.history.pushState({ mailpilotView: "manual" }, ""); setShowManual(true); }}>
                 <PlusCircle className="w-4 h-4" /> Paste Email Manually
               </Button>
             </div>
@@ -466,12 +487,20 @@ export default function Home() {
         </div>
 
         {/* Main content */}
-        <div className="flex-1 overflow-y-auto bg-background">
+        <div className={`${selectedEmail || showManual ? "flex" : "hidden md:flex"} flex-1 overflow-y-auto bg-background flex-col`}>
           {showManual ? (
             <div className="max-w-2xl mx-auto p-6">
               <Card className="p-6 space-y-4">
                 <div className="flex items-center justify-between">
-                  <h2 className="font-semibold text-lg">Paste Email</h2>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => window.history.back()}
+                      className="md:hidden -ml-1 p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
+                      aria-label="Back">
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <h2 className="font-semibold text-lg">Paste Email</h2>
+                  </div>
                   <button onClick={() => setShowManual(false)}><X className="w-4 h-4 text-muted-foreground" /></button>
                 </div>
                 <div className="space-y-3">
@@ -500,6 +529,13 @@ export default function Home() {
               <div className="lg:col-span-3 p-6 overflow-y-auto border-r space-y-4">
                 {/* Action bar */}
                 <div className="flex items-center gap-2 pb-2 border-b flex-wrap">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="md:hidden gap-1"
+                    onClick={() => window.history.back()}>
+                    <ArrowLeft className="w-3.5 h-3.5" /> Back
+                  </Button>
                   {canSend ? (
                     <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setShowReply(v => !v)}>
                       <CornerUpLeft className="w-3.5 h-3.5" /> Reply

@@ -24,10 +24,16 @@ const prisma = new PrismaClient();
 
 // Keep this modest — categorizeEmail calls out to an LLM per email, and
 // this may be sweeping up months of backlog across every employee at once.
+// invokeLLM now has a 30s timeout (see lib/llm.ts), so a stalled request
+// fails and gets logged instead of silently hanging the whole batch forever.
 const CONCURRENCY = 5;
 const BATCH_SIZE = 200;
 
-async function processBatch(emails: { id: string; bodyText: string | null; gmailAccount: { employeeId: string } }[]) {
+async function processBatch(
+  emails: { id: string; bodyText: string | null; gmailAccount: { employeeId: string } }[],
+  processedSoFar: number,
+  total: number
+) {
   let ok = 0;
   let failed = 0;
   for (let i = 0; i < emails.length; i += CONCURRENCY) {
@@ -42,13 +48,25 @@ async function processBatch(emails: { id: string; bodyText: string | null; gmail
         console.error("[backfill] failed:", r.reason);
       }
     }
+    // Log after every slice of 5, not just once per 200 — otherwise a slow
+    // stretch (rate limiting, a couple of slow LLM calls) can look identical
+    // to the script being frozen for minutes at a time.
+    console.log(`[backfill] progress: ${processedSoFar + i + slice.length}/${total}`);
   }
   return { ok, failed };
 }
 
 async function main() {
+  const total = await prisma.email.count({ where: { category: null } });
+  console.log(`[backfill] ${total} uncategorized emails to process`);
+  if (total === 0) {
+    console.log("[backfill] nothing to do — every email already has a category");
+    return;
+  }
+
   let totalOk = 0;
   let totalFailed = 0;
+  let processedSoFar = 0;
 
   while (true) {
     const emails = await prisma.email.findMany({
@@ -59,9 +77,10 @@ async function main() {
 
     if (emails.length === 0) break;
 
-    const { ok, failed } = await processBatch(emails);
+    const { ok, failed } = await processBatch(emails, processedSoFar, total);
     totalOk += ok;
     totalFailed += failed;
+    processedSoFar += emails.length;
     console.log(`[backfill] batch done — ok: ${ok}, failed: ${failed}, running total: ${totalOk} ok / ${totalFailed} failed`);
   }
 

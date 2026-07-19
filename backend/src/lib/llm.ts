@@ -31,6 +31,12 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   const payload: Record<string, unknown> = { model, messages };
   if (responseFormat) payload.response_format = responseFormat;
 
+  // Without a timeout, a stalled connection to Groq hangs this fetch call
+  // forever with no error and no log line — which is especially painful for
+  // callers that run several of these concurrently (e.g. the categorization
+  // backfill script), since one stuck request blocks the whole batch it's
+  // part of. 30s is generous for a single chat completion; a real response
+  // normally comes back in a few seconds.
   const response = await fetch(GROQ_URL, {
     method: "POST",
     headers: {
@@ -38,6 +44,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) {
