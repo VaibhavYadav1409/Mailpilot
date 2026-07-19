@@ -39,7 +39,17 @@ export function useAuth(options?: UseAuthOptions) {
     } finally {
       queryClient.setQueryData(["auth", "me"], null);
       await queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
-      window.location.href = "/login";
+      // A hard reload (not wouter's SPA navigate) is intentional here — it
+      // resets all in-memory state/caches on logout, same as the original
+      // behavior. What's different is the target: `window.location.href =
+      // "/login"` resolves as an absolute path, which under the packaged
+      // desktop app's file:// protocol tries to load a file that doesn't
+      // exist (a real failed navigation, not just a route mismatch — see
+      // App.tsx's hash-routing fix for the same underlying issue). Setting
+      // the hash first, then reloading the current document, works
+      // identically in the Vite dev server and the packaged app.
+      window.location.hash = "/login";
+      window.location.reload();
     }
   }, [logoutMutation, queryClient]);
 
@@ -65,8 +75,13 @@ export function useAuth(options?: UseAuthOptions) {
     if (meQuery.isLoading || logoutMutation.isPending) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
-    if (window.location.pathname === redirectPath) return;
-    window.location.href = redirectPath;
+    // Same file:// consideration as `logout` above: compare/navigate via
+    // the hash, not pathname, since pathname is the on-disk file path in
+    // the packaged app.
+    const currentHashPath = "/" + window.location.hash.replace(/^#\/?/, "");
+    if (currentHashPath === redirectPath) return;
+    window.location.hash = redirectPath;
+    window.location.reload();
   }, [redirectOnUnauthenticated, redirectPath, logoutMutation.isPending, meQuery.isLoading, state.user]);
 
   return { ...state, refresh: () => meQuery.refetch(), logout };

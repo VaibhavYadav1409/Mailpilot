@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Mail, Loader2, Eye, EyeOff, ArrowLeft } from "lucide-react";
+import { Mail, Loader2, Eye, EyeOff } from "lucide-react";
 import { authApi, ApiError } from "@/lib/api";
 
 export default function Login() {
@@ -10,14 +10,6 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // Only shown when there's actually somewhere to go back to (e.g. the user
-  // was redirected here from the app, or followed a link into this page) —
-  // window.history.length is 1 on a fresh tab/direct load, where a Back
-  // button would have nothing to do.
-  const [canGoBack, setCanGoBack] = useState(false);
-  useEffect(() => {
-    setCanGoBack(window.history.length > 1);
-  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,7 +17,12 @@ export default function Login() {
     setError("");
     try {
       await authApi.login(email, password);
-      window.location.href = "/";
+      // Hard reload is intentional (resets all in-memory state after auth
+      // changes) — see useAuth.ts's logout for why this goes through the
+      // hash rather than an absolute path: `window.location.href = "/"`
+      // fails under the packaged desktop app's file:// protocol.
+      window.location.hash = "/";
+      window.location.reload();
     } catch (err) {
       if (err instanceof ApiError) setError(err.message);
       else setError("Network error. Please check your connection.");
@@ -36,16 +33,7 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm">
-        {canGoBack && (
-          <button
-            onClick={() => window.history.back()}
-            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-3"
-          >
-            <ArrowLeft className="w-4 h-4" /> Back
-          </button>
-        )}
-        <Card className="w-full p-8 shadow-lg">
+      <Card className="w-full max-w-sm p-8 shadow-lg">
         <div className="flex flex-col items-center mb-8">
           <div className="w-12 h-12 rounded-full bg-primary flex items-center justify-center mb-4">
             <Mail className="text-primary-foreground w-6 h-6" />
@@ -105,7 +93,6 @@ export default function Login() {
           <code className="font-mono">agent1@acme.com</code> / <code className="font-mono">ChangeMe123!</code>
         </p>
       </Card>
-      </div>
     </div>
   );
 }
