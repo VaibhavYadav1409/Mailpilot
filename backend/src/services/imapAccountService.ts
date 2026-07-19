@@ -84,7 +84,16 @@ export async function connectImapAccount(employeeId: string, companyId: string, 
   await verifyImap(input);
 
   const existingForMailbox = await prisma.gmailAccount.findUnique({ where: { emailAddress: input.email } });
-  if (existingForMailbox && existingForMailbox.employeeId !== employeeId) {
+  // Only a row that's *actually still connected* to someone else should
+  // block this. A row left behind by disconnectGmailAccount (status
+  // DISCONNECTED, but employeeId/isActive untouched — see that function)
+  // is stale history, not a real conflict, so it's fine to reclaim it for
+  // the new employee below rather than erroring.
+  const genuinelyOwnedByAnother =
+    existingForMailbox &&
+    existingForMailbox.employeeId !== employeeId &&
+    existingForMailbox.status !== "DISCONNECTED";
+  if (genuinelyOwnedByAnother) {
     throw new Error(`${input.email} is already connected to a different employee. Disconnect it there first.`);
   }
 
@@ -107,7 +116,7 @@ export async function connectImapAccount(employeeId: string, companyId: string, 
   };
 
   const account = existingForMailbox
-    ? await prisma.gmailAccount.update({ where: { id: existingForMailbox.id }, data })
+    ? await prisma.gmailAccount.update({ where: { id: existingForMailbox.id }, data: { ...data, employeeId, companyId } })
     : await prisma.gmailAccount.create({ data: { employeeId, companyId, lastSyncedAt: null, ...data } });
 
   await deactivateOtherAccounts(employeeId, account.id);

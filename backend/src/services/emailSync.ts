@@ -247,8 +247,23 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
     // re-sync (e.g. overlapping window) just no-ops rather than duplicating rows.
     const existing = await prisma.email.findUnique({
       where: { gmailAccountId_gmailMessageId: { gmailAccountId: account.id, gmailMessageId: parsed.gmailMessageId } },
+      include: { category: true },
     });
-    if (existing) continue;
+    if (existing) {
+      // Self-healing: an email can already exist but still lack a category —
+      // either it predates the AI categorization feature (categorizeEmail
+      // only ever ran for rows created *after* that feature shipped, never
+      // backfilled for the pre-existing backlog), or a past categorization
+      // attempt failed transiently and was never retried (fire-and-forget
+      // below only logs failures, it doesn't retry them). Catch it up here
+      // rather than leaving it uncategorized forever.
+      if (!existing.category) {
+        categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText).catch((e) =>
+          console.error(`[AI] backfill categorize failed for email ${existing.id}:`, e)
+        );
+      }
+      continue;
+    }
 
     const email = await prisma.email.create({
       data: {

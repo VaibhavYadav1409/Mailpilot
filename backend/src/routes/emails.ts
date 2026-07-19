@@ -46,6 +46,7 @@ const listQuerySchema = z.object({
   starredOnly: z.coerce.boolean().optional(),
   includeTrashed: z.coerce.boolean().optional(),
   search: z.string().optional(),
+  categoryLabel: z.string().optional(),
 });
 
 emailsRouter.get("/", requireAuth, async (req, res) => {
@@ -55,13 +56,17 @@ emailsRouter.get("/", requireAuth, async (req, res) => {
   const account = await getOwnGmailAccountOr404(req.user!.employeeId);
   if (!account) return res.json({ emails: [], nextCursor: null });
 
-  const { limit, cursor, unreadOnly, starredOnly, includeTrashed, search } = parsed.data;
+  const { limit, cursor, unreadOnly, starredOnly, includeTrashed, search, categoryLabel } = parsed.data;
   const emails = await prisma.email.findMany({
     where: {
       gmailAccountId: account.id,
       ...(unreadOnly ? { isRead: false } : {}),
       ...(starredOnly ? { isStarred: true } : {}),
       ...(includeTrashed ? {} : { isTrashed: false }),
+      // Filtered server-side (not client-side after fetch) so a mailbox
+      // with more than one page of mail doesn't silently hide promotional
+      // emails that fall outside whatever page happened to be fetched.
+      ...(categoryLabel ? { category: { label: categoryLabel } } : {}),
       ...(search
         ? {
             OR: [

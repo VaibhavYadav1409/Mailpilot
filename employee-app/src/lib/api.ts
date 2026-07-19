@@ -219,6 +219,8 @@ function filterToParams(filter: EmailListParams["filter"]): Record<string, strin
       return { unreadOnly: "true" };
     case "replied":
       return { }; // no direct backend filter; approximated client-side (see emailsApi.list)
+    case "promotions":
+      return { categoryLabel: "Spam/Promotional" };
     default:
       return {};
   }
@@ -251,7 +253,6 @@ export const emailsApi = {
     if (params.filter === "read") emails = emails.filter((e) => e.isRead);
     if (params.filter === "replied") emails = emails.filter((e) => e.isReplied);
     if (params.filter === "unreplied") emails = emails.filter((e) => !e.isReplied);
-    if (params.filter === "promotions") emails = emails.filter((e) => e.category?.label === "Spam/Promotional");
     return emails;
   },
   /** GET /api/emails/sent — real outgoing-mail history, backed by the Reply table (an Email row is never created for a sent reply). */
