@@ -1,6 +1,7 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { decryptToken } from "../lib/crypto";
+import { htmlToPlainText } from "../lib/htmlToText";
 import type { GmailAccount } from "../generated/prisma/client";
 import type { ImapSentMessageMeta } from "./replyTracking";
 
@@ -29,6 +30,7 @@ export interface ParsedImapMessage {
   isRead: boolean;
   internalDate: Date;
   bodyText: string;
+  bodyHtml: string;
   snippet: string;
   attachments: ParsedImapAttachment[];
 }
@@ -105,7 +107,13 @@ export async function fetchImapMessages(account: GmailAccount): Promise<ParsedIm
         const toList = Array.isArray(parsed.to) ? parsed.to : parsed.to ? [parsed.to] : [];
         const toAddresses = toList.flatMap((t) => t.value.map((v) => v.address ?? "")).filter(Boolean);
 
-        const bodyText = parsed.text || "";
+        // mailparser gives `text` when a text/plain part exists and `html`
+        // (string, or `false` when there is none) when an HTML part exists.
+        // A large share of real mail is HTML-only, so text alone was
+        // previously leaving bodyText empty for those messages — same issue
+        // as the Gmail path in emailSync.ts, same fix.
+        const htmlPart = typeof parsed.html === "string" ? parsed.html : "";
+        const bodyText = parsed.text || (htmlPart ? htmlToPlainText(htmlPart) : "");
         results.push({
           imapMessageId: parsed.messageId || `${account.id}-${uid}`,
           threadId: parsed.messageId || `${account.id}-${uid}`,
@@ -116,6 +124,7 @@ export async function fetchImapMessages(account: GmailAccount): Promise<ParsedIm
           isRead: !!msg.flags?.has("\\Seen"),
           internalDate: parsed.date || new Date(),
           bodyText,
+          bodyHtml: htmlPart,
           snippet: bodyText.slice(0, 160),
           attachments: (parsed.attachments || [])
             // Inline images referenced by cid (signatures, tracking pixels)

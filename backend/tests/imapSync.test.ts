@@ -111,6 +111,31 @@ describe("imapSync", () => {
     expect(messages[0].attachments[0].filename).toBe("small.txt");
   });
 
+  it("derives bodyText from HTML when there's no text/plain part (HTML-only mail)", async () => {
+    mockSearch.mockResolvedValue([1]);
+    mockFetchOne.mockResolvedValue({ source: Buffer.from("source"), flags: new Set() });
+
+    // Reflects real-world HTML-only mail (marketing/invoices/notifications):
+    // mailparser gives back `text: undefined` when there's no text/plain part.
+    vi.mocked(simpleParser).mockResolvedValueOnce({
+      from: { value: [{ address: "billing@vendor.com" }] },
+      subject: "Your invoice is ready",
+      html: "<html><body><h1>Invoice</h1><p>Amount due: <b>$42.00</b></p><p>Thanks!</p></body></html>",
+      text: undefined,
+      attachments: [],
+    } as any);
+
+    const messages = await fetchImapMessages(mockAccount);
+
+    expect(messages[0].bodyHtml).toContain("<b>$42.00</b>");
+    // The old behavior left bodyText === "" here, which meant the reader
+    // pane fell back to a 160-char snippet and the AI pipeline
+    // (categorize/priority/summary) ran on effectively no content.
+    expect(messages[0].bodyText).not.toBe("");
+    expect(messages[0].bodyText).toContain("Amount due: $42.00");
+    expect(messages[0].snippet.length).toBeGreaterThan(0);
+  });
+
   it("ensures logout is called even on error", async () => {
     mockConnect.mockRejectedValue(new Error("Connection failed"));
     

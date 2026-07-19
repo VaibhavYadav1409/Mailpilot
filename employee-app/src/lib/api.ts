@@ -193,6 +193,11 @@ export interface EmailRecord {
   // (GET /api/emails/:id) resolves. EmailBody/selectedListItem already
   // tolerate this being absent and fall back to `snippet`.
   bodyText?: string | null;
+  // Same lazily-loaded shape as bodyText above — only present after
+  // GET /api/emails/:id resolves. Real content for messages that were
+  // HTML-only (most marketing/invoice/notification mail); EmailBody
+  // renders this in a sandboxed iframe when present.
+  bodyHtml?: string | null;
   snippet: string | null;
   category?: { label: string; confidence: number | null } | null;
   attachments?: AttachmentRecord[];
@@ -249,12 +254,6 @@ export const emailsApi = {
     if (params.search) query.set("search", params.search);
     const data = await get<{ emails: EmailRecord[] }>(`/api/emails?${query.toString()}`);
     let emails = data.emails;
-    // Promotional mail has its own mailbox (the "promotions" filter above),
-    // so every other mailbox — including "all" — should exclude it rather
-    // than mixing it back in. Only the "promotions" view itself should see it.
-    if (params.filter !== "promotions") {
-      emails = emails.filter((e) => e.category?.label !== "Spam/Promotional");
-    }
     // Filters emails.ts doesn't support server-side are applied here.
     if (params.filter === "read") emails = emails.filter((e) => e.isRead);
     if (params.filter === "replied") emails = emails.filter((e) => e.isReplied);

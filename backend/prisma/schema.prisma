@@ -219,6 +219,11 @@ model Email {
   // viewer, star/trash actions, and cached AI insights have somewhere to
   // live server-side instead of only existing in a local client cache.
   bodyText        String?        @db.Text
+  // Raw HTML part, when the message had one (most real-world mail does).
+  // bodyText is still always populated too — see htmlToText.ts — so search,
+  // the AI pipeline, and any plain-text fallback keep working exactly as
+  // before; this column is additive, purely for rendering the real layout.
+  bodyHtml        String?        @db.Text
   snippet         String?
   isStarred       Boolean        @default(false)
   isTrashed       Boolean        @default(false)

@@ -4,6 +4,7 @@ import { fetchImapMessages, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority } from "./aiPipeline";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
+import { htmlToPlainText } from "../lib/htmlToText";
 
 /** A Gmail Sent-labeled message, reduced to just what thread-based reply matching needs. */
 interface GmailSentMeta {
@@ -29,21 +30,35 @@ interface ParsedMessage {
   isRead: boolean;
   internalDate: Date;
   bodyText: string;
+  bodyHtml: string;
   snippet: string;
   attachments: ParsedAttachment[];
 }
 
-function extractBody(payload: any): string {
+/**
+ * Walks the MIME tree collecting both text/plain and text/html parts.
+ * Gmail messages are frequently HTML-only (marketing, invoices, most
+ * templated notification mail) — previously only text/plain was collected,
+ * so those messages synced with an empty bodyText: the reader pane fell
+ * back to the truncated snippet, and every AI call (categorize/priority/
+ * summary/reply) ran on effectively no content. When there's no text/plain
+ * part, bodyText is now derived from the HTML instead of left empty.
+ */
+function extractBody(payload: any): { bodyText: string; bodyHtml: string } {
   let bodyText = "";
+  let bodyHtml = "";
   const walk = (part: any) => {
     if (!part) return;
     if (part.mimeType === "text/plain" && part.body?.data) {
       bodyText += Buffer.from(part.body.data, "base64").toString("utf-8");
+    } else if (part.mimeType === "text/html" && part.body?.data) {
+      bodyHtml += Buffer.from(part.body.data, "base64").toString("utf-8");
     }
     for (const sub of part.parts ?? []) walk(sub);
   };
   walk(payload);
-  return bodyText;
+  if (!bodyText && bodyHtml) bodyText = htmlToPlainText(bodyHtml);
+  return { bodyText, bodyHtml };
 }
 
 interface GmailAttachmentRef {
@@ -161,7 +176,8 @@ async function fetchGmailMessage(id: string, accessToken: string): Promise<Parse
     .map((s: string) => (s.match(/<(.+?)>/)?.[1] ?? s).trim())
     .filter(Boolean);
 
-  const bodyText = extractBody(msg.payload) || msg.snippet || "";
+  const { bodyText, bodyHtml } = extractBody(msg.payload);
+  const finalBodyText = bodyText || msg.snippet || "";
 
   const attachmentRefs = extractAttachmentRefs(msg.payload);
   const attachments: ParsedAttachment[] = [];
@@ -181,8 +197,9 @@ async function fetchGmailMessage(id: string, accessToken: string): Promise<Parse
     subject: headers["subject"] || null,
     isRead: !labelIds.includes("UNREAD"),
     internalDate: msg.internalDate ? new Date(parseInt(msg.internalDate, 10)) : new Date(),
-    bodyText,
-    snippet: msg.snippet || bodyText.slice(0, 160),
+    bodyText: finalBodyText,
+    bodyHtml,
+    snippet: msg.snippet || finalBodyText.slice(0, 160),
     attachments,
   };
 }
@@ -235,6 +252,7 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
       isRead: m.isRead,
       internalDate: m.internalDate,
       bodyText: m.bodyText,
+      bodyHtml: m.bodyHtml,
       snippet: m.snippet,
       attachments: m.attachments,
     }));
@@ -277,6 +295,7 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
         receivedAt: parsed.internalDate,
         isRead: parsed.isRead,
         bodyText: parsed.bodyText || null,
+        bodyHtml: parsed.bodyHtml || null,
         snippet: parsed.snippet || null,
       },
     });
