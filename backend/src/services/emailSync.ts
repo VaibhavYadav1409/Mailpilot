@@ -1,6 +1,6 @@
 import { prisma } from "../lib/db";
 import { getValidAccessToken } from "./gmailAccountService";
-import { fetchImapMessages, fetchImapSentMessages } from "./imapSync";
+import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority } from "./aiPipeline";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
@@ -205,6 +205,88 @@ async function fetchGmailMessage(id: string, accessToken: string): Promise<Parse
 }
 
 /**
+ * Persists one already-parsed message: dedup check, row create, attachment
+ * storage, and kicking off AI categorization/priority scoring. Pulled out
+ * of the main sync loop so both the Gmail and IMAP paths can call it
+ * immediately per-message instead of collecting a full parsedMessages[]
+ * array first — holding up to hundreds of full bodies/HTML/attachment
+ * buffers (25MB each) in memory at once was what exceeded Render's 512MB
+ * limit on a fresh sync. Returns true if a new row was created.
+ */
+async function persistParsedMessage(employeeId: string, accountId: string, parsed: ParsedMessage): Promise<boolean> {
+  // Dedup: unique constraint on (gmailAccountId, gmailMessageId) means a
+  // re-sync (e.g. overlapping window) just no-ops rather than duplicating rows.
+  const existing = await prisma.email.findUnique({
+    where: { gmailAccountId_gmailMessageId: { gmailAccountId: accountId, gmailMessageId: parsed.gmailMessageId } },
+    include: { category: true },
+  });
+  if (existing) {
+    // Self-healing: an email can already exist but still lack a category —
+    // either it predates the AI categorization feature (categorizeEmail
+    // only ever ran for rows created *after* that feature shipped, never
+    // backfilled for the pre-existing backlog), or a past categorization
+    // attempt failed transiently and was never retried (fire-and-forget
+    // below only logs failures, it doesn't retry them). Catch it up here
+    // rather than leaving it uncategorized forever.
+    if (!existing.category) {
+      categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText).catch((e) =>
+        console.error(`[AI] backfill categorize failed for email ${existing.id}:`, e)
+      );
+    }
+    return false;
+  }
+
+  const email = await prisma.email.create({
+    data: {
+      gmailAccountId: accountId,
+      gmailMessageId: parsed.gmailMessageId,
+      threadId: parsed.threadId,
+      fromAddress: parsed.fromAddress,
+      fromName: parsed.fromName,
+      toAddresses: parsed.toAddresses.length ? JSON.stringify(parsed.toAddresses) : null,
+      subject: parsed.subject,
+      receivedAt: parsed.internalDate,
+      isRead: parsed.isRead,
+      bodyText: parsed.bodyText || null,
+      bodyHtml: parsed.bodyHtml || null,
+      snippet: parsed.snippet || null,
+    },
+  });
+
+  for (let i = 0; i < parsed.attachments.length; i++) {
+    const att = parsed.attachments[i];
+    try {
+      const storageKey = makeStorageKey(email.id, i, att.filename);
+      await writeAttachment(storageKey, att.content, att.mimeType);
+      await prisma.attachment.create({
+        data: {
+          emailId: email.id,
+          filename: att.filename,
+          mimeType: att.mimeType,
+          sizeBytes: att.content.byteLength,
+          storageKey,
+        },
+      });
+    } catch (e) {
+      // An attachment failing to persist shouldn't fail the whole sync —
+      // the email itself is still useful without it.
+      console.error(`[attachments] failed to store attachment for email ${email.id}:`, e);
+    }
+  }
+
+  // Fire-and-forget: categorization/priority shouldn't block the sync
+  // loop or fail the whole batch if the LLM provider has a bad moment.
+  categorizeEmail(employeeId, email.id, parsed.bodyText).catch((e) =>
+    console.error(`[AI] categorize failed for email ${email.id}:`, e)
+  );
+  scoreEmailPriority(employeeId, email.id, parsed.bodyText).catch((e) =>
+    console.error(`[AI] priority scoring failed for email ${email.id}:`, e)
+  );
+
+  return true;
+}
+
+/**
  * Syncs new messages for one employee's mail account (Gmail via API, IMAP
  * via imapSync.ts), then runs categorization + priority scoring on each
  * newly-seen email. MANUAL accounts have nothing to pull from a remote
@@ -216,11 +298,11 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
   if (!account || account.status !== "CONNECTED") return { synced: 0 };
   if (account.provider === "MANUAL") return { synced: 0 };
 
-  let parsedMessages: ParsedMessage[] = [];
   // Populated below for GMAIL accounts, used in the reply-detection phase
   // after inbound sync so we don't have to recompute the access token/window.
   let gmailAccessToken: string | null = null;
   let gmailSinceEpochSec = 0;
+  let synced = 0;
 
   if (account.provider === "GMAIL") {
     const accessToken = await getValidAccessToken(employeeId);
@@ -233,103 +315,40 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
 
     const messageIds = await listGmailMessageIds(`after:${gmailSinceEpochSec}`, accessToken);
 
+    // Fetch a small batch concurrently (bounded memory: at most BATCH_SIZE
+    // full messages in flight at once), then persist and drop each one
+    // immediately rather than accumulating every batch into one array —
+    // on a 500-message first sync that array previously held every body,
+    // HTML part, and attachment buffer simultaneously.
     const BATCH_SIZE = 10;
     for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
       const batch = messageIds.slice(i, i + BATCH_SIZE);
       const fetched = await Promise.all(batch.map((id) => fetchGmailMessage(id, accessToken)));
-      for (const m of fetched) if (m) parsedMessages.push(m);
+      for (const m of fetched) {
+        if (!m) continue;
+        if (await persistParsedMessage(employeeId, account.id, m)) synced++;
+      }
     }
   } else {
-    // IMAP
-    const imapMessages = await fetchImapMessages(account);
-    parsedMessages = imapMessages.map((m) => ({
-      gmailMessageId: m.imapMessageId,
-      threadId: m.threadId,
-      fromAddress: m.fromAddress,
-      fromName: m.fromName,
-      toAddresses: m.toAddresses,
-      subject: m.subject,
-      isRead: m.isRead,
-      internalDate: m.internalDate,
-      bodyText: m.bodyText,
-      bodyHtml: m.bodyHtml,
-      snippet: m.snippet,
-      attachments: m.attachments,
-    }));
-  }
-
-  let synced = 0;
-
-  for (const parsed of parsedMessages) {
-    // Dedup: unique constraint on (gmailAccountId, gmailMessageId) means a
-    // re-sync (e.g. overlapping window) just no-ops rather than duplicating rows.
-    const existing = await prisma.email.findUnique({
-      where: { gmailAccountId_gmailMessageId: { gmailAccountId: account.id, gmailMessageId: parsed.gmailMessageId } },
-      include: { category: true },
+    // IMAP: stream messages one at a time straight into persistParsedMessage
+    // so each message's memory is freed before the next is fetched.
+    await fetchImapMessagesStreaming(account, async (m) => {
+      const parsed: ParsedMessage = {
+        gmailMessageId: m.imapMessageId,
+        threadId: m.threadId,
+        fromAddress: m.fromAddress,
+        fromName: m.fromName,
+        toAddresses: m.toAddresses,
+        subject: m.subject,
+        isRead: m.isRead,
+        internalDate: m.internalDate,
+        bodyText: m.bodyText,
+        bodyHtml: m.bodyHtml,
+        snippet: m.snippet,
+        attachments: m.attachments,
+      };
+      if (await persistParsedMessage(employeeId, account.id, parsed)) synced++;
     });
-    if (existing) {
-      // Self-healing: an email can already exist but still lack a category —
-      // either it predates the AI categorization feature (categorizeEmail
-      // only ever ran for rows created *after* that feature shipped, never
-      // backfilled for the pre-existing backlog), or a past categorization
-      // attempt failed transiently and was never retried (fire-and-forget
-      // below only logs failures, it doesn't retry them). Catch it up here
-      // rather than leaving it uncategorized forever.
-      if (!existing.category) {
-        categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText).catch((e) =>
-          console.error(`[AI] backfill categorize failed for email ${existing.id}:`, e)
-        );
-      }
-      continue;
-    }
-
-    const email = await prisma.email.create({
-      data: {
-        gmailAccountId: account.id,
-        gmailMessageId: parsed.gmailMessageId,
-        threadId: parsed.threadId,
-        fromAddress: parsed.fromAddress,
-        fromName: parsed.fromName,
-        toAddresses: parsed.toAddresses.length ? JSON.stringify(parsed.toAddresses) : null,
-        subject: parsed.subject,
-        receivedAt: parsed.internalDate,
-        isRead: parsed.isRead,
-        bodyText: parsed.bodyText || null,
-        bodyHtml: parsed.bodyHtml || null,
-        snippet: parsed.snippet || null,
-      },
-    });
-    synced++;
-
-    for (let i = 0; i < parsed.attachments.length; i++) {
-      const att = parsed.attachments[i];
-      try {
-        const storageKey = makeStorageKey(email.id, i, att.filename);
-        await writeAttachment(storageKey, att.content, att.mimeType);
-        await prisma.attachment.create({
-          data: {
-            emailId: email.id,
-            filename: att.filename,
-            mimeType: att.mimeType,
-            sizeBytes: att.content.byteLength,
-            storageKey,
-          },
-        });
-      } catch (e) {
-        // An attachment failing to persist shouldn't fail the whole sync —
-        // the email itself is still useful without it.
-        console.error(`[attachments] failed to store attachment for email ${email.id}:`, e);
-      }
-    }
-
-    // Fire-and-forget: categorization/priority shouldn't block the sync
-    // loop or fail the whole batch if the LLM provider has a bad moment.
-    categorizeEmail(employeeId, email.id, parsed.bodyText).catch((e) =>
-      console.error(`[AI] categorize failed for email ${email.id}:`, e)
-    );
-    scoreEmailPriority(employeeId, email.id, parsed.bodyText).catch((e) =>
-      console.error(`[AI] priority scoring failed for email ${email.id}:`, e)
-    );
   }
 
   // Reply detection: look at what this employee sent (Gmail's Sent label,
