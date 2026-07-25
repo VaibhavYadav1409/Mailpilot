@@ -1,0 +1,92 @@
+diff --git a/backend/package.json b/backend/package.json
+index 233e8b3..e222ca0 100644
+--- a/backend/package.json
++++ b/backend/package.json
+@@ -8,7 +8,7 @@
+   "scripts": {
+     "dev": "tsx watch src/server.ts",
+     "build": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/generated','dist/backend/src/generated',{recursive:true})\"",
+-    "start": "node dist/backend/src/server.js",
++    "start": "node --max-old-space-size=400 dist/backend/src/server.js",
+     "postinstall": "prisma generate",
+     "db:push": "prisma db push",
+     "prisma:generate": "prisma generate",
+diff --git a/backend/src/services/emailSync.ts b/backend/src/services/emailSync.ts
+index 1a71348..15b1cb9 100644
+--- a/backend/src/services/emailSync.ts
++++ b/backend/src/services/emailSync.ts
+@@ -32,6 +32,19 @@ interface ParsedAttachment {
+ 
+ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25MB per attachment, matches imapSync's cap
+ 
++// On top of the per-file cap above, cap total attachment bytes held in
++// memory across one whole syncEmployeeInbox() run. Without this, a 30-day
++// first sync with several attachment-heavy messages could still add up to
++// hundreds of MB even with a small BATCH_SIZE, since the per-file cap alone
++// doesn't bound the sum across a sync. Once the budget is exhausted, further
++// attachments in this sync are skipped (the email itself is still synced
++// and persisted normally) rather than fetched and held in memory.
++const ATTACHMENT_SYNC_BUDGET_BYTES = 80 * 1024 * 1024; // 80MB per sync run
++
++interface AttachmentBudget {
++  remainingBytes: number;
++}
++
+ interface ParsedMessage {
+   gmailMessageId: string;
+   threadId: string;
+@@ -166,7 +179,7 @@ async function fetchGmailSentMeta(id: string, accessToken: string): Promise<Gmai
+   };
+ }
+ 
+-async function fetchGmailMessage(id: string, accessToken: string): Promise<ParsedMessage | null> {
++async function fetchGmailMessage(id: string, accessToken: string, attachmentBudget: AttachmentBudget): Promise<ParsedMessage | null> {
+   const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, {
+     headers: { Authorization: `Bearer ${accessToken}` },
+   });
+@@ -194,9 +207,14 @@ async function fetchGmailMessage(id: string, accessToken: string): Promise<Parse
+   const attachmentRefs = extractAttachmentRefs(msg.payload);
+   const attachments: ParsedAttachment[] = [];
+   for (const ref of attachmentRefs) {
++    if (attachmentBudget.remainingBytes <= 0) {
++      console.warn(`[sync] attachment sync budget exhausted, skipping "${ref.filename}" on message ${id}`);
++      break;
++    }
+     const content = await fetchGmailAttachment(id, ref.attachmentId, accessToken);
+     if (content && content.byteLength <= MAX_ATTACHMENT_BYTES) {
+       attachments.push({ filename: ref.filename, mimeType: ref.mimeType, content });
++      attachmentBudget.remainingBytes -= content.byteLength;
+     }
+   }
+ 
+@@ -332,14 +350,28 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
+     // immediately rather than accumulating every batch into one array —
+     // on a 500-message first sync that array previously held every body,
+     // HTML part, and attachment buffer simultaneously.
+-    const BATCH_SIZE = 10;
++    //
++    // BATCH_SIZE was 10, which combined with per-message attachment buffers
++    // (up to 25MB each, uncapped in aggregate) was enough on its own to
++    // exceed Render's 512MB limit and get the process OOM-killed mid-sync
++    // (surfacing to the client as a 502, since Render's proxy returns 502
++    // when the backend dies rather than a 504 timeout). Dropped to 3, and
++    // combined with the attachmentBudget below (shared across the whole
++    // sync, not just one batch) to bound total memory, not just per-batch.
++    const BATCH_SIZE = 3;
++    const attachmentBudget: AttachmentBudget = { remainingBytes: ATTACHMENT_SYNC_BUDGET_BYTES };
+     for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
+       const batch = messageIds.slice(i, i + BATCH_SIZE);
+-      const fetched = await Promise.all(batch.map((id) => fetchGmailMessage(id, accessToken)));
++      const fetched = await Promise.all(batch.map((id) => fetchGmailMessage(id, accessToken, attachmentBudget)));
+       for (const m of fetched) {
+         if (!m) continue;
+         if (await persistParsedMessage(employeeId, account.id, m)) synced++;
+       }
++      const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
++      const attachMb = Math.round((ATTACHMENT_SYNC_BUDGET_BYTES - attachmentBudget.remainingBytes) / 1024 / 1024);
++      console.log(
++        `[sync] account ${account.id}: batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(messageIds.length / BATCH_SIZE)}, rss=${rssMb}MB, attachmentBudgetUsed=${attachMb}MB`
++      );
+     }
+   } else {
+     // IMAP: stream messages one at a time straight into persistParsedMessage

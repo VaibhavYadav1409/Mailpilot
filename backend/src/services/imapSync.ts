@@ -8,6 +8,12 @@ import type { ImapSentMessageMeta } from "./replyTracking";
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25MB per attachment
 
+// How far back the FIRST IMAP sync reaches (later syncs are incremental via
+// lastSyncedAt). Env-overridable, shared in spirit with emailSync's
+// SYNC_INITIAL_DAYS; fewer days = faster first sync. Default 14.
+const SYNC_INITIAL_DAYS = Math.max(1, Number(process.env.SYNC_INITIAL_DAYS) || 14);
+const initialSinceDate = () => new Date(Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS);
+
 // Folder names to fall back to (in order) when the server doesn't advertise
 // a \Sent special-use mailbox (see findSentMailboxPath) — covers the common
 // non-Gmail cases (generic IMAP, Outlook/Exchange) plus Gmail's own IMAP
@@ -92,7 +98,7 @@ async function findSentMailboxPath(client: ImapFlow): Promise<string | null> {
 export async function fetchImapMessages(account: GmailAccount): Promise<ParsedImapMessage[]> {
   const client = buildClient(account);
 
-  const sinceDate = account.lastSyncedAt ?? new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+  const sinceDate = account.lastSyncedAt ?? initialSinceDate();
   const results: ParsedImapMessage[] = [];
 
   try {
@@ -179,7 +185,7 @@ export async function fetchImapMessagesStreaming(
 ): Promise<number> {
   const client = buildClient(account);
 
-  const sinceDate = account.lastSyncedAt ?? new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+  const sinceDate = account.lastSyncedAt ?? initialSinceDate();
   let count = 0;
 
   try {
@@ -261,7 +267,7 @@ export async function fetchImapMessagesStreaming(
 export async function fetchImapSentMessages(account: GmailAccount): Promise<ImapSentMessageMeta[]> {
   const client = buildClient(account);
 
-  const sinceDate = account.lastSyncedAt ?? new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+  const sinceDate = account.lastSyncedAt ?? initialSinceDate();
   const results: ImapSentMessageMeta[] = [];
 
   try {

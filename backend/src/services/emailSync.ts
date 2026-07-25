@@ -7,7 +7,7 @@ import { isGroqCoolingDown } from "../lib/llm";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
 import { htmlToPlainText } from "../lib/htmlToText";
-import { createLimiter } from "../lib/concurrencyLimit";
+import { createLimiter, QUEUE_FULL } from "../lib/concurrencyLimit";
 
 // categorizeEmail/scoreEmailPriority are fired per-message without being
 // awaited (see persistParsedMessage below) so the sync loop itself isn't
@@ -18,12 +18,52 @@ import { createLimiter } from "../lib/concurrencyLimit";
 // streaming persistence fix. Capping shared concurrency here queues the
 // excess instead of firing it all at once, without changing the
 // fire-and-forget call sites themselves.
-const aiCallLimiter = createLimiter(4);
+// Concurrency 4, but with a bounded backlog: on a first sync the loop
+// persists messages much faster than the LLM drains them, so an unbounded
+// queue would hold one closure (capturing that email's bodyText) per email
+// at once — tens of MB on a large mailbox, a real contributor to the 512MB
+// OOM. Past the cap, calls are skipped now and picked up by the self-healing
+// re-categorization on a later sync (see persistParsedMessage), so nothing is
+// lost permanently. Override the cap with AI_QUEUE_MAX if needed.
+const AI_QUEUE_MAX = Math.max(50, Number(process.env.AI_QUEUE_MAX) || 200);
+const aiCallLimiter = createLimiter(4, AI_QUEUE_MAX);
+
+/** Swallows the QUEUE_FULL rejection (an intentional backpressure skip, not a
+ *  real failure) while still logging genuine errors from a queued AI call. */
+function ignoreQueueFull(context: string) {
+  return (e: unknown) => {
+    if (e === QUEUE_FULL) return; // backpressure skip; caught on a later sync
+    console.error(context, e);
+  };
+}
 
 // How far back reply detection looks for inbound emails a newly-sent message
 // might be answering. Bounds the per-sync candidate scan so it doesn't grow
 // with total mailbox age. 120 days comfortably covers real reply latencies.
 const REPLY_CANDIDATE_WINDOW_DAYS = 120;
+
+// --- Sync tuning (env-overridable) ---------------------------------------
+// The first sync for a freshly-connected account is the slow one: it pulls a
+// whole window of history, one small batch at a time (kept small to fit
+// Render's 512MB). These two knobs control that speed/cost trade-off.
+//
+//   SYNC_INITIAL_DAYS        — how far back the FIRST sync reaches. Fewer days
+//                              = far fewer messages to fetch = much faster
+//                              first sync (and less memory). Later syncs are
+//                              incremental regardless, so this only affects
+//                              the initial backfill. Default 14 (was a
+//                              hard-coded 30).
+//   SYNC_MESSAGE_CONCURRENCY — how many full messages are fetched in parallel.
+//                              Higher = faster but more peak memory; raise it
+//                              once the instance has more than 512MB RAM.
+//                              Default 3.
+const SYNC_INITIAL_DAYS = Math.max(1, Number(process.env.SYNC_INITIAL_DAYS) || 7);
+const SYNC_MESSAGE_CONCURRENCY = Math.max(1, Number(process.env.SYNC_MESSAGE_CONCURRENCY) || 2);
+
+// Hard cap on how many message ids a single first sync pulls (later syncs are
+// incremental and small). Bounds the total work — and the AI backlog — a
+// fresh connect can generate. Override with SYNC_MAX_MESSAGES.
+const SYNC_MAX_MESSAGES = Math.max(50, Number(process.env.SYNC_MAX_MESSAGES) || 250);
 
 /** A Gmail Sent-labeled message, reduced to just what thread-based reply matching needs. */
 interface GmailSentMeta {
@@ -37,7 +77,7 @@ interface ParsedAttachment {
   content: Buffer;
 }
 
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25MB per attachment, matches imapSync's cap
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10MB per attachment — a single Buffer this large is decoded off-heap during a fetch, so on a 512MB instance the per-file cap has to stay small
 
 // On top of the per-file cap above, cap total attachment bytes held in
 // memory across one whole syncEmployeeInbox() run. Without this, a 30-day
@@ -46,7 +86,7 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25MB per attachment, matches i
 // doesn't bound the sum across a sync. Once the budget is exhausted, further
 // attachments in this sync are skipped (the email itself is still synced
 // and persisted normally) rather than fetched and held in memory.
-const ATTACHMENT_SYNC_BUDGET_BYTES = 80 * 1024 * 1024; // 80MB per sync run
+const ATTACHMENT_SYNC_BUDGET_BYTES = 24 * 1024 * 1024; // 24MB per sync run
 
 interface AttachmentBudget {
   remainingBytes: number;
@@ -304,8 +344,8 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
         await labelPromotional(existing.id);
       }
     } else if (!existing.category && !isGroqCoolingDown()) {
-      aiCallLimiter(() => categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText)).catch((e) =>
-        console.error(`[AI] backfill categorize failed for email ${existing.id}:`, e)
+      aiCallLimiter(() => categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText)).catch(
+        ignoreQueueFull(`[AI] backfill categorize failed for email ${existing.id}:`)
       );
     }
     return false;
@@ -361,13 +401,13 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
     // while the Groq breaker is open so a big sync doesn't queue hundreds of
     // doomed, memory-holding calls against an exhausted quota (the cause of a
     // prior Render OOM). Uncategorized rows are caught on a later sync.
-    aiCallLimiter(() => categorizeEmail(employeeId, email.id, parsed.bodyText)).catch((e) =>
-      console.error(`[AI] categorize failed for email ${email.id}:`, e)
+    aiCallLimiter(() => categorizeEmail(employeeId, email.id, parsed.bodyText)).catch(
+      ignoreQueueFull(`[AI] categorize failed for email ${email.id}:`)
     );
   }
   if (!isGroqCoolingDown()) {
-    aiCallLimiter(() => scoreEmailPriority(employeeId, email.id, parsed.bodyText)).catch((e) =>
-      console.error(`[AI] priority scoring failed for email ${email.id}:`, e)
+    aiCallLimiter(() => scoreEmailPriority(employeeId, email.id, parsed.bodyText)).catch(
+      ignoreQueueFull(`[AI] priority scoring failed for email ${email.id}:`)
     );
   }
 
@@ -399,9 +439,17 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
 
     gmailSinceEpochSec = account.lastSyncedAt
       ? Math.floor(account.lastSyncedAt.getTime() / 1000)
-      : Math.floor((Date.now() - 1000 * 60 * 60 * 24 * 30) / 1000); // first sync: last 30 days
+      : Math.floor((Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS) / 1000); // first sync: last SYNC_INITIAL_DAYS days
 
-    const messageIds = await listGmailMessageIds(`after:${gmailSinceEpochSec}`, accessToken);
+    // Only the FIRST sync (no lastSyncedAt) needs the hard message cap — it's
+    // the one that reaches back over a whole window. Incremental syncs pull
+    // just what arrived since last time and stay naturally small.
+    const isFirstSync = !account.lastSyncedAt;
+    const messageIds = await listGmailMessageIds(
+      `after:${gmailSinceEpochSec}`,
+      accessToken,
+      isFirstSync ? SYNC_MAX_MESSAGES : 500,
+    );
 
     // Fetch a small batch concurrently (bounded memory: at most BATCH_SIZE
     // full messages in flight at once), then persist and drop each one
@@ -416,7 +464,7 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
     // when the backend dies rather than a 504 timeout). Dropped to 3, and
     // combined with the attachmentBudget below (shared across the whole
     // sync, not just one batch) to bound total memory, not just per-batch.
-    const BATCH_SIZE = 3;
+    const BATCH_SIZE = SYNC_MESSAGE_CONCURRENCY;
     const attachmentBudget: AttachmentBudget = { remainingBytes: ATTACHMENT_SYNC_BUDGET_BYTES };
     for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
       const batch = messageIds.slice(i, i + BATCH_SIZE);
