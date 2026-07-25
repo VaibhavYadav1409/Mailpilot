@@ -11,17 +11,26 @@ import { purgeOldEmails, getRetentionDays } from "./services/retentionEngine";
  * each job below, to make these times unambiguous across regions).
  */
 export function startScheduler() {
-  // 00:05 daily — after midnight UTC, so "today" has fully rolled over
-  // before computing yesterday's DailyAnalytics rows.
-  cron.schedule("5 0 * * *", async () => {
-    console.log("[Scheduler] Running daily analytics rollup...");
-    try {
-      const result = await runDailyAnalyticsRollup();
-      console.log(`[Scheduler] Analytics rollup: ${result.processed}/${result.total} employees processed`);
-    } catch (e) {
-      console.error("[Scheduler] Analytics rollup failed:", e);
-    }
-  });
+  // 00:05 daily — just after midnight UTC. We roll up YESTERDAY, the day that
+  // just fully completed. Passing no date defaulted to `new Date()` (today),
+  // which at 00:05 has ~5 minutes of data — so every day's DailyAnalytics row
+  // was written near-empty and never recomputed, silently zeroing out every
+  // admin history chart (trends, leaderboard, department performance) that
+  // reads DailyAnalytics. Compute the completed day instead.
+  cron.schedule(
+    "5 0 * * *",
+    async () => {
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      console.log(`[Scheduler] Running daily analytics rollup for ${yesterday.toISOString().slice(0, 10)}...`);
+      try {
+        const result = await runDailyAnalyticsRollup(yesterday);
+        console.log(`[Scheduler] Analytics rollup: ${result.processed}/${result.total} employees processed`);
+      } catch (e) {
+        console.error("[Scheduler] Analytics rollup failed:", e);
+      }
+    },
+    { timezone: "UTC" },
+  );
 
   // Every hour, on the hour — notification rules are cheap checks against
   // already-computed data, so hourly is frequent enough to catch things

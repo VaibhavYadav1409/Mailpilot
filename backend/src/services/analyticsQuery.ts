@@ -38,7 +38,7 @@ export async function getCompanyOverview(companyId: string) {
     unreadEmails,
     pendingReplies,
     aiActionsToday,
-    todaysAnalytics,
+    replyTimeAgg,
   ] = await Promise.all([
     prisma.employee.count({ where: { companyId } }),
     prisma.employee.count({ where: { companyId, status: "ONLINE" } }),
@@ -63,26 +63,26 @@ export async function getCompanyOverview(companyId: string) {
     prisma.aIAction.count({
       where: { employee: { companyId }, createdAt: { gte: start, lt: end } },
     }),
-    prisma.dailyAnalytics.findMany({
+    // Average first-response time for replies that landed today — computed
+    // LIVE from Email, not from today's DailyAnalytics row. The rollup only
+    // writes each day's row once (for the completed day), so reading today's
+    // row here always returned an empty/stale number during the day. Email
+    // .replyTimeSec is per-email first-response time (see recordReply), so a
+    // direct _avg is both accurate and cheaper than the old employee-id
+    // subquery + in-memory averaging.
+    prisma.email.aggregate({
       where: {
-        employeeId: {
-          in: ((await prisma.employee.findMany({ where: { companyId }, select: { id: true } })) as EmployeeIdRow[]).map(
-            (e: EmployeeIdRow) => e.id,
-          ),
-        },
-        date: start,
+        gmailAccount: { companyId },
+        isReplied: true,
+        repliedAt: { gte: start, lt: end },
+        replyTimeSec: { not: null },
       },
-      select: { avgReplyTimeSec: true },
-    }) as Promise<{ avgReplyTimeSec: number | null }[]>,
+      _avg: { replyTimeSec: true },
+    }),
   ]);
 
-  const replyTimes = todaysAnalytics
-    .map((a: { avgReplyTimeSec: number | null }) => a.avgReplyTimeSec)
-    .filter((v: number | null): v is number => v !== null);
   const avgResponseTimeSec =
-    replyTimes.length > 0
-      ? Math.round(replyTimes.reduce((s: number, v: number) => s + v, 0) / replyTimes.length)
-      : null;
+    replyTimeAgg._avg.replyTimeSec !== null ? Math.round(replyTimeAgg._avg.replyTimeSec) : null;
 
   return {
     totalEmployees,
