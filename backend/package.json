@@ -16,6 +16,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed.ts",
     "backfill:categories": "tsx scripts/backfillCategories.ts",
+    "backfill:promotional": "tsx scripts/backfillPromotional.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit"

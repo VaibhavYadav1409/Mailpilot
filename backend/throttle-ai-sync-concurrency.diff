@@ -1,0 +1,88 @@
+diff --git a/backend/src/lib/concurrencyLimit.ts b/backend/src/lib/concurrencyLimit.ts
+new file mode 100644
+index 0000000..e454117
+--- /dev/null
++++ b/backend/src/lib/concurrencyLimit.ts
+@@ -0,0 +1,37 @@
++/**
++ * Minimal concurrency limiter — no new dependency (avoids repeating the
++ * Prisma-install network headaches we've hit before in this repo's sandbox).
++ *
++ * Returns a `run` function: callers pass an async task, and it resolves
++ * once the task is allowed to start (i.e. once a "slot" is free), not once
++ * the task finishes. That's the shape fire-and-forget callers need — they
++ * can still `.catch()` the result without awaiting it, but the underlying
++ * work is now queued instead of firing immediately.
++ */
++export function createLimiter(maxConcurrent: number) {
++  let active = 0;
++  const queue: Array<() => void> = [];
++
++  function next() {
++    if (active >= maxConcurrent) return;
++    const resume = queue.shift();
++    if (!resume) return;
++    active++;
++    resume();
++  }
++
++  return function run<T>(task: () => Promise<T>): Promise<T> {
++    return new Promise<T>((resolve, reject) => {
++      const attempt = () => {
++        task()
++          .then(resolve, reject)
++          .finally(() => {
++            active--;
++            next();
++          });
++      };
++      queue.push(attempt);
++      next();
++    });
++  };
++}
+diff --git a/backend/src/services/emailSync.ts b/backend/src/services/emailSync.ts
+index 9cc0df0..1a71348 100644
+--- a/backend/src/services/emailSync.ts
++++ b/backend/src/services/emailSync.ts
+@@ -5,6 +5,18 @@ import { categorizeEmail, scoreEmailPriority } from "./aiPipeline";
+ import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
+ import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
+ import { htmlToPlainText } from "../lib/htmlToText";
++import { createLimiter } from "../lib/concurrencyLimit";
++
++// categorizeEmail/scoreEmailPriority are fired per-message without being
++// awaited (see persistParsedMessage below) so the sync loop itself isn't
++// slowed down by LLM latency. Left completely unbounded, a first sync of a
++// few hundred messages fired that many concurrent Groq requests at once —
++// each holding open sockets, request/response buffers, and a Prisma query —
++// which is what was still exceeding Render's 512MB limit even after the
++// streaming persistence fix. Capping shared concurrency here queues the
++// excess instead of firing it all at once, without changing the
++// fire-and-forget call sites themselves.
++const aiCallLimiter = createLimiter(4);
+ 
+ /** A Gmail Sent-labeled message, reduced to just what thread-based reply matching needs. */
+ interface GmailSentMeta {
+@@ -229,7 +241,7 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
+     // below only logs failures, it doesn't retry them). Catch it up here
+     // rather than leaving it uncategorized forever.
+     if (!existing.category) {
+-      categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText).catch((e) =>
++      aiCallLimiter(() => categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText)).catch((e) =>
+         console.error(`[AI] backfill categorize failed for email ${existing.id}:`, e)
+       );
+     }
+@@ -276,10 +288,10 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
+ 
+   // Fire-and-forget: categorization/priority shouldn't block the sync
+   // loop or fail the whole batch if the LLM provider has a bad moment.
+-  categorizeEmail(employeeId, email.id, parsed.bodyText).catch((e) =>
++  aiCallLimiter(() => categorizeEmail(employeeId, email.id, parsed.bodyText)).catch((e) =>
+     console.error(`[AI] categorize failed for email ${email.id}:`, e)
+   );
+-  scoreEmailPriority(employeeId, email.id, parsed.bodyText).catch((e) =>
++  aiCallLimiter(() => scoreEmailPriority(employeeId, email.id, parsed.bodyText)).catch((e) =>
+     console.error(`[AI] priority scoring failed for email ${email.id}:`, e)
+   );
+ 

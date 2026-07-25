@@ -28,6 +28,7 @@ function safeLocalPath(storageKey: string): string {
 interface S3Client {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
   get(key: string): Promise<Buffer>;
+  del(key: string): Promise<void>;
 }
 
 let s3Client: S3Client | null = null;
@@ -42,7 +43,7 @@ async function getS3Client(): Promise<S3Client> {
     throw new Error("ATTACHMENT_STORAGE_DRIVER=s3 requires ATTACHMENT_S3_BUCKET and ATTACHMENT_S3_REGION");
   }
 
-  const { S3Client, PutObjectCommand, GetObjectCommand } = await import("@aws-sdk/client-s3");
+  const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
   const client = new S3Client({
     region,
     endpoint: process.env.ATTACHMENT_S3_ENDPOINT || undefined,
@@ -65,6 +66,9 @@ async function getS3Client(): Promise<S3Client> {
       // @ts-expect-error - Body is a Node.js Readable in the Node runtime
       for await (const chunk of result.Body) chunks.push(Buffer.from(chunk));
       return Buffer.concat(chunks);
+    },
+    async del(key) {
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
   };
   return s3Client;
@@ -96,6 +100,25 @@ export async function readAttachment(storageKey: string): Promise<Buffer> {
     return client.get(storageKey);
   }
   return fs.readFile(safeLocalPath(storageKey));
+}
+
+/**
+ * Deletes a previously written attachment's bytes. Used by the retention job
+ * (services/retentionEngine.ts) when purging old emails so blobs on disk/S3
+ * don't outlive their DB rows. Idempotent: a missing object is treated as
+ * already-deleted rather than an error.
+ */
+export async function deleteAttachment(storageKey: string): Promise<void> {
+  if (driver === "s3") {
+    const client = await getS3Client();
+    await client.del(storageKey);
+    return;
+  }
+  try {
+    await fs.unlink(safeLocalPath(storageKey));
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") throw e; // already gone is fine
+  }
 }
 
 export function attachmentStorageDriver() {

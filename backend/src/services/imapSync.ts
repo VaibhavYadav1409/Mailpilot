@@ -2,6 +2,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { decryptToken } from "../lib/crypto";
 import { htmlToPlainText } from "../lib/htmlToText";
+import { isPromotionalEmail, headerValue } from "./promoDetector";
 import type { GmailAccount } from "../generated/prisma/client";
 import type { ImapSentMessageMeta } from "./replyTracking";
 
@@ -33,6 +34,9 @@ export interface ParsedImapMessage {
   bodyHtml: string;
   snippet: string;
   attachments: ParsedImapAttachment[];
+  // Deterministic promotional/bulk flag from List-Unsubscribe/Precedence
+  // headers (IMAP has no Gmail-style category labels). See promoDetector.ts.
+  isPromotional: boolean;
 }
 
 function buildClient(account: GmailAccount): ImapFlow {
@@ -140,6 +144,13 @@ export async function fetchImapMessages(account: GmailAccount): Promise<ParsedIm
               mimeType: a.contentType || "application/octet-stream",
               content: a.content,
             })),
+          isPromotional: isPromotionalEmail({
+            listUnsubscribe: headerValue(parsed.headers, "list-unsubscribe"),
+            precedence: headerValue(parsed.headers, "precedence"),
+            autoSubmitted: headerValue(parsed.headers, "auto-submitted"),
+            bodyText,
+            bodyHtml: htmlPart,
+          }),
         });
       }
     } finally {
@@ -210,6 +221,13 @@ export async function fetchImapMessagesStreaming(
               mimeType: a.contentType || "application/octet-stream",
               content: a.content,
             })),
+          isPromotional: isPromotionalEmail({
+            listUnsubscribe: headerValue(parsed.headers, "list-unsubscribe"),
+            precedence: headerValue(parsed.headers, "precedence"),
+            autoSubmitted: headerValue(parsed.headers, "auto-submitted"),
+            bodyText,
+            bodyHtml: htmlPart,
+          }),
         });
         count++;
         // parsed/msg go out of scope here and become eligible for GC before

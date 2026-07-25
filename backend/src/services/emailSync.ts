@@ -2,6 +2,7 @@ import { prisma } from "../lib/db";
 import { getValidAccessToken } from "./gmailAccountService";
 import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority } from "./aiPipeline";
+import { isPromotionalEmail, PROMOTIONAL_LABEL, headerValue } from "./promoDetector";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
 import { htmlToPlainText } from "../lib/htmlToText";
@@ -58,6 +59,10 @@ interface ParsedMessage {
   bodyHtml: string;
   snippet: string;
   attachments: ParsedAttachment[];
+  // Deterministic promotional/bulk flag computed at parse time from Gmail
+  // labels or bulk-mail headers (see promoDetector.ts). When true, the email
+  // is labeled "Spam/Promotional" directly, bypassing the flaky LLM path.
+  isPromotional?: boolean;
 }
 
 /**
@@ -231,6 +236,14 @@ async function fetchGmailMessage(id: string, accessToken: string, attachmentBudg
     bodyHtml,
     snippet: msg.snippet || finalBodyText.slice(0, 160),
     attachments,
+    isPromotional: isPromotionalEmail({
+      gmailLabelIds: labelIds,
+      listUnsubscribe: headers["list-unsubscribe"] ?? null,
+      precedence: headers["precedence"] ?? null,
+      autoSubmitted: headers["auto-submitted"] ?? null,
+      bodyText: finalBodyText,
+      bodyHtml,
+    }),
   };
 }
 
@@ -243,6 +256,23 @@ async function fetchGmailMessage(id: string, accessToken: string, attachmentBudg
  * buffers (25MB each) in memory at once was what exceeded Render's 512MB
  * limit on a fresh sync. Returns true if a new row was created.
  */
+/**
+ * Directly labels an email as promotional, no LLM involved. Used when a hard
+ * signal (Gmail category label, List-Unsubscribe header, etc.) already told us
+ * the message is bulk/marketing mail. Idempotent via upsert.
+ */
+async function labelPromotional(emailId: string): Promise<void> {
+  try {
+    await prisma.emailCategory.upsert({
+      where: { emailId },
+      create: { emailId, label: PROMOTIONAL_LABEL, source: "HEURISTIC", confidence: 1 },
+      update: { label: PROMOTIONAL_LABEL, source: "HEURISTIC", confidence: 1 },
+    });
+  } catch (e) {
+    console.error(`[promo] failed to label email ${emailId} as promotional:`, e);
+  }
+}
+
 async function persistParsedMessage(employeeId: string, accountId: string, parsed: ParsedMessage): Promise<boolean> {
   // Dedup: unique constraint on (gmailAccountId, gmailMessageId) means a
   // re-sync (e.g. overlapping window) just no-ops rather than duplicating rows.
@@ -258,7 +288,16 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
     // attempt failed transiently and was never retried (fire-and-forget
     // below only logs failures, it doesn't retry them). Catch it up here
     // rather than leaving it uncategorized forever.
-    if (!existing.category) {
+    if (parsed.isPromotional) {
+      // Deterministic promo signal (Gmail label / List-Unsubscribe header).
+      // Ensure it's filed under Promotions even if a prior LLM pass left it
+      // blank OR mislabeled it as something else — but never override a label
+      // a human set manually. This is what lets a re-sync retroactively fix
+      // the existing inbox once this code is deployed.
+      if (existing.category?.label !== PROMOTIONAL_LABEL && existing.category?.source !== "MANUAL") {
+        await labelPromotional(existing.id);
+      }
+    } else if (!existing.category) {
       aiCallLimiter(() => categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText)).catch((e) =>
         console.error(`[AI] backfill categorize failed for email ${existing.id}:`, e)
       );
@@ -304,11 +343,19 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
     }
   }
 
-  // Fire-and-forget: categorization/priority shouldn't block the sync
-  // loop or fail the whole batch if the LLM provider has a bad moment.
-  aiCallLimiter(() => categorizeEmail(employeeId, email.id, parsed.bodyText)).catch((e) =>
-    console.error(`[AI] categorize failed for email ${email.id}:`, e)
-  );
+  // Promotional mail is decided by hard signals (Gmail labels / bulk-mail
+  // headers), not the LLM — so it lands in "Promotions" reliably even when
+  // the LLM is rate-limited or wrong. Everything else goes to the LLM
+  // categorizer as before.
+  if (parsed.isPromotional) {
+    await labelPromotional(email.id);
+  } else {
+    // Fire-and-forget: categorization shouldn't block the sync loop or fail
+    // the whole batch if the LLM provider has a bad moment.
+    aiCallLimiter(() => categorizeEmail(employeeId, email.id, parsed.bodyText)).catch((e) =>
+      console.error(`[AI] categorize failed for email ${email.id}:`, e)
+    );
+  }
   aiCallLimiter(() => scoreEmailPriority(employeeId, email.id, parsed.bodyText)).catch((e) =>
     console.error(`[AI] priority scoring failed for email ${email.id}:`, e)
   );
@@ -390,6 +437,7 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
         bodyHtml: m.bodyHtml,
         snippet: m.snippet,
         attachments: m.attachments,
+        isPromotional: m.isPromotional,
       };
       if (await persistParsedMessage(employeeId, account.id, parsed)) synced++;
     });

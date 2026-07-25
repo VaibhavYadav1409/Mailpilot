@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { runDailyAnalyticsRollup } from "./services/analyticsEngine";
 import { runNotificationRules } from "./services/notificationEngine";
 import { generateScheduledCompanyReports } from "./services/reportEngine";
+import { purgeOldEmails, getRetentionDays } from "./services/retentionEngine";
 
 /**
  * Registers all scheduled jobs. Called once from server.ts at startup.
@@ -35,6 +36,32 @@ export function startScheduler() {
     }
   });
 
+  // 00:20 daily — purge emails older than EMAIL_RETENTION_DAYS (default 30)
+  // so the database doesn't fill up and block new mail syncs. Runs after the
+  // 00:05 analytics rollup so nothing is deleted before it's been counted.
+  // Set EMAIL_RETENTION_DAYS=0 to disable.
+  cron.schedule(
+    "20 0 * * *",
+    async () => {
+      const days = getRetentionDays();
+      if (days <= 0) {
+        console.log("[Scheduler] Email retention disabled (EMAIL_RETENTION_DAYS<=0), skipping purge.");
+        return;
+      }
+      console.log(`[Scheduler] Purging emails older than ${days} days...`);
+      try {
+        const r = await purgeOldEmails(days);
+        console.log(
+          `[Scheduler] Retention purge: ${r.emailsDeleted} emails, ${r.attachmentRowsDeleted} attachments ` +
+            `(${r.attachmentFilesDeleted} blobs), ${r.repliesDeleted} replies removed; cutoff ${r.cutoff}`,
+        );
+      } catch (e) {
+        console.error("[Scheduler] Retention purge failed:", e);
+      }
+    },
+    { timezone: "UTC" },
+  );
+
   // Monday 00:10 UTC — one company-wide WEEKLY report per company,
   // automatically, satisfying Phase 8's "scheduled report generation."
   // Runs after the daily rollup so Monday's report includes Sunday's data.
@@ -48,5 +75,8 @@ export function startScheduler() {
     }
   });
 
-  console.log("[Scheduler] Cron jobs registered: daily rollup (00:05), notification rules (hourly), weekly reports (Mon 00:10)");
+  console.log(
+    `[Scheduler] Cron jobs registered: daily rollup (00:05), notification rules (hourly), ` +
+      `email retention purge (00:20, ${getRetentionDays()}d), weekly reports (Mon 00:10)`,
+  );
 }
