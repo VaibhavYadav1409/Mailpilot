@@ -142,19 +142,15 @@ export async function recordReply(emailId: string, timestamps: Date[]): Promise<
  * rather than going stale between syncs.
  */
 export async function refreshPendingDurations(accountId: string): Promise<void> {
-  const now = new Date();
-  const unreplied = await prisma.email.findMany({
-    where: { gmailAccountId: accountId, isReplied: false },
-    select: { id: true, receivedAt: true },
-  });
-  if (!unreplied.length) return;
-
-  await prisma.$transaction(
-    unreplied.map((e) =>
-      prisma.email.update({
-        where: { id: e.id },
-        data: { pendingDurationSec: Math.max(0, Math.floor((now.getTime() - e.receivedAt.getTime()) / 1000)) },
-      })
-    )
-  );
+  // One set-based UPDATE instead of loading every unreplied email and issuing
+  // a separate UPDATE per row inside a single transaction — the old approach
+  // built thousands of statements for a busy account, held one long
+  // transaction, and pulled every row's id/receivedAt into memory first.
+  // pendingDurationSec = whole seconds since receivedAt as of now, floored at
+  // 0. Postgres computes it in-place; nothing needs to come back to Node.
+  await prisma.$executeRaw`
+    UPDATE "Email"
+    SET "pendingDurationSec" = GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - "receivedAt")))::int)
+    WHERE "gmailAccountId" = ${accountId} AND "isReplied" = false
+  `;
 }

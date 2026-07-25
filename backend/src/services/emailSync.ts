@@ -3,6 +3,7 @@ import { getValidAccessToken } from "./gmailAccountService";
 import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority } from "./aiPipeline";
 import { isPromotionalEmail, PROMOTIONAL_LABEL, headerValue } from "./promoDetector";
+import { isGroqCoolingDown } from "../lib/llm";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
 import { htmlToPlainText } from "../lib/htmlToText";
@@ -18,6 +19,11 @@ import { createLimiter } from "../lib/concurrencyLimit";
 // excess instead of firing it all at once, without changing the
 // fire-and-forget call sites themselves.
 const aiCallLimiter = createLimiter(4);
+
+// How far back reply detection looks for inbound emails a newly-sent message
+// might be answering. Bounds the per-sync candidate scan so it doesn't grow
+// with total mailbox age. 120 days comfortably covers real reply latencies.
+const REPLY_CANDIDATE_WINDOW_DAYS = 120;
 
 /** A Gmail Sent-labeled message, reduced to just what thread-based reply matching needs. */
 interface GmailSentMeta {
@@ -297,7 +303,7 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
       if (existing.category?.label !== PROMOTIONAL_LABEL && existing.category?.source !== "MANUAL") {
         await labelPromotional(existing.id);
       }
-    } else if (!existing.category) {
+    } else if (!existing.category && !isGroqCoolingDown()) {
       aiCallLimiter(() => categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText)).catch((e) =>
         console.error(`[AI] backfill categorize failed for email ${existing.id}:`, e)
       );
@@ -349,16 +355,21 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
   // categorizer as before.
   if (parsed.isPromotional) {
     await labelPromotional(email.id);
-  } else {
+  } else if (!isGroqCoolingDown()) {
     // Fire-and-forget: categorization shouldn't block the sync loop or fail
-    // the whole batch if the LLM provider has a bad moment.
+    // the whole batch if the LLM provider has a bad moment. Skipped entirely
+    // while the Groq breaker is open so a big sync doesn't queue hundreds of
+    // doomed, memory-holding calls against an exhausted quota (the cause of a
+    // prior Render OOM). Uncategorized rows are caught on a later sync.
     aiCallLimiter(() => categorizeEmail(employeeId, email.id, parsed.bodyText)).catch((e) =>
       console.error(`[AI] categorize failed for email ${email.id}:`, e)
     );
   }
-  aiCallLimiter(() => scoreEmailPriority(employeeId, email.id, parsed.bodyText)).catch((e) =>
-    console.error(`[AI] priority scoring failed for email ${email.id}:`, e)
-  );
+  if (!isGroqCoolingDown()) {
+    aiCallLimiter(() => scoreEmailPriority(employeeId, email.id, parsed.bodyText)).catch((e) =>
+      console.error(`[AI] priority scoring failed for email ${email.id}:`, e)
+    );
+  }
 
   return true;
 }
@@ -445,12 +456,20 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
 
   // Reply detection: look at what this employee sent (Gmail's Sent label,
   // or the IMAP account's Sent/Sent Items folder) and match it back to
-  // inbound emails it answered. Candidates are every Email row on this
-  // account — not just unreplied ones — since a thread can get more than
-  // one reply over time and lastReplyAt should keep moving forward.
+  // inbound emails it answered. Candidates include already-replied ones too
+  // (not just unreplied), since a thread can get more than one reply over
+  // time and lastReplyAt should keep moving forward.
+  //
+  // Bounded to a recent window instead of the entire account: the sent
+  // messages we match against are themselves only pulled from the current
+  // sync window, and a reply almost always answers a still-active thread.
+  // Scanning every email ever on the account grew unbounded with mailbox age
+  // for no practical gain; REPLY_CANDIDATE_WINDOW_DAYS is generous enough to
+  // catch replies to threads that went quiet for a while.
+  const candidateSince = new Date(Date.now() - REPLY_CANDIDATE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   try {
     const candidates: ReplyCandidate[] = await prisma.email.findMany({
-      where: { gmailAccountId: account.id },
+      where: { gmailAccountId: account.id, receivedAt: { gte: candidateSince } },
       select: { id: true, gmailMessageId: true, threadId: true, receivedAt: true },
     });
 
