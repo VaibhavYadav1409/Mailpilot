@@ -18,7 +18,7 @@ const ATTACHMENT_SYNC_BUDGET_BYTES = 24 * 1024 * 1024;
 
 // How many messages a single run pulls from a folder. Env-overridable via
 // IMAP_MAX_MESSAGES.
-const MAX_MESSAGES_PER_RUN = Math.max(10, Number(process.env.IMAP_MAX_MESSAGES) || 100);
+const MAX_MESSAGES_PER_RUN = Math.max(10, Number(process.env.IMAP_MAX_MESSAGES) || Number(process.env.MAX_EMAILS_PER_ACCOUNT) || 75);
 
 // How far back the FIRST IMAP sync reaches (later syncs are incremental via
 // lastSyncedAt). Env-overridable, shared in spirit with emailSync's

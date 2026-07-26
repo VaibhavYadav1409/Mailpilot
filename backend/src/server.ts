@@ -95,7 +95,7 @@ httpServer.listen(port, () => {
   const heapLimitMB = Math.round(v8.getHeapStatistics().heap_size_limit / 1048576);
   const rssMB = Math.round(process.memoryUsage().rss / 1048576);
   console.log(
-    `[boot] build=db-resilient-4 heapLimitMB=${heapLimitMB} rssStartMB=${rssMB} ` +
+    `[boot] build=keep-75-5 heapLimitMB=${heapLimitMB} rssStartMB=${rssMB} ` +
       `syncConcurrency=${process.env.SYNC_MESSAGE_CONCURRENCY ?? 2} ` +
       `initialDays=${process.env.SYNC_INITIAL_DAYS ?? 7}`,
   );

@@ -8,6 +8,7 @@ import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
 import { htmlToPlainText } from "../lib/htmlToText";
 import { createLimiter, QUEUE_FULL } from "../lib/concurrencyLimit";
+import { pruneAccountToLimit, getMaxEmailsPerAccount } from "./retentionEngine";
 
 // categorizeEmail/scoreEmailPriority are fired per-message without being
 // awaited (see persistParsedMessage below) so the sync loop itself isn't
@@ -60,10 +61,11 @@ const REPLY_CANDIDATE_WINDOW_DAYS = 120;
 const SYNC_INITIAL_DAYS = Math.max(1, Number(process.env.SYNC_INITIAL_DAYS) || 7);
 const SYNC_MESSAGE_CONCURRENCY = Math.max(1, Number(process.env.SYNC_MESSAGE_CONCURRENCY) || 2);
 
-// Hard cap on how many message ids a single first sync pulls (later syncs are
-// incremental and small). Bounds the total work — and the AI backlog — a
-// fresh connect can generate. Override with SYNC_MAX_MESSAGES.
-const SYNC_MAX_MESSAGES = Math.max(50, Number(process.env.SYNC_MAX_MESSAGES) || 250);
+// Hard cap on how many message ids a single sync pulls. Kept in step with the
+// per-account keep-limit (default 75) so a sync never fetches far more than we
+// intend to retain — this is the main guard against the sync ballooning past
+// the instance's memory limit. Override with SYNC_MAX_MESSAGES.
+const SYNC_MAX_MESSAGES = Math.max(10, Number(process.env.SYNC_MAX_MESSAGES) || getMaxEmailsPerAccount());
 
 /** A Gmail Sent-labeled message, reduced to just what thread-based reply matching needs. */
 interface GmailSentMeta {
@@ -466,14 +468,14 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
       ? Math.floor(account.lastSyncedAt.getTime() / 1000)
       : Math.floor((Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS) / 1000); // first sync: last SYNC_INITIAL_DAYS days
 
-    // Only the FIRST sync (no lastSyncedAt) needs the hard message cap — it's
-    // the one that reaches back over a whole window. Incremental syncs pull
-    // just what arrived since last time and stay naturally small.
-    const isFirstSync = !account.lastSyncedAt;
+    // Cap every sync (first or incremental) at SYNC_MAX_MESSAGES. Since we only
+    // ever retain the most recent N emails (pruned below), fetching more than
+    // that just wastes memory/time — Gmail returns newest-first, so the cap
+    // keeps exactly the freshest slice.
     const messageIds = await listGmailMessageIds(
       `after:${gmailSinceEpochSec}`,
       accessToken,
-      isFirstSync ? SYNC_MAX_MESSAGES : 500,
+      SYNC_MAX_MESSAGES,
     );
 
     // Fetch a small batch concurrently (bounded memory: at most BATCH_SIZE
@@ -577,6 +579,16 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
 
   await refreshPendingDurations(account.id);
   await prisma.gmailAccount.update({ where: { id: account.id }, data: { lastSyncedAt: new Date() } });
+
+  // Trim to the most recent N emails (default 75). Deletes older emails +
+  // their attachments/categories/replies so the mailbox never grows unbounded
+  // — this is what keeps memory and Neon storage/transfer in check. Wrapped so
+  // a prune hiccup never fails an otherwise-successful sync.
+  try {
+    await pruneAccountToLimit(account.id);
+  } catch (e) {
+    console.error(`[Prune] failed to trim account ${account.id}:`, e);
+  }
 
   return { synced };
 }
