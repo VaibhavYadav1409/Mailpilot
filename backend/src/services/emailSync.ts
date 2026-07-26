@@ -141,6 +141,12 @@ interface GmailAttachmentRef {
   filename: string;
   mimeType: string;
   attachmentId: string;
+  // Declared size in bytes from Gmail's part metadata (body.size). Lets us
+  // decide whether to download an attachment BEFORE fetching it — critical,
+  // because fetchGmailAttachment pulls the whole thing back as a base64
+  // string and decodes it, so a big attachment spikes memory during the
+  // download itself, well before any post-download size check could help.
+  size: number;
 }
 
 /** Collects attachment parts (anything with a filename + attachmentId) anywhere in the MIME tree, skipping inline/no-filename parts. */
@@ -149,7 +155,12 @@ function extractAttachmentRefs(payload: any): GmailAttachmentRef[] {
   const walk = (part: any) => {
     if (!part) return;
     if (part.filename && part.body?.attachmentId) {
-      refs.push({ filename: part.filename, mimeType: part.mimeType || "application/octet-stream", attachmentId: part.body.attachmentId });
+      refs.push({
+        filename: part.filename,
+        mimeType: part.mimeType || "application/octet-stream",
+        attachmentId: part.body.attachmentId,
+        size: Number(part.body.size) || 0,
+      });
     }
     for (const sub of part.parts ?? []) walk(sub);
   };
@@ -261,6 +272,20 @@ async function fetchGmailMessage(id: string, accessToken: string, attachmentBudg
     if (attachmentBudget.remainingBytes <= 0) {
       console.warn(`[sync] attachment sync budget exhausted, skipping "${ref.filename}" on message ${id}`);
       break;
+    }
+    // Decide BEFORE downloading, using Gmail's declared size. Downloading a
+    // large attachment (base64 string + decoded Buffer) is exactly what
+    // spiked memory past 512MB. Oversized or over-budget attachments are
+    // skipped without ever being fetched — the email itself still syncs.
+    if (ref.size > MAX_ATTACHMENT_BYTES) {
+      console.warn(
+        `[sync] skipping oversized attachment "${ref.filename}" (${Math.round(ref.size / 1048576)}MB) on message ${id}; email still synced`,
+      );
+      continue;
+    }
+    if (ref.size > attachmentBudget.remainingBytes) {
+      console.warn(`[sync] attachment "${ref.filename}" would exceed sync budget, skipping; email still synced`);
+      continue;
     }
     const content = await fetchGmailAttachment(id, ref.attachmentId, accessToken);
     if (content && content.byteLength <= MAX_ATTACHMENT_BYTES) {
