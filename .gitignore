@@ -53,3 +53,7 @@ generated-reports/
 
 # Environment files with real values, beyond the .local pattern already covered
 .env.production
+
+# Large build artifacts — never commit these (GitHub rejects >100MB)
+admin-dashboard.zip
+*.zip

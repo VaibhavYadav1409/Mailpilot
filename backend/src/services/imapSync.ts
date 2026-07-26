@@ -6,12 +6,24 @@ import { isPromotionalEmail, headerValue } from "./promoDetector";
 import type { GmailAccount } from "../generated/prisma/client";
 import type { ImapSentMessageMeta } from "./replyTracking";
 
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25MB per attachment
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10MB per attachment (matches the Gmail path)
+
+// Cap total attachment bytes held across one sync run (mirrors the Gmail
+// path's ATTACHMENT_SYNC_BUDGET_BYTES). Once exhausted, later oversized
+// attachments in this run are dropped — but the EMAIL itself is always still
+// synced (with its subject/body/metadata); only the heavy attachment blob is
+// skipped, never the mail. Keeps peak memory bounded without ever hiding an
+// email from the inbox.
+const ATTACHMENT_SYNC_BUDGET_BYTES = 24 * 1024 * 1024;
+
+// How many messages a single run pulls from a folder. Env-overridable via
+// IMAP_MAX_MESSAGES.
+const MAX_MESSAGES_PER_RUN = Math.max(10, Number(process.env.IMAP_MAX_MESSAGES) || 100);
 
 // How far back the FIRST IMAP sync reaches (later syncs are incremental via
 // lastSyncedAt). Env-overridable, shared in spirit with emailSync's
-// SYNC_INITIAL_DAYS; fewer days = faster first sync. Default 14.
-const SYNC_INITIAL_DAYS = Math.max(1, Number(process.env.SYNC_INITIAL_DAYS) || 14);
+// SYNC_INITIAL_DAYS; fewer days = faster first sync. Default 7.
+const SYNC_INITIAL_DAYS = Math.max(1, Number(process.env.SYNC_INITIAL_DAYS) || 7);
 const initialSinceDate = () => new Date(Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS);
 
 // Folder names to fall back to (in order) when the server doesn't advertise
@@ -106,7 +118,7 @@ export async function fetchImapMessages(account: GmailAccount): Promise<ParsedIm
     const lock = await client.getMailboxLock("INBOX");
     try {
       const uids = await client.search({ since: sinceDate }, { uid: true });
-      const capped = (Array.isArray(uids) ? uids : []).slice(-100); // most recent 100
+      const capped = (Array.isArray(uids) ? uids : []).slice(-MAX_MESSAGES_PER_RUN);
 
       for (const uid of capped) {
         const msg = await client.fetchOne(String(uid), { source: true, flags: true }, { uid: true });
@@ -187,13 +199,14 @@ export async function fetchImapMessagesStreaming(
 
   const sinceDate = account.lastSyncedAt ?? initialSinceDate();
   let count = 0;
+  let attachmentBudget = ATTACHMENT_SYNC_BUDGET_BYTES;
 
   try {
     await client.connect();
     const lock = await client.getMailboxLock("INBOX");
     try {
       const uids = await client.search({ since: sinceDate }, { uid: true });
-      const capped = (Array.isArray(uids) ? uids : []).slice(-100); // most recent 100
+      const capped = (Array.isArray(uids) ? uids : []).slice(-MAX_MESSAGES_PER_RUN);
 
       for (const uid of capped) {
         const msg = await client.fetchOne(String(uid), { source: true, flags: true }, { uid: true });
@@ -207,6 +220,19 @@ export async function fetchImapMessagesStreaming(
         const htmlPart = typeof parsed.html === "string" ? parsed.html : "";
         const bodyText = parsed.text || (htmlPart ? htmlToPlainText(htmlPart) : "");
 
+        const attachments: ParsedImapAttachment[] = [];
+        for (const a of parsed.attachments || []) {
+          if (a.contentDisposition && a.contentDisposition !== "attachment") continue;
+          if (a.content.byteLength > MAX_ATTACHMENT_BYTES) continue;
+          if (a.content.byteLength > attachmentBudget) continue; // per-sync budget exhausted
+          attachmentBudget -= a.content.byteLength;
+          attachments.push({
+            filename: a.filename || "attachment",
+            mimeType: a.contentType || "application/octet-stream",
+            content: a.content,
+          });
+        }
+
         await onMessage({
           imapMessageId: parsed.messageId || `${account.id}-${uid}`,
           threadId: parsed.messageId || `${account.id}-${uid}`,
@@ -219,14 +245,7 @@ export async function fetchImapMessagesStreaming(
           bodyText,
           bodyHtml: htmlPart,
           snippet: bodyText.slice(0, 160),
-          attachments: (parsed.attachments || [])
-            .filter((a) => !a.contentDisposition || a.contentDisposition === "attachment")
-            .filter((a) => a.content.byteLength <= MAX_ATTACHMENT_BYTES)
-            .map((a) => ({
-              filename: a.filename || "attachment",
-              mimeType: a.contentType || "application/octet-stream",
-              content: a.content,
-            })),
+          attachments,
           isPromotional: isPromotionalEmail({
             listUnsubscribe: headerValue(parsed.headers, "list-unsubscribe"),
             precedence: headerValue(parsed.headers, "precedence"),
@@ -278,7 +297,7 @@ export async function fetchImapSentMessages(account: GmailAccount): Promise<Imap
     const lock = await client.getMailboxLock(sentPath);
     try {
       const uids = await client.search({ since: sinceDate }, { uid: true });
-      const capped = (Array.isArray(uids) ? uids : []).slice(-100);
+      const capped = (Array.isArray(uids) ? uids : []).slice(-MAX_MESSAGES_PER_RUN);
 
       for (const uid of capped) {
         const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });

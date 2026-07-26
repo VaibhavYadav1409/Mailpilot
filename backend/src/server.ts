@@ -65,5 +65,17 @@ initSockets(httpServer);
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
 httpServer.listen(port, () => {
   console.log(`MailPilot backend listening on :${port}`);
+  // Boot diagnostics — lets us confirm from the deploy logs that the memory-
+  // hardened build is the one actually running (vs. a stale cached build).
+  // heapLimitMB reflects --max-old-space-size; if it doesn't show ~192 the
+  // process is NOT running the current start script.
+  const v8 = require("node:v8");
+  const heapLimitMB = Math.round(v8.getHeapStatistics().heap_size_limit / 1048576);
+  const rssMB = Math.round(process.memoryUsage().rss / 1048576);
+  console.log(
+    `[boot] build=oom-hardened-2 heapLimitMB=${heapLimitMB} rssStartMB=${rssMB} ` +
+      `syncConcurrency=${process.env.SYNC_MESSAGE_CONCURRENCY ?? 2} ` +
+      `initialDays=${process.env.SYNC_INITIAL_DAYS ?? 7}`,
+  );
   startScheduler();
 });
