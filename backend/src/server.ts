@@ -19,6 +19,19 @@ import { reportsRouter } from "./routes/reports";
 import { initSockets } from "./sockets";
 import { startScheduler } from "./scheduler";
 
+// A single unhandled promise rejection (e.g. the login route's Prisma call
+// when the Neon database is briefly unreachable) was taking the WHOLE server
+// down with exit status 1 — turning one cold/failed DB connection into a
+// crash loop that broke every request. Log and stay alive instead; individual
+// requests still fail, but the server survives and recovers on its own once
+// the database is reachable again.
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection] keeping process alive:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException] keeping process alive:", err);
+});
+
 const app = express();
 
 // Render (like Heroku/Vercel) terminates TLS and proxies requests through an
@@ -56,6 +69,15 @@ app.use("/api/reports", reportsRouter);
 // Phase 8 complete: scheduled analytics rollup, notification rules engine,
 // and scheduled report generation are wired in below via startScheduler().
 
+// Catch-all error handler: any route that forwards an error via next(err)
+// (or a sync throw) returns a clean 503 instead of a dangling request or a
+// crash. Must be registered AFTER all routes.
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("[express error]", err);
+  if (res.headersSent) return;
+  res.status(503).json({ error: "Service temporarily unavailable. Please try again in a moment." });
+});
+
 // Plain app.listen() previously — now an explicit http.Server so Socket.IO
 // (see sockets/index.ts) can attach to the exact same listener rather than
 // opening a second port for live updates.
@@ -73,7 +95,7 @@ httpServer.listen(port, () => {
   const heapLimitMB = Math.round(v8.getHeapStatistics().heap_size_limit / 1048576);
   const rssMB = Math.round(process.memoryUsage().rss / 1048576);
   console.log(
-    `[boot] build=oom-hardened-3 heapLimitMB=${heapLimitMB} rssStartMB=${rssMB} ` +
+    `[boot] build=db-resilient-4 heapLimitMB=${heapLimitMB} rssStartMB=${rssMB} ` +
       `syncConcurrency=${process.env.SYNC_MESSAGE_CONCURRENCY ?? 2} ` +
       `initialDays=${process.env.SYNC_INITIAL_DAYS ?? 7}`,
   );

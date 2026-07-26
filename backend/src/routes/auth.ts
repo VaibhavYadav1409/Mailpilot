@@ -36,52 +36,61 @@ authRouter.post("/login", async (req, res) => {
   }
   const { email, password } = parsed.data;
 
-  const employee = await prisma.employee.findUnique({ where: { email } });
-  // Deliberately identical error for "no such user" and "wrong password" —
-  // distinguishing them lets an attacker enumerate valid company emails.
-  const invalidMsg = { error: "Invalid email or password" };
+  try {
+    const employee = await prisma.employee.findUnique({ where: { email } });
+    // Deliberately identical error for "no such user" and "wrong password" —
+    // distinguishing them lets an attacker enumerate valid company emails.
+    const invalidMsg = { error: "Invalid email or password" };
 
-  if (!employee) return res.status(401).json(invalidMsg);
+    if (!employee) return res.status(401).json(invalidMsg);
 
-  const ok = await bcrypt.compare(password, employee.password);
-  if (!ok) return res.status(401).json(invalidMsg);
+    const ok = await bcrypt.compare(password, employee.password);
+    if (!ok) return res.status(401).json(invalidMsg);
 
-  if (employee.status === "SUSPENDED") {
-    return res.status(403).json({ error: "This account has been suspended. Contact your administrator." });
-  }
+    if (employee.status === "SUSPENDED") {
+      return res.status(403).json({ error: "This account has been suspended. Contact your administrator." });
+    }
 
-  const accessToken = signAccessToken({
-    employeeId: employee.id,
-    companyId: employee.companyId,
-    departmentId: employee.departmentId,
-    role: employee.role,
-  });
-  const refreshToken = await issueRefreshToken(employee.id);
-
-  await prisma.employee.update({
-    where: { id: employee.id },
-    data: { status: "ONLINE", lastActiveAt: new Date() },
-  });
-
-  emitToCompany(employee.companyId, "employee:status-changed", { employeeId: employee.id, status: "ONLINE" });
-
-  res.cookie(COOKIE_NAME, refreshToken, {
-    ...REFRESH_COOKIE_OPTIONS,
-    maxAge: 1000 * 60 * 60 * 24 * 30,
-  });
-
-  return res.json({
-    accessToken,
-    employee: {
-      id: employee.id,
-      email: employee.email,
-      firstName: employee.firstName,
-      lastName: employee.lastName,
-      role: employee.role,
+    const accessToken = signAccessToken({
+      employeeId: employee.id,
       companyId: employee.companyId,
       departmentId: employee.departmentId,
-    },
-  });
+      role: employee.role,
+    });
+    const refreshToken = await issueRefreshToken(employee.id);
+
+    await prisma.employee.update({
+      where: { id: employee.id },
+      data: { status: "ONLINE", lastActiveAt: new Date() },
+    });
+
+    emitToCompany(employee.companyId, "employee:status-changed", { employeeId: employee.id, status: "ONLINE" });
+
+    res.cookie(COOKIE_NAME, refreshToken, {
+      ...REFRESH_COOKIE_OPTIONS,
+      maxAge: 1000 * 60 * 60 * 24 * 30,
+    });
+
+    return res.json({
+      accessToken,
+      employee: {
+        id: employee.id,
+        email: employee.email,
+        firstName: employee.firstName,
+        lastName: employee.lastName,
+        role: employee.role,
+        companyId: employee.companyId,
+        departmentId: employee.departmentId,
+      },
+    });
+  } catch (e) {
+    // Almost always a transient database-connectivity error (e.g. the Neon
+    // serverless DB waking from suspend, or an unreachable endpoint). Return a
+    // clear 503 so the client can retry — and, critically, so this NEVER
+    // becomes an unhandled rejection that crashes the whole server.
+    console.error("[auth] login failed — database unreachable?", e);
+    return res.status(503).json({ error: "Service temporarily unavailable. Please try again in a moment." });
+  }
 });
 
 authRouter.post("/refresh", async (req, res) => {
