@@ -45,12 +45,21 @@ function withActiveGmailAccount<T extends { gmailAccounts?: unknown[] }>(
  * (employeeScopeFilter already encodes all three, so this route never has to
  * branch on role itself).
  *
- * Each employee also gets an `inboxCounts: { pending, replied }` summary —
- * same isReplied/isTrashed semantics as getEmployeeEmailList in
+ * Each employee also gets an `inboxCounts: { pending, replied, noReplyNeeded }`
+ * summary — same isReplied/isTrashed semantics as getEmployeeEmailList in
  * analyticsQuery.ts, since these numbers are exactly what drives the
  * Pending/Replied count cells (and their click-through lists) in the admin
- * EmployeeTable. Computed as one grouped query across every active account
+ * EmployeeTable. Computed as grouped queries across every active account
  * on this page rather than per-employee round trips.
+ *
+ * `pending` counts only mail that actually warrants a reply — an email the AI
+ * classified as an acknowledgment, an FYI, or an automated notification is
+ * counted under `noReplyNeeded` instead. This keeps the admin's pending
+ * number aligned with what the employee sees in their own Unreplied view;
+ * previously a mailbox full of newsletters and "thanks!" replies inflated
+ * pending and made the metric useless for spotting real backlog. Mail not yet
+ * classified (requiresReply IS NULL) still counts as pending — see
+ * Email.requiresReply in schema.prisma for why NULL leans that way.
  */
 employeesRouter.get("/", requireAuth, async (req, res) => {
   const employees = await prisma.employee.findMany({
@@ -63,25 +72,36 @@ employeesRouter.get("/", requireAuth, async (req, res) => {
     .map((e) => e.gmailAccounts[0]?.id)
     .filter((id): id is string => Boolean(id));
 
+  // Grouping by requiresReply as well as isReplied splits unreplied mail into
+  // "genuinely waiting on a human" vs. "nothing to reply to" in the same
+  // single pass, instead of issuing a second query per bucket.
   const counts = accountIds.length
     ? await prisma.email.groupBy({
-        by: ["gmailAccountId", "isReplied"],
+        by: ["gmailAccountId", "isReplied", "requiresReply"],
         where: { gmailAccountId: { in: accountIds }, isTrashed: false },
         _count: { _all: true },
       })
     : [];
 
-  const countsByAccount = new Map<string, { pending: number; replied: number }>();
+  const emptyCounts = () => ({ pending: 0, replied: 0, noReplyNeeded: 0 });
+  const countsByAccount = new Map<string, ReturnType<typeof emptyCounts>>();
   for (const row of counts) {
-    const entry = countsByAccount.get(row.gmailAccountId) ?? { pending: 0, replied: 0 };
-    if (row.isReplied) entry.replied = row._count._all;
-    else entry.pending = row._count._all;
+    const entry = countsByAccount.get(row.gmailAccountId) ?? emptyCounts();
+    if (row.isReplied) {
+      entry.replied += row._count._all;
+    } else if (row.requiresReply === false) {
+      entry.noReplyNeeded += row._count._all;
+    } else {
+      // requiresReply true OR null — null means "not yet classified" and is
+      // deliberately counted as pending rather than quietly dropped.
+      entry.pending += row._count._all;
+    }
     countsByAccount.set(row.gmailAccountId, entry);
   }
 
   const withCounts = employees.map((e) => ({
     ...e,
-    inboxCounts: countsByAccount.get(e.gmailAccounts[0]?.id ?? "") ?? { pending: 0, replied: 0 },
+    inboxCounts: countsByAccount.get(e.gmailAccounts[0]?.id ?? "") ?? emptyCounts(),
   }));
 
   return res.json(withCounts.map(withActiveGmailAccount));

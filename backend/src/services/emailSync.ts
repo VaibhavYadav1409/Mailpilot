@@ -1,7 +1,7 @@
 import { prisma } from "../lib/db";
 import { getValidAccessToken } from "./gmailAccountService";
 import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
-import { categorizeEmail, scoreEmailPriority } from "./aiPipeline";
+import { categorizeEmail, scoreEmailPriority, markNoReplyNeeded } from "./aiPipeline";
 import { isPromotionalEmail, PROMOTIONAL_LABEL, headerValue } from "./promoDetector";
 import { isGroqCoolingDown } from "../lib/llm";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
@@ -100,6 +100,7 @@ interface ParsedMessage {
   fromAddress: string;
   fromName: string | null;
   toAddresses: string[];
+  ccAddresses: string[];
   subject: string | null;
   isRead: boolean;
   internalDate: Date;
@@ -111,6 +112,57 @@ interface ParsedMessage {
   // labels or bulk-mail headers (see promoDetector.ts). When true, the email
   // is labeled "Spam/Promotional" directly, bypassing the flaky LLM path.
   isPromotional?: boolean;
+}
+
+/**
+ * Splits a raw To/Cc header into bare email addresses.
+ *
+ * Naive comma splitting is fine for To (it was already used there) but breaks
+ * on Cc far more often, because display names in copied-in mail routinely
+ * contain commas — `"Yadav, Vaibhav" <v@x.com>, ops@x.com` would otherwise
+ * yield a junk `"Yadav` entry and, worse, drop the real address. Commas
+ * inside quotes or inside angle brackets are ignored when splitting.
+ */
+export function parseAddressList(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const parts: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  let inAngles = false;
+  for (const ch of raw) {
+    if (ch === '"') inQuotes = !inQuotes;
+    else if (ch === "<") inAngles = true;
+    else if (ch === ">") inAngles = false;
+    if (ch === "," && !inQuotes && !inAngles) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+
+  return parts
+    .map((s) => (s.match(/<(.+?)>/)?.[1] ?? s).replace(/"/g, "").trim().toLowerCase())
+    .filter((s) => s.includes("@"));
+}
+
+/**
+ * True when the mailbox owner appears in Cc but not in To — copied for
+ * visibility rather than addressed directly.
+ *
+ * Deliberately header-derived rather than AI-derived: it's a fact about the
+ * message, not a judgement, so it stays correct while the Groq breaker is
+ * open. Returns false when the owner appears in neither list (bcc, mailing
+ * list, or alias delivery) — "not visibly addressed at all" is not the same
+ * claim as "was CC'd", and only the latter belongs in the CC view.
+ */
+export function computeIsCc(ownerEmail: string, toAddresses: string[], ccAddresses: string[]): boolean {
+  const owner = ownerEmail.trim().toLowerCase();
+  if (!owner) return false;
+  const inTo = toAddresses.some((a) => a.trim().toLowerCase() === owner);
+  const inCc = ccAddresses.some((a) => a.trim().toLowerCase() === owner);
+  return inCc && !inTo;
 }
 
 /**
@@ -259,11 +311,8 @@ async function fetchGmailMessage(id: string, accessToken: string, attachmentBudg
   const fromAddress = fromMatch[2]?.trim() || fromRaw;
   const fromName = fromMatch[1]?.trim().replace(/^"|"$/g, "") || null;
 
-  const toRaw = headers["to"] ?? "";
-  const toAddresses = toRaw
-    .split(",")
-    .map((s: string) => (s.match(/<(.+?)>/)?.[1] ?? s).trim())
-    .filter(Boolean);
+  const toAddresses = parseAddressList(headers["to"]);
+  const ccAddresses = parseAddressList(headers["cc"]);
 
   const { bodyText, bodyHtml } = extractBody(msg.payload);
   const finalBodyText = bodyText || msg.snippet || "";
@@ -302,6 +351,7 @@ async function fetchGmailMessage(id: string, accessToken: string, attachmentBudg
     fromAddress,
     fromName,
     toAddresses,
+    ccAddresses,
     subject: headers["subject"] || null,
     isRead: !labelIds.includes("UNREAD"),
     internalDate: msg.internalDate ? new Date(parseInt(msg.internalDate, 10)) : new Date(),
@@ -346,7 +396,12 @@ async function labelPromotional(emailId: string): Promise<void> {
   }
 }
 
-async function persistParsedMessage(employeeId: string, accountId: string, parsed: ParsedMessage): Promise<boolean> {
+async function persistParsedMessage(
+  employeeId: string,
+  accountId: string,
+  parsed: ParsedMessage,
+  ownerEmail: string,
+): Promise<boolean> {
   // Dedup: unique constraint on (gmailAccountId, gmailMessageId) means a
   // re-sync (e.g. overlapping window) just no-ops rather than duplicating rows.
   const existing = await prisma.email.findUnique({
@@ -370,7 +425,19 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
       if (existing.category?.label !== PROMOTIONAL_LABEL && existing.category?.source !== "MANUAL") {
         await labelPromotional(existing.id);
       }
-    } else if (!existing.category && !isGroqCoolingDown()) {
+      // Promotional mail never needs a reply. Settling it here (rather than
+      // only in labelPromotional) also catches rows labeled promotional
+      // before reply-worthiness existed, so a re-sync retroactively clears
+      // them out of Pending.
+      if (existing.requiresReply !== false) {
+        await markNoReplyNeeded(existing.id).catch((e) =>
+          console.error(`[AI] failed to mark email ${existing.id} as no-reply-needed:`, e),
+        );
+      }
+    } else if (!isGroqCoolingDown() && (!existing.category || existing.requiresReply === null)) {
+      // Self-healing now also covers rows that have a category but no
+      // reply-worthiness verdict — i.e. everything that synced before this
+      // feature shipped. categorizeEmail sets both in one call.
       aiCallLimiter(() => categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText)).catch(
         ignoreQueueFull(`[AI] backfill categorize failed for email ${existing.id}:`)
       );
@@ -386,6 +453,8 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
       fromAddress: parsed.fromAddress,
       fromName: parsed.fromName,
       toAddresses: parsed.toAddresses.length ? JSON.stringify(parsed.toAddresses) : null,
+      ccAddresses: parsed.ccAddresses.length ? JSON.stringify(parsed.ccAddresses) : null,
+      isCc: computeIsCc(ownerEmail, parsed.toAddresses, parsed.ccAddresses),
       subject: parsed.subject,
       receivedAt: parsed.internalDate,
       isRead: parsed.isRead,
@@ -422,6 +491,12 @@ async function persistParsedMessage(employeeId: string, accountId: string, parse
   // categorizer as before.
   if (parsed.isPromotional) {
     await labelPromotional(email.id);
+    // Bulk/marketing mail never warrants a reply, and this verdict comes from
+    // headers rather than the model — so it holds even while Groq is cooling
+    // down, and these never pollute the Unreplied/Pending views.
+    await markNoReplyNeeded(email.id).catch((e) =>
+      console.error(`[AI] failed to mark email ${email.id} as no-reply-needed:`, e),
+    );
   } else if (!isGroqCoolingDown()) {
     // Fire-and-forget: categorization shouldn't block the sync loop or fail
     // the whole batch if the LLM provider has a bad moment. Skipped entirely
@@ -498,7 +573,7 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
       const fetched = await Promise.all(batch.map((id) => fetchGmailMessage(id, accessToken, attachmentBudget)));
       for (const m of fetched) {
         if (!m) continue;
-        if (await persistParsedMessage(employeeId, account.id, m)) synced++;
+        if (await persistParsedMessage(employeeId, account.id, m, account.emailAddress)) synced++;
       }
       const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
       const attachMb = Math.round((ATTACHMENT_SYNC_BUDGET_BYTES - attachmentBudget.remainingBytes) / 1024 / 1024);
@@ -516,6 +591,7 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
         fromAddress: m.fromAddress,
         fromName: m.fromName,
         toAddresses: m.toAddresses,
+        ccAddresses: m.ccAddresses,
         subject: m.subject,
         isRead: m.isRead,
         internalDate: m.internalDate,
@@ -525,7 +601,12 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
         attachments: m.attachments,
         isPromotional: m.isPromotional,
       };
-      if (await persistParsedMessage(employeeId, account.id, parsed)) synced++;
+      // IMAP accounts authenticate as imapUser, which is the real mailbox
+      // address; emailAddress is what the employee registered. Prefer
+      // imapUser when present so isCc compares against the address mail is
+      // actually delivered to.
+      const ownerEmail = account.imapUser || account.emailAddress;
+      if (await persistParsedMessage(employeeId, account.id, parsed, ownerEmail)) synced++;
     });
   }
 

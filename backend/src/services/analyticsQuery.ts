@@ -242,6 +242,13 @@ export async function getCompanyTrends(companyId: string, range: "daily" | "week
  * some age threshold) this keeps them as one number under two keys. If a
  * distinct SLA-breach definition is wanted later, pendingDurationSec
  * (Email — see replyTracking.ts) is exactly what to threshold on.
+ *
+ * Both now exclude mail the AI judged not to warrant a reply (acknowledgments,
+ * FYIs, automated notifications); that volume is reported separately as
+ * `noReplyNeededEmails`. Same rationale as the inbox counts in
+ * routes/employees.ts — a pending number that counts newsletters isn't a
+ * backlog signal. `activeConversations` follows the same rule, since a thread
+ * whose only open message needs no reply isn't actually active.
  */
 export async function getEmployeeOverview(employeeId: string) {
   const { start: todayStart, end: todayEnd } = todayRange();
@@ -254,12 +261,28 @@ export async function getEmployeeOverview(employeeId: string) {
   });
   if (!account) return null;
 
+  // Shared fragment: unreplied AND actually warranting a reply. NULL
+  // (unclassified) counts as needing one — see Email.requiresReply.
+  //
+  // `isTrashed: false` matters here: getEmployeeEmailList (which backs the
+  // click-through list) has always excluded trashed mail, while these counts
+  // did not. That mismatch meant the admin dashboard could render a tab
+  // labelled "Pending (12)" above a list of 9 rows. Aligning the two on the
+  // stricter definition — a trashed email isn't awaiting anything — makes the
+  // count and the list it links to agree by construction.
+  const awaitingReply = {
+    isTrashed: false,
+    isReplied: false,
+    OR: [{ requiresReply: true }, { requiresReply: null }],
+  };
+
   const [
     emailsReceivedToday,
     emailsRepliedToday,
     emailsReceivedThisWeek,
     emailsRepliedThisWeek,
     pendingEmails,
+    noReplyNeededEmails,
     unreadEmails,
     readEmails,
     activeConversations,
@@ -270,7 +293,10 @@ export async function getEmployeeOverview(employeeId: string) {
     prisma.email.count({ where: { gmailAccountId: account.id, isReplied: true, repliedAt: { gte: todayStart, lt: todayEnd } } }),
     prisma.email.count({ where: { gmailAccountId: account.id, receivedAt: { gte: weekStart } } }),
     prisma.email.count({ where: { gmailAccountId: account.id, isReplied: true, repliedAt: { gte: weekStart } } }),
-    prisma.email.count({ where: { gmailAccountId: account.id, isReplied: false } }),
+    prisma.email.count({ where: { gmailAccountId: account.id, ...awaitingReply } }),
+    prisma.email.count({
+      where: { gmailAccountId: account.id, isTrashed: false, isReplied: false, requiresReply: false },
+    }),
     prisma.email.count({ where: { gmailAccountId: account.id, isRead: false } }),
     prisma.email.count({ where: { gmailAccountId: account.id, isRead: true } }),
     // "Conversation" = thread. Distinct threadIds among not-yet-replied vs.
@@ -278,7 +304,7 @@ export async function getEmployeeOverview(employeeId: string) {
     // provider that never set one) counts as its own single-message thread
     // via its own id, so it isn't silently dropped from either count.
     prisma.email.findMany({
-      where: { gmailAccountId: account.id, isReplied: false },
+      where: { gmailAccountId: account.id, ...awaitingReply },
       select: { id: true, threadId: true },
     }),
     prisma.email.findMany({
@@ -319,6 +345,7 @@ export async function getEmployeeOverview(employeeId: string) {
     emailsRepliedThisWeek,
     pendingEmails,
     unansweredEmails: pendingEmails,
+    noReplyNeededEmails,
     unreadEmails,
     readEmails,
     activeConversations: activeThreadIds.size,
@@ -340,7 +367,7 @@ export async function getEmployeeOverview(employeeId: string) {
  */
 export async function getEmployeeEmailList(
   employeeId: string,
-  status: "pending" | "replied",
+  status: "pending" | "replied" | "no_reply_needed",
   limit = 20,
   cursor?: string
 ) {
@@ -350,8 +377,21 @@ export async function getEmployeeEmailList(
   });
   if (!account) return null;
 
+  // "pending" mirrors getEmployeeOverview.pendingEmails exactly — unreplied
+  // AND warranting a reply — so the count on the row and the list behind it
+  // can never disagree. "no_reply_needed" is the complement: unreplied mail
+  // the AI judged as acknowledgment/informational/automated, surfaced so an
+  // admin can audit what the classifier is filtering out rather than having
+  // it silently vanish.
+  const statusFilter =
+    status === "replied"
+      ? { isReplied: true }
+      : status === "no_reply_needed"
+        ? { isReplied: false, requiresReply: false }
+        : { isReplied: false, OR: [{ requiresReply: true }, { requiresReply: null }] };
+
   const emails = await prisma.email.findMany({
-    where: { gmailAccountId: account.id, isTrashed: false, isReplied: status === "replied" },
+    where: { gmailAccountId: account.id, isTrashed: false, ...statusFilter },
     orderBy: status === "replied" ? { repliedAt: "desc" } : { receivedAt: "desc" },
     take: limit + 1,
     ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
@@ -363,6 +403,8 @@ export async function getEmployeeEmailList(
       receivedAt: true,
       repliedAt: true,
       pendingDurationSec: true,
+      isCc: true,
+      replyClassification: true,
     },
   });
 

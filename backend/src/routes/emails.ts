@@ -47,7 +47,40 @@ const listQuerySchema = z.object({
   includeTrashed: z.coerce.boolean().optional(),
   search: z.string().optional(),
   categoryLabel: z.string().optional(),
+  // CC view: emails where this mailbox was copied in rather than addressed
+  // directly. Computed at sync time from headers (Email.isCc).
+  ccOnly: z.coerce.boolean().optional(),
+  // Reply-worthiness views. Filtered server-side rather than after fetch so
+  // they stay correct across pagination — the same reasoning as categoryLabel
+  // above. "unreplied" deliberately means *awaiting a reply that is actually
+  // warranted*: it excludes mail the AI classified as acknowledgment /
+  // informational / automated, while still including anything not yet
+  // classified (requiresReply IS NULL), so nothing silently disappears while
+  // the LLM is catching up.
+  replyStatus: z.enum(["unreplied", "replied", "no_reply_needed"]).optional(),
 });
+
+/**
+ * Prisma `where` fragment for each reply-status view.
+ *
+ * The NULL handling is the important part: "not yet classified" is grouped
+ * with "needs a reply", never with "doesn't". A row can be unclassified
+ * because the Groq breaker was open during sync or because it predates the
+ * feature, and in both cases showing it in Unreplied is the recoverable
+ * outcome — hiding a real customer email is not.
+ */
+function replyStatusFilter(status: "unreplied" | "replied" | "no_reply_needed" | undefined) {
+  switch (status) {
+    case "replied":
+      return { isReplied: true };
+    case "unreplied":
+      return { isReplied: false, OR: [{ requiresReply: true }, { requiresReply: null }] };
+    case "no_reply_needed":
+      return { isReplied: false, requiresReply: false };
+    default:
+      return {};
+  }
+}
 
 emailsRouter.get("/", requireAuth, async (req, res) => {
   const parsed = listQuerySchema.safeParse(req.query);
@@ -56,27 +89,38 @@ emailsRouter.get("/", requireAuth, async (req, res) => {
   const account = await getOwnGmailAccountOr404(req.user!.employeeId);
   if (!account) return res.json({ emails: [], nextCursor: null });
 
-  const { limit, cursor, unreadOnly, starredOnly, includeTrashed, search, categoryLabel } = parsed.data;
+  const { limit, cursor, unreadOnly, starredOnly, includeTrashed, search, categoryLabel, ccOnly, replyStatus } =
+    parsed.data;
   const emails = await prisma.email.findMany({
     where: {
       gmailAccountId: account.id,
       ...(unreadOnly ? { isRead: false } : {}),
       ...(starredOnly ? { isStarred: true } : {}),
       ...(includeTrashed ? {} : { isTrashed: false }),
+      ...(ccOnly ? { isCc: true } : {}),
       // Filtered server-side (not client-side after fetch) so a mailbox
       // with more than one page of mail doesn't silently hide promotional
       // emails that fall outside whatever page happened to be fetched.
       ...(categoryLabel ? { category: { label: categoryLabel } } : {}),
-      ...(search
-        ? {
-            OR: [
-              { subject: { contains: search, mode: "insensitive" } },
-              { fromAddress: { contains: search, mode: "insensitive" } },
-              { fromName: { contains: search, mode: "insensitive" } },
-              { snippet: { contains: search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
+      // Search and reply-status each need their own OR group, so they're
+      // combined under AND rather than spread as sibling `OR` keys — two
+      // `OR`s at the same level would silently overwrite each other and
+      // return the wrong rows whenever both filters are active at once.
+      AND: [
+        replyStatusFilter(replyStatus),
+        ...(search
+          ? [
+              {
+                OR: [
+                  { subject: { contains: search, mode: "insensitive" as const } },
+                  { fromAddress: { contains: search, mode: "insensitive" as const } },
+                  { fromName: { contains: search, mode: "insensitive" as const } },
+                  { snippet: { contains: search, mode: "insensitive" as const } },
+                ],
+              },
+            ]
+          : []),
+      ],
     },
     orderBy: { receivedAt: "desc" },
     take: limit + 1,
@@ -96,11 +140,15 @@ emailsRouter.get("/", requireAuth, async (req, res) => {
       fromAddress: true,
       fromName: true,
       toAddresses: true,
+      ccAddresses: true,
+      isCc: true,
       subject: true,
       receivedAt: true,
       isRead: true,
       isReplied: true,
       repliedAt: true,
+      requiresReply: true,
+      replyClassification: true,
       snippet: true,
       isStarred: true,
       isTrashed: true,

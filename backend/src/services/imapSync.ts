@@ -45,6 +45,7 @@ export interface ParsedImapMessage {
   fromAddress: string;
   fromName: string | null;
   toAddresses: string[];
+  ccAddresses: string[];
   subject: string | null;
   isRead: boolean;
   internalDate: Date;
@@ -128,6 +129,8 @@ export async function fetchImapMessages(account: GmailAccount): Promise<ParsedIm
         const fromAddr = parsed.from?.value?.[0];
         const toList = Array.isArray(parsed.to) ? parsed.to : parsed.to ? [parsed.to] : [];
         const toAddresses = toList.flatMap((t) => t.value.map((v) => v.address ?? "")).filter(Boolean);
+        const ccList = Array.isArray(parsed.cc) ? parsed.cc : parsed.cc ? [parsed.cc] : [];
+        const ccAddresses = ccList.flatMap((c) => c.value.map((v) => v.address ?? "")).filter(Boolean);
 
         // mailparser gives `text` when a text/plain part exists and `html`
         // (string, or `false` when there is none) when an HTML part exists.
@@ -142,6 +145,7 @@ export async function fetchImapMessages(account: GmailAccount): Promise<ParsedIm
           fromAddress: fromAddr?.address || "unknown@unknown",
           fromName: fromAddr?.name || null,
           toAddresses,
+          ccAddresses,
           subject: parsed.subject || null,
           isRead: !!msg.flags?.has("\\Seen"),
           internalDate: parsed.date || new Date(),
@@ -216,6 +220,8 @@ export async function fetchImapMessagesStreaming(
         const fromAddr = parsed.from?.value?.[0];
         const toList = Array.isArray(parsed.to) ? parsed.to : parsed.to ? [parsed.to] : [];
         const toAddresses = toList.flatMap((t) => t.value.map((v) => v.address ?? "")).filter(Boolean);
+        const ccList = Array.isArray(parsed.cc) ? parsed.cc : parsed.cc ? [parsed.cc] : [];
+        const ccAddresses = ccList.flatMap((c) => c.value.map((v) => v.address ?? "")).filter(Boolean);
 
         const htmlPart = typeof parsed.html === "string" ? parsed.html : "";
         const bodyText = parsed.text || (htmlPart ? htmlToPlainText(htmlPart) : "");
@@ -239,6 +245,7 @@ export async function fetchImapMessagesStreaming(
           fromAddress: fromAddr?.address || "unknown@unknown",
           fromName: fromAddr?.name || null,
           toAddresses,
+          ccAddresses,
           subject: parsed.subject || null,
           isRead: !!msg.flags?.has("\\Seen"),
           internalDate: parsed.date || new Date(),

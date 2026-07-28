@@ -182,12 +182,24 @@ export interface EmailRecord {
   fromAddress: string;
   fromName: string | null;
   toAddresses: string | null; // JSON-encoded string[]
+  ccAddresses: string | null; // JSON-encoded string[]
+  /** True when this mailbox was in Cc but not To — copied in, not addressed. */
+  isCc: boolean;
   subject: string | null;
   receivedAt: string;
   isRead: boolean;
   isStarred: boolean;
   isTrashed: boolean;
   isReplied: boolean;
+  /**
+   * Whether the AI judged this email to actually warrant a reply.
+   * `null` = not yet assessed, and is treated as "needs a reply" everywhere
+   * (see Email.requiresReply in schema.prisma) so nothing disappears from
+   * Unreplied while the classifier is catching up.
+   */
+  requiresReply?: boolean | null;
+  /** "NEEDS_REPLY" | "ACKNOWLEDGMENT" | "INFORMATIONAL" | "AUTOMATED" */
+  replyClassification?: string | null;
   // Omitted from the list endpoint (GET /api/emails) to keep the inbox
   // payload light; only present once the per-email detail fetch
   // (GET /api/emails/:id) resolves. EmailBody/selectedListItem already
@@ -212,18 +224,45 @@ export interface SentRecord {
   email: EmailRecord;
 }
 
+export type EmailFilter =
+  | "all"
+  | "unread"
+  | "read"
+  | "replied"
+  | "unreplied"
+  | "sent"
+  | "promotions"
+  | "cc"
+  | "no_reply";
+
 export interface EmailListParams {
-  filter?: "all" | "unread" | "read" | "replied" | "unreplied" | "sent" | "promotions";
+  filter?: EmailFilter;
   search?: string;
 }
 
-/** Translates the employee-app's filter pills into the query params emails.ts actually understands. */
+/**
+ * Translates the employee-app's filter pills into the query params emails.ts
+ * actually understands.
+ *
+ * `replied`/`unreplied` are now resolved server-side via `replyStatus` rather
+ * than by filtering the fetched page client-side. The old approach silently
+ * under-reported on any mailbox with more than one page of mail: it could
+ * only ever hide rows from the 100 it happened to fetch, so "Unreplied" was
+ * really "unreplied among the 100 most recent". Server-side filtering is also
+ * what lets Unreplied exclude no-reply-needed mail correctly.
+ */
 function filterToParams(filter: EmailListParams["filter"]): Record<string, string> {
   switch (filter) {
     case "unread":
       return { unreadOnly: "true" };
     case "replied":
-      return { }; // no direct backend filter; approximated client-side (see emailsApi.list)
+      return { replyStatus: "replied" };
+    case "unreplied":
+      return { replyStatus: "unreplied" };
+    case "no_reply":
+      return { replyStatus: "no_reply_needed" };
+    case "cc":
+      return { ccOnly: "true" };
     case "promotions":
       return { categoryLabel: "Spam/Promotional" };
     default:
@@ -257,13 +296,17 @@ export const emailsApi = {
     // Promotional mail has its own mailbox (the "promotions" filter above),
     // so every other mailbox — including "all" — should exclude it rather
     // than mixing it back in. Only the "promotions" view itself should see it.
-    if (params.filter !== "promotions") {
+    // "no_reply" is the other exception: promotional mail is by definition
+    // no-reply-needed, so excluding it there would leave that view claiming
+    // less is being filtered out than actually is.
+    if (params.filter !== "promotions" && params.filter !== "no_reply") {
       emails = emails.filter((e) => e.category?.label !== "Spam/Promotional");
     }
     // Filters emails.ts doesn't support server-side are applied here.
+    // CC'd mail is deliberately NOT stripped from the other views — being
+    // copied in is an extra lens on the same inbox, not a separate mailbox,
+    // so "cc" is additive rather than exclusive (unlike promotions).
     if (params.filter === "read") emails = emails.filter((e) => e.isRead);
-    if (params.filter === "replied") emails = emails.filter((e) => e.isReplied);
-    if (params.filter === "unreplied") emails = emails.filter((e) => !e.isReplied);
     return emails;
   },
   /** GET /api/emails/sent — real outgoing-mail history, backed by the Reply table (an Email row is never created for a sent reply). */

@@ -94,7 +94,7 @@ analyticsRouter.get("/employees/:id/overview", requireAuth, async (req, res) => 
 });
 
 const emailListQuerySchema = z.object({
-  status: z.enum(["pending", "replied"]),
+  status: z.enum(["pending", "replied", "no_reply_needed"]),
   cursor: z.string().optional(),
   limit: z.coerce.number().min(1).max(50).default(20),
 });

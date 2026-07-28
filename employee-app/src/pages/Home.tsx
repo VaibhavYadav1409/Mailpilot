@@ -7,28 +7,53 @@ import { ImapConnectDialog } from "@/components/ImapConnectDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { gmailApi, emailsApi, ApiError, type EmailRecord } from "@/lib/api";
+import { gmailApi, emailsApi, ApiError, type EmailRecord, type EmailFilter } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Mail, LogOut, Loader2, RefreshCw, Inbox,
   Eye, EyeOff, Send, MessageSquare, MessageSquareOff,
   CheckCircle, AlertCircle, User, X, PlusCircle,
-  Star, Trash2, Reply, CornerUpLeft, Search, Tag, Settings, Paperclip, ChevronDown, ChevronUp, Mails, ArrowLeft
+  Star, Trash2, Reply, CornerUpLeft, Search, Tag, Settings, Paperclip, ChevronDown, ChevronUp, Mails, ArrowLeft,
+  Users, Info
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 
-type FilterType = "all" | "unread" | "read" | "replied" | "unreplied" | "sent" | "promotions";
+type FilterType = EmailFilter;
 
-const FILTERS: { key: FilterType; label: string; icon: React.ReactNode }[] = [
+const FILTERS: { key: FilterType; label: string; icon: React.ReactNode; title?: string }[] = [
   { key: "all", label: "All", icon: <Inbox className="w-3.5 h-3.5" /> },
   { key: "unread", label: "Unread", icon: <EyeOff className="w-3.5 h-3.5" /> },
   { key: "read", label: "Read", icon: <Eye className="w-3.5 h-3.5" /> },
-  { key: "unreplied", label: "Unreplied", icon: <MessageSquareOff className="w-3.5 h-3.5" /> },
+  {
+    key: "unreplied",
+    label: "Unreplied",
+    icon: <MessageSquareOff className="w-3.5 h-3.5" />,
+    title: "Emails still waiting on a reply from you. Acknowledgments, FYIs and automated mail are filed under “No reply needed” instead.",
+  },
   { key: "replied", label: "Replied", icon: <MessageSquare className="w-3.5 h-3.5" /> },
+  {
+    key: "no_reply",
+    label: "No reply needed",
+    icon: <Info className="w-3.5 h-3.5" />,
+    title: "Mail that doesn’t need a response — acknowledgments (“thanks”, “noted”), FYI/status updates, and automated notifications.",
+  },
+  {
+    key: "cc",
+    label: "CC",
+    icon: <Users className="w-3.5 h-3.5" />,
+    title: "Emails where you were copied in (Cc) rather than addressed directly. These also still appear under All.",
+  },
   { key: "sent", label: "Sent", icon: <Send className="w-3.5 h-3.5" /> },
   { key: "promotions", label: "Promotions", icon: <Tag className="w-3.5 h-3.5" /> },
 ];
+
+/** Human-readable label for the AI's reply-worthiness verdict, shown as a badge on list rows. */
+const REPLY_CLASS_LABELS: Record<string, string> = {
+  ACKNOWLEDGMENT: "Acknowledgment",
+  INFORMATIONAL: "FYI",
+  AUTOMATED: "Automated",
+};
 
 function formatDate(date: Date | string | null) {
   if (!date) return "";
@@ -419,7 +444,7 @@ export default function Home() {
           </div>
           <div className="p-3 border-b flex flex-wrap gap-1.5">
             {FILTERS.map(f => (
-              <button key={f.key} onClick={() => setFilter(f.key)}
+              <button key={f.key} onClick={() => setFilter(f.key)} title={f.title}
                 className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${filter === f.key ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-accent border-border"}`}>
                 {f.icon}{f.label}
               </button>
@@ -476,9 +501,23 @@ export default function Home() {
                     {email.subject || "(No subject)"}
                   </p>
                   <p className="text-xs text-muted-foreground truncate mt-0.5">{email.snippet}</p>
-                  <div className="flex items-center gap-1 mt-1">
+                  <div className="flex items-center gap-1 mt-1 flex-wrap">
                     {!email.isRead && <span className="w-1.5 h-1.5 rounded-full bg-primary inline-block" />}
                     {email.isStarred && <span className="text-yellow-500 text-xs">★</span>}
+                    {/* Why an email is in (or absent from) Unreplied should be
+                        visible on the row itself — otherwise a message quietly
+                        missing from that view looks like a bug rather than a
+                        deliberate classification the user can see and judge. */}
+                    {email.isCc && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border" title="You were copied in (Cc)">
+                        CC
+                      </span>
+                    )}
+                    {email.requiresReply === false && email.replyClassification && REPLY_CLASS_LABELS[email.replyClassification] && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border" title="No reply needed — excluded from Unreplied">
+                        {REPLY_CLASS_LABELS[email.replyClassification]}
+                      </span>
+                    )}
                   </div>
                 </button>
               ))

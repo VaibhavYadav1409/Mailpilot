@@ -195,11 +195,42 @@ model Email {
   fromAddress     String
   fromName        String?
   toAddresses     String?        // JSON-encoded string[]
+  ccAddresses     String?        // JSON-encoded string[] — the message's Cc header
+  // True when this mailbox's own address appears in Cc but NOT in To — i.e.
+  // the employee was copied for visibility, not addressed directly. Computed
+  // deterministically at sync time from the headers (no LLM), so it stays
+  // correct even when the Groq breaker is open. Drives the "CC" filter in the
+  // employee app; CC'd mail deliberately still appears in All/Inbox too.
+  isCc            Boolean        @default(false)
   subject         String?
   receivedAt      DateTime
   isRead          Boolean        @default(false)
   isReplied       Boolean        @default(false)
   repliedAt       DateTime?      // timestamp of the most recent reply, from whichever source set it last
+
+  // ---- Reply-worthiness (AI-assessed) ----------------------------------
+  // Whether this email actually warrants a human reply. Set by
+  // aiPipeline.categorizeEmail (same single LLM call as categorization — no
+  // extra request per email), or deterministically to false for mail already
+  // known to be bulk/promotional.
+  //
+  // NULL means "not yet assessed" (LLM cooling down, sync raced ahead, or the
+  // row predates this feature) and is deliberately treated as *needs a reply*
+  // everywhere it's queried. Erring toward showing an email in Pending is the
+  // safe failure mode: the cost of a false positive is one extra row in a
+  // list, the cost of a false negative is a customer email silently vanishing
+  // from the employee's and the admin's pending view.
+  requiresReply       Boolean?
+  // Why requiresReply landed where it did. One of:
+  //   "NEEDS_REPLY"    — a question/request/actionable item awaiting a response
+  //   "ACKNOWLEDGMENT" — "thanks", "noted", "received", "will do" — closes a loop
+  //   "INFORMATIONAL"  — FYI/status/announcement, nothing asked of the recipient
+  //   "AUTOMATED"      — receipts, notifications, no-reply senders, bulk mail
+  // Kept as a String (not an enum) to match the existing EmailCategory.label /
+  // .source convention in this schema and to allow adding classes without a
+  // migration.
+  replyClassification String?
+  replyClassifiedAt   DateTime?
 
   // Reply-tracking fields (added for sync-based reply detection — see
   // services/replyTracking.ts). Populated from TWO sources that both funnel
@@ -242,6 +273,12 @@ model Email {
   @@index([gmailAccountId, receivedAt])
   @@index([gmailAccountId, isReplied])
   @@index([gmailAccountId, threadId])
+  // Pending/unreplied lookups now filter on requiresReply alongside isReplied
+  // (see analyticsQuery.getEmployeeEmailList and routes/employees.ts inbox
+  // counts) — without this the admin dashboard's per-employee pending count
+  // degrades to a scan once a mailbox has any real volume.
+  @@index([gmailAccountId, isReplied, requiresReply])
+  @@index([gmailAccountId, isCc])
 }
 
 // Inbound attachment metadata. The bytes themselves live in attachmentStorage

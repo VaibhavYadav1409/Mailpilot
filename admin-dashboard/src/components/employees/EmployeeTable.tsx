@@ -15,14 +15,18 @@ interface Employee {
   status: 'ONLINE' | 'OFFLINE' | 'IDLE' | 'SUSPENDED';
   department: { id: string; name: string } | null;
   gmailAccount: { emailAddress: string; status: string; lastSyncedAt: string | null } | null;
-  inboxCounts: { pending: number; replied: number };
+  // `pending` counts only mail that actually warrants a reply; mail the AI
+  // classified as an acknowledgment / FYI / automated notification is counted
+  // under `noReplyNeeded` instead. Optional so an older backend that predates
+  // the field doesn't render `undefined` in the cell.
+  inboxCounts: { pending: number; replied: number; noReplyNeeded?: number };
 }
 
 export const EmployeeTable = () => {
   const [search, setSearch] = useState('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [expandedTab, setExpandedTab] = useState<{ id: string; tab: 'overview' | 'pending' | 'replied' }>({
+  const [expandedTab, setExpandedTab] = useState<{ id: string; tab: 'overview' | 'pending' | 'replied' | 'no_reply_needed' }>({
     id: '',
     tab: 'overview',
   });
@@ -96,8 +100,16 @@ export const EmployeeTable = () => {
               <th className="px-6 py-3.5">Department</th>
               <th className="px-6 py-3.5">Status</th>
               <th className="px-6 py-3.5">Gmail</th>
-              <th className="px-6 py-3.5">Pending</th>
+              <th className="px-6 py-3.5" title="Unreplied mail that the AI judged actually warrants a response">
+                Pending
+              </th>
               <th className="px-6 py-3.5">Replied</th>
+              <th
+                className="px-6 py-3.5"
+                title="Unreplied mail that needs no response — acknowledgments, FYIs and automated notifications. Excluded from Pending."
+              >
+                No Reply
+              </th>
               <th className="px-6 py-3.5">Last Sync</th>
               <th className="px-6 py-3.5"></th>
             </tr>
@@ -192,6 +204,22 @@ export const EmployeeTable = () => {
                     <span className="text-sm text-gray-400">—</span>
                   )}
                 </td>
+                <td className="px-6 py-4">
+                  {employee.gmailAccount ? (
+                    <button
+                      onClick={() => {
+                        setExpandedId(employee.id);
+                        setExpandedTab({ id: employee.id, tab: 'no_reply_needed' });
+                      }}
+                      className="text-sm font-tabular text-gray-400 hover:underline underline-offset-2"
+                      title="Mail filtered out of Pending because it needs no reply — click to audit what the classifier caught"
+                    >
+                      {employee.inboxCounts.noReplyNeeded ?? 0}
+                    </button>
+                  ) : (
+                    <span className="text-sm text-gray-400">—</span>
+                  )}
+                </td>
                 <td className="px-6 py-4 text-sm font-tabular text-gray-500">
                   {employee.gmailAccount?.lastSyncedAt
                     ? new Date(employee.gmailAccount.lastSyncedAt).toLocaleTimeString()
@@ -247,7 +275,7 @@ export const EmployeeTable = () => {
               </tr>
               {expandedId === employee.id && (
                 <tr>
-                  <td colSpan={8} className="px-6 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
+                  <td colSpan={9} className="px-6 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
                     <EmployeeOverviewPanel
                       employeeId={employee.id}
                       initialTab={expandedTab.id === employee.id ? expandedTab.tab : 'overview'}
@@ -273,6 +301,8 @@ interface EmployeeOverview {
   emailsRepliedThisWeek: number;
   pendingEmails: number;
   unansweredEmails: number;
+  /** Unreplied mail the AI judged as needing no response. Optional for backend compatibility. */
+  noReplyNeededEmails?: number;
   unreadEmails: number;
   readEmails: number;
   activeConversations: number;
@@ -312,9 +342,9 @@ function EmployeeOverviewPanel({
   initialTab = 'overview',
 }: {
   employeeId: string;
-  initialTab?: 'overview' | 'pending' | 'replied';
+  initialTab?: 'overview' | 'pending' | 'replied' | 'no_reply_needed';
 }) {
-  const [tab, setTab] = useState<'overview' | 'pending' | 'replied'>(initialTab);
+  const [tab, setTab] = useState<'overview' | 'pending' | 'replied' | 'no_reply_needed'>(initialTab);
 
   // Re-sync if the user clicks a different count cell while this row is already expanded.
   useEffect(() => {
@@ -344,6 +374,7 @@ function EmployeeOverviewPanel({
     { label: 'Emails received this week', value: String(data.emailsReceivedThisWeek) },
     { label: 'Emails replied this week', value: String(data.emailsRepliedThisWeek) },
     { label: 'Pending / unanswered', value: String(data.pendingEmails) },
+    { label: 'No reply needed', value: String(data.noReplyNeededEmails ?? 0) },
     { label: 'Unread', value: String(data.unreadEmails) },
     { label: 'Read', value: String(data.readEmails) },
     { label: 'Active conversations', value: String(data.activeConversations) },
@@ -356,18 +387,29 @@ function EmployeeOverviewPanel({
   return (
     <div className="py-3">
       <div className="flex items-center gap-1 mb-3 border-b border-gray-100 dark:border-gray-800">
-        {(['overview', 'pending', 'replied'] as const).map((t) => (
+        {(['overview', 'pending', 'replied', 'no_reply_needed'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
+            title={
+              t === 'no_reply_needed'
+                ? 'Mail excluded from Pending because the AI judged it needs no reply — acknowledgments, FYIs, automated notifications'
+                : undefined
+            }
             className={cn(
-              'px-3 py-2 text-xs font-medium capitalize border-b-2 -mb-px transition-colors',
+              'px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors whitespace-nowrap',
               tab === t
                 ? 'border-primary text-primary'
                 : 'border-transparent text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
             )}
           >
-            {t === 'overview' ? 'Overview' : t === 'pending' ? `Pending (${data.pendingEmails})` : 'Replied'}
+            {t === 'overview'
+              ? 'Overview'
+              : t === 'pending'
+              ? `Pending (${data.pendingEmails})`
+              : t === 'replied'
+              ? 'Replied'
+              : `No reply needed (${data.noReplyNeededEmails ?? 0})`}
           </button>
         ))}
       </div>
@@ -383,9 +425,7 @@ function EmployeeOverviewPanel({
         </div>
       )}
 
-      {(tab === 'pending' || tab === 'replied') && (
-        <EmployeeEmailList employeeId={employeeId} status={tab} />
-      )}
+      {tab !== 'overview' && <EmployeeEmailList employeeId={employeeId} status={tab} />}
     </div>
   );
 }
@@ -398,9 +438,30 @@ interface EmployeeEmailListItem {
   receivedAt: string;
   repliedAt: string | null;
   pendingDurationSec: number | null;
+  isCc?: boolean;
+  /** "NEEDS_REPLY" | "ACKNOWLEDGMENT" | "INFORMATIONAL" | "AUTOMATED" | null */
+  replyClassification?: string | null;
 }
 
-function EmployeeEmailList({ employeeId, status }: { employeeId: string; status: 'pending' | 'replied' }) {
+const REPLY_CLASS_LABELS: Record<string, string> = {
+  ACKNOWLEDGMENT: 'Acknowledgment',
+  INFORMATIONAL: 'FYI',
+  AUTOMATED: 'Automated',
+};
+
+const STATUS_EMPTY_LABEL: Record<string, string> = {
+  pending: 'pending',
+  replied: 'replied',
+  no_reply_needed: 'no-reply-needed',
+};
+
+function EmployeeEmailList({
+  employeeId,
+  status,
+}: {
+  employeeId: string;
+  status: 'pending' | 'replied' | 'no_reply_needed';
+}) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['employee-emails', employeeId, status],
     queryFn: async () => {
@@ -415,7 +476,7 @@ function EmployeeEmailList({ employeeId, status }: { employeeId: string; status:
   if (isLoading) return <div className="text-sm text-gray-400 py-2">Loading emails…</div>;
   if (error) return <div className="text-sm text-gray-400 py-2">Couldn't load emails.</div>;
   if (!data || data.emails.length === 0) {
-    return <div className="text-sm text-gray-400 py-2">No {status} emails.</div>;
+    return <div className="text-sm text-gray-400 py-2">No {STATUS_EMPTY_LABEL[status] ?? status} emails.</div>;
   }
 
   return (
@@ -423,17 +484,37 @@ function EmployeeEmailList({ employeeId, status }: { employeeId: string; status:
       {data.emails.map((e) => (
         <div key={e.id} className="py-2.5 flex items-center justify-between gap-4">
           <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{e.subject || '(no subject)'}</div>
+            <div className="text-sm font-medium truncate flex items-center gap-1.5">
+              <span className="truncate">{e.subject || '(no subject)'}</span>
+              {e.isCc && (
+                <span
+                  className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 font-normal"
+                  title="Employee was copied in (Cc), not addressed directly"
+                >
+                  CC
+                </span>
+              )}
+              {/* Showing *why* something was classed as no-reply-needed is the
+                  point of this tab — an admin needs to be able to spot the
+                  classifier filtering out something it shouldn't have. */}
+              {status === 'no_reply_needed' && e.replyClassification && REPLY_CLASS_LABELS[e.replyClassification] && (
+                <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 font-normal">
+                  {REPLY_CLASS_LABELS[e.replyClassification]}
+                </span>
+              )}
+            </div>
             <div className="text-xs text-gray-500 truncate">{e.fromName ? `${e.fromName} · ${e.fromAddress}` : e.fromAddress}</div>
           </div>
           <div className="text-xs text-gray-400 font-tabular shrink-0 text-right">
-            {status === 'pending' ? (
+            {status === 'replied' ? (
+              <div>replied {formatTimestamp(e.repliedAt)}</div>
+            ) : (
               <>
                 <div>{new Date(e.receivedAt).toLocaleString()}</div>
-                {e.pendingDurationSec != null && <div>waiting {formatSeconds(e.pendingDurationSec)}</div>}
+                {status === 'pending' && e.pendingDurationSec != null && (
+                  <div>waiting {formatSeconds(e.pendingDurationSec)}</div>
+                )}
               </>
-            ) : (
-              <div>replied {formatTimestamp(e.repliedAt)}</div>
             )}
           </div>
         </div>
