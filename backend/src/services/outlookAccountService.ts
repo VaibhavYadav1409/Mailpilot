@@ -5,10 +5,11 @@ import { exchangeCode, refreshAccessToken, type TokenExchangeResult } from "./mi
 import { deactivateOtherAccounts } from "./gmailAccountService";
 import { emitToCompany } from "../sockets";
 
-// Microsoft's IMAP endpoint. Same host for personal Outlook.com and
-// Microsoft 365 mailboxes.
-const OUTLOOK_IMAP_HOST = "outlook.office365.com";
-const OUTLOOK_IMAP_PORT = 993;
+// Outlook accounts sync over Microsoft Graph, not IMAP (personal Microsoft
+// accounts can't use OAuth with IMAP — see graphSync.ts). No host/port is
+// stored; imapUser is still set to the mailbox address because the rest of
+// the app reads it as "the address mail is actually delivered to" when
+// computing Cc/ownership.
 
 /**
  * Connects an Outlook.com / Microsoft 365 mailbox via OAuth2. Mirrors
@@ -53,10 +54,7 @@ export async function connectOutlookAccount(employeeId: string, companyId: strin
     tokenExpiresAt: expiresAt,
     status: "CONNECTED" as const,
     isActive: true,
-    imapHost: OUTLOOK_IMAP_HOST,
-    imapPort: OUTLOOK_IMAP_PORT,
     imapUser: tokens.emailAddress,
-    imapSecure: true,
   };
 
   const account = existingForMailbox

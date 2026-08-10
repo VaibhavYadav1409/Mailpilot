@@ -26,12 +26,20 @@ const AUTHORITY = "https://login.microsoftonline.com/common/oauth2/v2.0";
 // bounces the user straight back with no password prompt.
 // openid/offline_access/email/profile are OIDC scopes and are exempt from
 // the "one resource per request" rule, so they're safe to request alongside.
+// Microsoft Graph, NOT the Exchange IMAP scope. Personal (consumer)
+// Outlook.com accounts are not eligible for OAuth over IMAP — Microsoft
+// states OAuth is unsupported for POP/IMAP on Outlook.com, and requesting
+// https://outlook.office.com/IMAP.AccessAsUser.All for a consumer account
+// returns access_denied no matter how the app is registered. Graph supports
+// personal accounts directly with delegated Mail.Read and requires no
+// Exchange Online service principal in the tenant.
+//
+// User.Read is what lets us resolve the mailbox address via /me.
 const SCOPES = [
-  "https://outlook.office.com/IMAP.AccessAsUser.All",
+  "https://graph.microsoft.com/Mail.Read",
+  "https://graph.microsoft.com/User.Read",
   "offline_access",
   "openid",
-  "email",
-  "profile",
 ].join(" ");
 
 function getCredentials(): { clientId: string; clientSecret: string } {
@@ -96,18 +104,36 @@ function claimEmail(token: string | undefined): string | null {
   return email && email.includes("@") ? email.toLowerCase() : null;
 }
 
+/** Asks Graph who the token belongs to. Authoritative, and the reason
+ *  User.Read is in SCOPES. */
+async function fetchEmailFromGraph(accessToken: string): Promise<string | null> {
+  try {
+    const res = await fetch("https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { mail?: string | null; userPrincipalName?: string | null };
+    // Personal accounts often leave `mail` null and carry the address in
+    // userPrincipalName instead.
+    const email = json.mail || json.userPrincipalName;
+    return email && email.includes("@") ? email.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Works out which mailbox was just connected. Prefers the id_token, but
- * falls back to the access token's own claims — depending on the account
- * type Microsoft doesn't always return an id_token alongside a resource
- * scope, and failing the whole connect over a missing claim (when we
- * already hold a working IMAP token) would be needlessly brittle.
+ * Works out which mailbox was just connected: Graph /me first, then the
+ * id_token, then the access token's claims. The layered fallback exists
+ * because personal and work accounts populate these differently, and
+ * failing the whole connect over a missing claim — when we already hold a
+ * working mail token — would be needlessly brittle.
  */
-function resolveEmailAddress(idToken: string | undefined, accessToken: string): string {
-  const email = claimEmail(idToken) ?? claimEmail(accessToken);
+async function resolveEmailAddress(idToken: string | undefined, accessToken: string): Promise<string> {
+  const email = (await fetchEmailFromGraph(accessToken)) ?? claimEmail(idToken) ?? claimEmail(accessToken);
   if (!email) {
     throw new Error(
-      "Connected to Microsoft, but couldn't determine the mailbox address from the token. Please report this."
+      "Connected to Microsoft, but couldn't determine the mailbox address. Please report this."
     );
   }
   return email;
@@ -143,7 +169,7 @@ export async function exchangeCode(code: string): Promise<TokenExchangeResult> {
     accessToken: json.access_token,
     refreshToken: json.refresh_token ?? null,
     expiresIn: json.expires_in,
-    emailAddress: resolveEmailAddress(json.id_token, json.access_token),
+    emailAddress: await resolveEmailAddress(json.id_token, json.access_token),
   };
 }
 

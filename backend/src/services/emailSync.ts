@@ -1,6 +1,8 @@
 import { prisma } from "../lib/db";
 import { getValidAccessToken } from "./gmailAccountService";
 import { ensureFreshOutlookAccount } from "./outlookAccountService";
+import { fetchGraphMessagesStreaming, fetchGraphSentMeta } from "./graphSync";
+import { decryptToken } from "../lib/crypto";
 import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority, markNoReplyNeeded } from "./aiPipeline";
 import { isPromotionalEmail, PROMOTIONAL_LABEL, headerValue } from "./promoDetector";
@@ -591,6 +593,37 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
         `[sync] account ${account.id}: batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(messageIds.length / BATCH_SIZE)}, rss=${rssMb}MB, attachmentBudgetUsed=${attachMb}MB`
       );
     }
+  } else if (account.provider === "OUTLOOK") {
+    // Outlook.com via Microsoft Graph. Personal Microsoft accounts can't use
+    // OAuth over IMAP (Microsoft returns access_denied for the Exchange IMAP
+    // scope on consumer accounts), so Graph is the only supported route —
+    // see graphSync.ts. Streamed one message at a time for the same
+    // bounded-memory reason as the IMAP path below.
+    const since = account.lastSyncedAt ?? new Date(Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS);
+    const graphToken = decryptToken(account.accessToken);
+    await fetchGraphMessagesStreaming(
+      graphToken,
+      { since, max: SYNC_MAX_MESSAGES, folder: "inbox" },
+      async (m) => {
+        const parsed: ParsedMessage = {
+          gmailMessageId: m.graphMessageId,
+          threadId: m.threadId,
+          fromAddress: m.fromAddress,
+          fromName: m.fromName,
+          toAddresses: m.toAddresses,
+          ccAddresses: m.ccAddresses,
+          subject: m.subject,
+          isRead: m.isRead,
+          internalDate: m.internalDate,
+          bodyText: m.bodyText,
+          bodyHtml: m.bodyHtml,
+          snippet: m.snippet,
+          attachments: m.attachments,
+          isPromotional: m.isPromotional,
+        };
+        if (await persistParsedMessage(employeeId, account.id, parsed, account.emailAddress)) synced++;
+      }
+    );
   } else {
     // IMAP: stream messages one at a time straight into persistParsedMessage
     // so each message's memory is freed before the next is fetched.
@@ -651,9 +684,24 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
         for (const m of fetched) if (m) sentMeta.push(m);
       }
       matches = matchGmailReplies(sentMeta, candidates);
-    } else if (account.provider === "IMAP" || account.provider === "OUTLOOK") {
-      // OUTLOOK reads its Sent folder over the same IMAP path (its token was
-      // refreshed at the top of this function, so it's still valid here).
+    } else if (account.provider === "OUTLOOK") {
+      // Graph exposes the Sent Items folder directly. conversationId is the
+      // thread key on both sides, so replies are matched by thread rather
+      // than by Message-ID headers as the IMAP path does.
+      const sentMeta = await fetchGraphSentMeta(decryptToken(account.accessToken), candidateSince);
+      matches = new Map<string, Date[]>();
+      const byThread = new Map<string, Date[]>();
+      for (const s of sentMeta) {
+        byThread.set(s.threadId, [...(byThread.get(s.threadId) ?? []), s.sentAt]);
+      }
+      for (const c of candidates) {
+        if (!c.threadId) continue;
+        // Only count sends that happened after the inbound mail — an earlier
+        // message in the same thread isn't a reply to it.
+        const replies = (byThread.get(c.threadId) ?? []).filter((t) => t > c.receivedAt);
+        if (replies.length) matches.set(c.id, replies);
+      }
+    } else if (account.provider === "IMAP") {
       const sentMessages = await fetchImapSentMessages(account);
       matches = matchImapReplies(sentMessages, candidates);
     } else {
