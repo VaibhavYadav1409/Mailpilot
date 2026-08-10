@@ -180,13 +180,18 @@ function toParsed(msg: GraphMessage, attachments: ParsedGraphAttachment[]): Pars
  * Streams messages from a folder, newest first, invoking `onMessage` for each
  * so the caller can persist and discard it before the next arrives.
  *
- * @param since   only messages received at/after this instant
+ * @param since   only messages received at/after this instant. Omit for a
+ *                first sync: with no date filter Graph returns the newest
+ *                `max` messages regardless of age, which is what "fetch the
+ *                last 75 emails" should mean. Filtering by date instead
+ *                silently returns almost nothing for a mailbox whose recent
+ *                traffic is older than the window.
  * @param max     hard cap on messages pulled this run
  * @param folder  "inbox" or "sentitems"
  */
 export async function fetchGraphMessagesStreaming(
   accessToken: string,
-  opts: { since: Date; max: number; folder?: "inbox" | "sentitems"; withAttachments?: boolean },
+  opts: { since?: Date; max: number; folder?: "inbox" | "sentitems"; withAttachments?: boolean },
   onMessage: (m: ParsedGraphMessage) => Promise<void>
 ): Promise<number> {
   const folder = opts.folder ?? "inbox";
@@ -212,10 +217,11 @@ export async function fetchGraphMessagesStreaming(
   // Page size is deliberately small: each message carries a full body, so a
   // large page would hold many bodies in memory at once.
   const pageSize = Math.min(25, opts.max);
+  const filter = opts.since ? `&$filter=receivedDateTime ge ${opts.since.toISOString()}` : "";
   let url =
     `${GRAPH_BASE}/me/mailFolders/${folder}/messages` +
     `?$select=${select}` +
-    `&$filter=receivedDateTime ge ${opts.since.toISOString()}` +
+    filter +
     `&$orderby=receivedDateTime desc` +
     `&$top=${pageSize}`;
 

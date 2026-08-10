@@ -599,7 +599,11 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
     // scope on consumer accounts), so Graph is the only supported route —
     // see graphSync.ts. Streamed one message at a time for the same
     // bounded-memory reason as the IMAP path below.
-    const since = account.lastSyncedAt ?? new Date(Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS);
+    // First sync: no date filter at all, so Graph returns the newest
+    // SYNC_MAX_MESSAGES messages however old they are. Date-windowing the
+    // first sync means a mailbox whose traffic predates the window comes
+    // back nearly empty. Later syncs are incremental from lastSyncedAt.
+    const since = account.lastSyncedAt ?? undefined;
     const graphToken = decryptToken(account.accessToken);
     await fetchGraphMessagesStreaming(
       graphToken,
