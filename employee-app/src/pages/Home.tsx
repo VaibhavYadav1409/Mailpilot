@@ -200,13 +200,24 @@ export default function Home() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("synced") === "1") {
-      toast.success("Gmail connected! Emails synced.");
+      toast.success("Mail account connected! Emails synced.");
       window.history.replaceState({}, "", "/");
       queryClient.invalidateQueries({ queryKey: ["gmail", "status"] });
       invalidate();
     }
-    if (params.get("error") === "gmail_auth_failed") {
-      toast.error("Gmail connection failed. Please try again.");
+    // Any OAuth failure (Gmail or Outlook) comes back as ?error=... The
+    // backend puts the real provider message in there for anything it can't
+    // map to a friendly code, so surface it verbatim rather than dropping
+    // it — silently ignoring unknown codes made a failed connect look like
+    // the app had simply bounced back to the start with no explanation.
+    const authError = params.get("error");
+    if (authError) {
+      const friendly: Record<string, string> = {
+        gmail_auth_failed: "Gmail connection failed. Please try again.",
+        google_not_configured: "Gmail isn't configured on the server.",
+        outlook_auth_failed: "Outlook connection failed. Please try again.",
+      };
+      toast.error(friendly[authError] ?? decodeURIComponent(authError), { duration: 15000 });
       window.history.replaceState({}, "", "/");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
