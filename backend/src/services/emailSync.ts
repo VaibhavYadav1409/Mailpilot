@@ -1,5 +1,6 @@
 import { prisma } from "../lib/db";
 import { getValidAccessToken } from "./gmailAccountService";
+import { ensureFreshOutlookAccount } from "./outlookAccountService";
 import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority, markNoReplyNeeded } from "./aiPipeline";
 import { isPromotionalEmail, PROMOTIONAL_LABEL, headerValue } from "./promoDetector";
@@ -524,9 +525,18 @@ async function persistParsedMessage(
  * by POST /api/emails.
  */
 export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: number }> {
-  const account = await prisma.gmailAccount.findFirst({ where: { employeeId, isActive: true } });
-  if (!account || account.status !== "CONNECTED") return { synced: 0 };
-  if (account.provider === "MANUAL") return { synced: 0 };
+  const activeAccount = await prisma.gmailAccount.findFirst({ where: { employeeId, isActive: true } });
+  if (!activeAccount || activeAccount.status !== "CONNECTED") return { synced: 0 };
+  if (activeAccount.provider === "MANUAL") return { synced: 0 };
+
+  // OUTLOOK syncs over IMAP but authenticates with an OAuth access token
+  // (XOAUTH2, see imapSync.buildClient), which expires roughly hourly.
+  // Refresh it up front so both the inbox fetch and the Sent-folder fetch in
+  // reply detection below use a token that's valid for this whole run.
+  // Kept as a separate `const` (rather than reassigning) so `account` stays
+  // non-null-narrowed inside the async callbacks further down.
+  const account =
+    activeAccount.provider === "OUTLOOK" ? await ensureFreshOutlookAccount(activeAccount) : activeAccount;
 
   // Populated below for GMAIL accounts, used in the reply-detection phase
   // after inbound sync so we don't have to recompute the access token/window.
@@ -641,7 +651,9 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
         for (const m of fetched) if (m) sentMeta.push(m);
       }
       matches = matchGmailReplies(sentMeta, candidates);
-    } else if (account.provider === "IMAP") {
+    } else if (account.provider === "IMAP" || account.provider === "OUTLOOK") {
+      // OUTLOOK reads its Sent folder over the same IMAP path (its token was
+      // refreshed at the top of this function, so it's still valid here).
       const sentMessages = await fetchImapSentMessages(account);
       matches = matchImapReplies(sentMessages, candidates);
     } else {

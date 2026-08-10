@@ -127,8 +127,12 @@ export const authApi = {
 export interface GmailStatus {
   connected: boolean;
   email: string | null;
-  provider: "gmail" | "imap" | "manual" | null;
+  provider: "gmail" | "imap" | "manual" | "outlook" | null;
   googleConfigured: boolean;
+  // Whether the Microsoft app registration is configured on the backend —
+  // gates the "Connect Outlook" button the same way googleConfigured gates
+  // "Connect Gmail".
+  microsoftConfigured?: boolean;
   // Conditional Sending: only a connected Gmail account can send through
   // MailPilot. IMAP/manual accounts are read-only — sendDisabledMessage is
   // set (and canSend is false) whenever Reply/Compose/Forward/Send should
@@ -145,6 +149,20 @@ export const gmailApi = {
     window.location.href = authUrl;
   },
   disconnect: () => post<{ success: boolean }>("/api/gmail/disconnect"),
+};
+
+/**
+ * Outlook.com / Microsoft 365 connection. Same shape as gmailApi: Microsoft
+ * requires OAuth2 (Basic Auth / app passwords were disabled for Outlook.com),
+ * so connecting is a redirect to Microsoft's consent page rather than a
+ * username/password form.
+ */
+export const outlookApi = {
+  async connectAndRedirect() {
+    const { authUrl } = await get<{ authUrl: string }>("/api/outlook/connect");
+    window.location.href = authUrl;
+  },
+  disconnect: () => post<{ success: boolean }>("/api/outlook/disconnect"),
 };
 
 export interface ImapConnectInput {

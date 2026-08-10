@@ -126,9 +126,11 @@ export async function sendReply(
       threadId: email.threadId ?? undefined,
       attachments: opts.attachments,
     });
-  } else if (email.gmailAccount.provider === "IMAP") {
+  } else if (email.gmailAccount.provider === "IMAP" || email.gmailAccount.provider === "OUTLOOK") {
     // Conditional Sending: IMAP mailboxes are read-only in MailPilot,
     // regardless of SMTP details on file or IMAP_SEND_DRIVER config.
+    // OUTLOOK is read-only for the same reason — it syncs over IMAP, and
+    // sending would need a separate SMTP XOAUTH2 path that doesn't exist.
     throw new Error(IMAP_SEND_DISABLED_MESSAGE);
   } else {
     throw new Error("This mailbox has no connected send path.");

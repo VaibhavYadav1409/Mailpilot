@@ -7,7 +7,7 @@ import { ImapConnectDialog } from "@/components/ImapConnectDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { gmailApi, emailsApi, ApiError, type EmailRecord, type EmailFilter } from "@/lib/api";
+import { gmailApi, outlookApi, emailsApi, ApiError, type EmailRecord, type EmailFilter } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Mail, LogOut, Loader2, RefreshCw, Inbox,
@@ -29,20 +29,23 @@ const FILTERS: { key: FilterType; label: string; icon: React.ReactNode; title?: 
     key: "unreplied",
     label: "Unreplied",
     icon: <MessageSquareOff className="w-3.5 h-3.5" />,
-    title: "Emails still waiting on a reply from you. Acknowledgments, FYIs and automated mail are filed under “No reply needed” instead.",
+    title:
+      "Emails addressed to you that are still waiting on your reply. Acknowledgments, FYIs, automated mail and anything you were only CC'd on are filed under “No reply needed” instead.",
   },
   { key: "replied", label: "Replied", icon: <MessageSquare className="w-3.5 h-3.5" /> },
   {
     key: "no_reply",
     label: "No reply needed",
     icon: <Info className="w-3.5 h-3.5" />,
-    title: "Mail that doesn’t need a response — acknowledgments (“thanks”, “noted”), FYI/status updates, and automated notifications.",
+    title:
+      "Mail that doesn’t need a response from you — acknowledgments (“thanks”, “noted”), FYI/status updates, automated notifications, and messages you were only copied on.",
   },
   {
     key: "cc",
     label: "CC",
     icon: <Users className="w-3.5 h-3.5" />,
-    title: "Emails where you were copied in (Cc) rather than addressed directly. These also still appear under All.",
+    title:
+      "Emails where you were copied in (Cc) rather than addressed directly. These still appear under All, but never under Unreplied — the reply is someone else's to send.",
   },
   { key: "sent", label: "Sent", icon: <Send className="w-3.5 h-3.5" /> },
   { key: "promotions", label: "Promotions", icon: <Tag className="w-3.5 h-3.5" /> },
@@ -101,6 +104,11 @@ export default function Home() {
   });
   const isConnected = gmailStatus.data?.connected;
   const googleConfigured = gmailStatus.data?.googleConfigured ?? true; // assume true until loaded, to avoid a flash
+  // Outlook.com / Microsoft 365 via OAuth. Unlike googleConfigured this
+  // defaults to false: the button should only appear once the backend
+  // confirms MS_CLIENT_ID/SECRET are set, rather than flashing in on
+  // deployments that haven't configured the Microsoft app registration.
+  const microsoftConfigured = gmailStatus.data?.microsoftConfigured ?? false;
   // Conditional Sending: assume true until the status query resolves, same
   // "avoid a flash" reasoning as googleConfigured above — the reply box
   // still hides once gmailStatus.data lands, this just avoids it flickering
@@ -402,6 +410,16 @@ export default function Home() {
                     <Mail className="w-3.5 h-3.5" /> Set Up Gmail
                   </Button>
                 )}
+                {microsoftConfigured && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={() => outlookApi.connectAndRedirect().catch(() => toast.error("Couldn't start Outlook connection."))}
+                  >
+                    <Mail className="w-3.5 h-3.5" /> Connect Outlook
+                  </Button>
+                )}
               </div>
             )}
             <span className="text-sm text-muted-foreground hidden sm:block">{user?.name}</span>
@@ -477,6 +495,16 @@ export default function Home() {
                     </Button>
                   ) : (
                     <Button size="sm" variant="outline" onClick={() => setSettingsOpen(true)}>Set Up Gmail OAuth</Button>
+                  )}
+                  {microsoftConfigured && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => outlookApi.connectAndRedirect().catch(() => toast.error("Couldn't start Outlook connection."))}
+                    >
+                      Connect Outlook
+                    </Button>
                   )}
                 </div>
               </div>
@@ -563,9 +591,15 @@ export default function Home() {
               </Card>
             </div>
           ) : selectedEmail ? (
-            <div className="grid grid-cols-1 lg:grid-cols-5 h-full">
+            // 5-column split gave the reading pane only 60% and AI Insights
+            // 40%. Insights is a fixed-size sidebar (summary, priority, a
+            // suggested reply) that doesn't benefit from extra width, while
+            // the email itself does — especially wide HTML mail with tables.
+            // 7 columns puts the reading pane at ~71% without squeezing the
+            // sidebar below a comfortable reading measure.
+            <div className="grid grid-cols-1 lg:grid-cols-7 h-full">
               {/* Email */}
-              <div className="lg:col-span-3 p-6 overflow-y-auto border-r space-y-4">
+              <div className="lg:col-span-5 p-6 overflow-y-auto border-r space-y-4">
                 {/* Action bar */}
                 <div className="flex items-center gap-2 pb-2 border-b flex-wrap">
                   <Button
@@ -714,7 +748,7 @@ export default function Home() {
               </div>
 
               {/* AI Insights */}
-              <div className="lg:col-span-2 p-6 overflow-y-auto">
+              <div className="lg:col-span-2 p-6 overflow-y-auto min-w-0">
                 {selectedId && (
                   <AIInsightsPanel
                     messageId={selectedId}

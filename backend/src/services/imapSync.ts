@@ -62,11 +62,22 @@ function buildClient(account: GmailAccount): ImapFlow {
   if (!account.imapHost || !account.imapPort || !account.imapUser) {
     throw new Error("IMAP account is missing connection details. Please reconnect.");
   }
+  // OUTLOOK accounts authenticate with an OAuth2 access token (XOAUTH2)
+  // instead of a password — Microsoft disabled Basic Auth for Outlook.com
+  // and Exchange Online, so user/pass IMAP login is rejected outright.
+  // accessToken is kept fresh by ensureFreshOutlookAccount (called in
+  // emailSync before any of these fetches run), so by the time we get here
+  // the stored token is guaranteed valid.
+  const auth =
+    account.provider === "OUTLOOK"
+      ? { user: account.imapUser, accessToken: decryptToken(account.accessToken) }
+      : { user: account.imapUser, pass: decryptToken(account.accessToken) };
+
   return new ImapFlow({
     host: account.imapHost,
     port: account.imapPort,
     secure: account.imapSecure ?? true,
-    auth: { user: account.imapUser, pass: decryptToken(account.accessToken) },
+    auth,
     logger: false,
   });
 }

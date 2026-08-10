@@ -2,6 +2,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { requireAuth } from "../middleware/auth";
 import { buildAuthUrl, isGoogleConfigured } from "../services/googleOAuth";
+import { isMicrosoftConfigured } from "../services/microsoftOAuth";
 import { connectGmailAccount, disconnectGmailAccount } from "../services/gmailAccountService";
 import { IMAP_SEND_DISABLED_MESSAGE } from "../services/emailActions";
 import { prisma } from "../lib/db";
@@ -88,6 +89,9 @@ gmailRouter.get("/status", requireAuth, async (req, res) => {
     email: account?.emailAddress ?? null,
     provider: account?.provider?.toLowerCase() ?? null,
     googleConfigured: isGoogleConfigured(),
+    // Whether the Microsoft app registration is configured, so the
+    // employee-app knows whether to offer "Connect Outlook".
+    microsoftConfigured: isMicrosoftConfigured(),
     canSend,
     sendDisabledMessage: canSend ? null : IMAP_SEND_DISABLED_MESSAGE,
   });

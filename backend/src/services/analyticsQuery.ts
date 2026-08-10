@@ -270,9 +270,13 @@ export async function getEmployeeOverview(employeeId: string) {
   // labelled "Pending (12)" above a list of 9 rows. Aligning the two on the
   // stricter definition — a trashed email isn't awaiting anything — makes the
   // count and the list it links to agree by construction.
+  // `isCc: false` — mail this employee was only copied on was addressed to
+  // someone else, so it isn't their backlog. Header-derived at sync time, so
+  // it holds independently of the LLM.
   const awaitingReply = {
     isTrashed: false,
     isReplied: false,
+    isCc: false,
     OR: [{ requiresReply: true }, { requiresReply: null }],
   };
 
@@ -294,8 +298,15 @@ export async function getEmployeeOverview(employeeId: string) {
     prisma.email.count({ where: { gmailAccountId: account.id, receivedAt: { gte: weekStart } } }),
     prisma.email.count({ where: { gmailAccountId: account.id, isReplied: true, repliedAt: { gte: weekStart } } }),
     prisma.email.count({ where: { gmailAccountId: account.id, ...awaitingReply } }),
+    // Exact complement of awaitingReply within unreplied mail, so
+    // pending + noReplyNeeded + replied accounts for every email.
     prisma.email.count({
-      where: { gmailAccountId: account.id, isTrashed: false, isReplied: false, requiresReply: false },
+      where: {
+        gmailAccountId: account.id,
+        isTrashed: false,
+        isReplied: false,
+        OR: [{ requiresReply: false }, { isCc: true }],
+      },
     }),
     prisma.email.count({ where: { gmailAccountId: account.id, isRead: false } }),
     prisma.email.count({ where: { gmailAccountId: account.id, isRead: true } }),
@@ -387,8 +398,12 @@ export async function getEmployeeEmailList(
     status === "replied"
       ? { isReplied: true }
       : status === "no_reply_needed"
-        ? { isReplied: false, requiresReply: false }
-        : { isReplied: false, OR: [{ requiresReply: true }, { requiresReply: null }] };
+        ? { isReplied: false, OR: [{ requiresReply: false }, { isCc: true }] }
+        : {
+            isReplied: false,
+            isCc: false,
+            OR: [{ requiresReply: true }, { requiresReply: null }],
+          };
 
   const emails = await prisma.email.findMany({
     where: { gmailAccountId: account.id, isTrashed: false, ...statusFilter },

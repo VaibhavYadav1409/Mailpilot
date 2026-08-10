@@ -15,9 +15,15 @@ interface EmailBodyProps {
  * the app. Falls back to plain text, then snippet, if no HTML body
  * exists (e.g. manually pasted emails).
  */
+// Starting height for the HTML iframe before its content is measured. Also
+// the floor it's never allowed to drop below, so a message never renders as a
+// cramped letterbox while images are still loading.
+const MIN_BODY_HEIGHT = 600;
+const MAX_BODY_HEIGHT = 20_000;
+
 export function EmailBody({ bodyHtml, bodyText, snippet }: EmailBodyProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [height, setHeight] = useState(200);
+  const [height, setHeight] = useState(MIN_BODY_HEIGHT);
 
   const hasHtml = !!bodyHtml && bodyHtml.trim().length > 0;
 
@@ -40,18 +46,48 @@ export function EmailBody({ bodyHtml, bodyText, snippet }: EmailBodyProps) {
     const resize = () => {
       try {
         const doc = iframe.contentDocument;
-        if (doc?.body) {
-          setHeight(Math.min(Math.max(doc.body.scrollHeight + 20, 100), 2000));
+        if (!doc?.body) return;
+        // scrollHeight on <body> under-reports when children are floated or
+        // absolutely positioned (common in templated marketing mail), so take
+        // the largest of the usual suspects rather than trusting one.
+        const measured = Math.max(
+          doc.body.scrollHeight,
+          doc.body.offsetHeight,
+          doc.documentElement?.scrollHeight ?? 0,
+          doc.documentElement?.offsetHeight ?? 0
+        );
+        if (measured > 0) {
+          setHeight(Math.min(Math.max(measured + 32, MIN_BODY_HEIGHT), MAX_BODY_HEIGHT));
         }
       } catch {
-        // Cross-origin or not-yet-loaded; ignore.
+        // Not yet loaded; the retries below cover it.
       }
     };
 
     iframe.onload = resize;
-    // A second pass after images load asynchronously.
-    const t = setTimeout(resize, 500);
-    return () => clearTimeout(t);
+
+    // Images, webfonts and remote CSS all settle after onload and each can
+    // change the document height, so re-measure a few times instead of once.
+    const timers = [100, 400, 1000, 2500].map((ms) => setTimeout(resize, ms));
+
+    // Catches later reflows (lazy images, slow remote assets) that fixed
+    // timers would miss. Guarded because ResizeObserver needs a live
+    // same-origin document.
+    let observer: ResizeObserver | undefined;
+    try {
+      const body = iframe.contentDocument?.body;
+      if (body && typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(resize);
+        observer.observe(body);
+      }
+    } catch {
+      // Fall back to the timers above.
+    }
+
+    return () => {
+      timers.forEach(clearTimeout);
+      observer?.disconnect();
+    };
   }, [bodyHtml, hasHtml]);
 
   if (hasHtml) {
@@ -59,7 +95,18 @@ export function EmailBody({ bodyHtml, bodyText, snippet }: EmailBodyProps) {
       <iframe
         ref={iframeRef}
         title="Email content"
-        sandbox="allow-popups allow-popups-to-escape-sandbox"
+        // `allow-same-origin` is required for the height measurement above —
+        // without it `contentDocument` is inaccessible, every resize attempt
+        // threw, and the frame stayed pinned at its initial height, so long
+        // emails rendered in a short scrolling box instead of laying out in
+        // full.
+        //
+        // This is safe specifically because `allow-scripts` is NOT set:
+        // sender markup still cannot execute any JavaScript, so it has no way
+        // to reach the parent document. (The combination to avoid is
+        // allow-scripts together with allow-same-origin, which would let
+        // sender-controlled script escape the sandbox entirely.)
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
         style={{ width: "100%", height, border: "none", display: "block" }}
       />
     );

@@ -54,29 +54,50 @@ const listQuerySchema = z.object({
   // they stay correct across pagination — the same reasoning as categoryLabel
   // above. "unreplied" deliberately means *awaiting a reply that is actually
   // warranted*: it excludes mail the AI classified as acknowledgment /
-  // informational / automated, while still including anything not yet
-  // classified (requiresReply IS NULL), so nothing silently disappears while
-  // the LLM is catching up.
+  // informational / automated, and mail this mailbox was only CC'd on, while
+  // still including anything not yet classified (requiresReply IS NULL), so
+  // nothing silently disappears while the LLM is catching up.
   replyStatus: z.enum(["unreplied", "replied", "no_reply_needed"]).optional(),
 });
 
 /**
  * Prisma `where` fragment for each reply-status view.
  *
- * The NULL handling is the important part: "not yet classified" is grouped
- * with "needs a reply", never with "doesn't". A row can be unclassified
- * because the Groq breaker was open during sync or because it predates the
- * feature, and in both cases showing it in Unreplied is the recoverable
- * outcome — hiding a real customer email is not.
+ * Two rules, and the difference between them matters:
+ *
+ * 1. **CC'd mail is never "unreplied."** Being copied in means the message
+ *    was addressed to someone else — the reply, if any, is their
+ *    responsibility. This is decided from the To/Cc headers at sync time
+ *    (Email.isCc), so it holds regardless of what the LLM thinks and stays
+ *    correct while the Groq breaker is open. CC'd mail remains visible under
+ *    All and under its own CC filter; it just doesn't inflate the list of
+ *    things awaiting *your* response.
+ *
+ * 2. **NULL means "needs a reply."** "Not yet classified" is grouped with
+ *    "needs a reply", never with "doesn't". A row can be unclassified
+ *    because the Groq breaker was open during sync or because it predates the
+ *    feature, and in both cases showing it in Unreplied is the recoverable
+ *    outcome — hiding a real customer email is not.
+ *
+ * `unreplied` and `no_reply_needed` are exact complements within unreplied
+ * mail, so every email is accounted for in exactly one view and the counts
+ * always reconcile.
  */
 function replyStatusFilter(status: "unreplied" | "replied" | "no_reply_needed" | undefined) {
   switch (status) {
     case "replied":
       return { isReplied: true };
     case "unreplied":
-      return { isReplied: false, OR: [{ requiresReply: true }, { requiresReply: null }] };
+      return {
+        isReplied: false,
+        isCc: false,
+        OR: [{ requiresReply: true }, { requiresReply: null }],
+      };
     case "no_reply_needed":
-      return { isReplied: false, requiresReply: false };
+      return {
+        isReplied: false,
+        OR: [{ requiresReply: false }, { isCc: true }],
+      };
     default:
       return {};
   }

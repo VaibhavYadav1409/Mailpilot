@@ -72,12 +72,12 @@ employeesRouter.get("/", requireAuth, async (req, res) => {
     .map((e) => e.gmailAccounts[0]?.id)
     .filter((id): id is string => Boolean(id));
 
-  // Grouping by requiresReply as well as isReplied splits unreplied mail into
-  // "genuinely waiting on a human" vs. "nothing to reply to" in the same
-  // single pass, instead of issuing a second query per bucket.
+  // Grouping by requiresReply and isCc alongside isReplied splits unreplied
+  // mail into "genuinely waiting on this person" vs. "nothing for them to do"
+  // in a single pass, instead of issuing a second query per bucket.
   const counts = accountIds.length
     ? await prisma.email.groupBy({
-        by: ["gmailAccountId", "isReplied", "requiresReply"],
+        by: ["gmailAccountId", "isReplied", "requiresReply", "isCc"],
         where: { gmailAccountId: { in: accountIds }, isTrashed: false },
         _count: { _all: true },
       })
@@ -89,11 +89,15 @@ employeesRouter.get("/", requireAuth, async (req, res) => {
     const entry = countsByAccount.get(row.gmailAccountId) ?? emptyCounts();
     if (row.isReplied) {
       entry.replied += row._count._all;
-    } else if (row.requiresReply === false) {
+    } else if (row.requiresReply === false || row.isCc) {
+      // Either the AI judged no reply is warranted, or this person was merely
+      // copied in and the message was addressed to someone else. Neither is
+      // their backlog.
       entry.noReplyNeeded += row._count._all;
     } else {
-      // requiresReply true OR null — null means "not yet classified" and is
-      // deliberately counted as pending rather than quietly dropped.
+      // requiresReply true OR null, and directly addressed. NULL means "not
+      // yet classified" and is deliberately counted as pending rather than
+      // quietly dropped.
       entry.pending += row._count._all;
     }
     countsByAccount.set(row.gmailAccountId, entry);

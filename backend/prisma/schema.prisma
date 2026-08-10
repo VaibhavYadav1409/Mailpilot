@@ -140,6 +140,11 @@ enum MailAccountProvider {
   GMAIL
   IMAP
   MANUAL
+  // Outlook.com / Microsoft 365 connected via OAuth2 (XOAUTH2 over IMAP).
+  // Stored like an IMAP account (imapHost/imapPort/imapUser populated) but
+  // authenticates with an OAuth access token instead of a password, and is
+  // refreshed via microsoftOAuth.ts. Syncs through the IMAP path.
+  OUTLOOK
 }
 
 model GmailAccount {
