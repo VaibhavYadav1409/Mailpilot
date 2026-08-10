@@ -19,8 +19,15 @@ const AUTHORITY = "https://login.microsoftonline.com/common/oauth2/v2.0";
 // is what makes Microsoft return a refresh_token; openid/email/profile give
 // us an id_token we can read the mailbox address off of (the access token's
 // audience is Outlook, not Graph, so we can't call Graph /me with it).
+// NOTE the host: personal Outlook.com/Hotmail/Live accounts expect the scope
+// on outlook.office.com. The outlook.office365.com form is only valid for
+// Microsoft 365 org tenants and is rejected for consumer accounts
+// (AADSTS1002012 "the provided value for scope ... is not valid"), which
+// bounces the user straight back with no password prompt.
+// openid/offline_access/email/profile are OIDC scopes and are exempt from
+// the "one resource per request" rule, so they're safe to request alongside.
 const SCOPES = [
-  "https://outlook.office365.com/IMAP.AccessAsUser.All",
+  "https://outlook.office.com/IMAP.AccessAsUser.All",
   "offline_access",
   "openid",
   "email",
@@ -78,15 +85,32 @@ function decodeJwtPayload(jwtStr: string): Record<string, unknown> {
   }
 }
 
-function emailFromIdToken(idToken: string | undefined): string {
-  if (!idToken) throw new Error("Microsoft did not return an id_token — cannot determine the mailbox address.");
-  const claims = decodeJwtPayload(idToken);
+function claimEmail(token: string | undefined): string | null {
+  if (!token) return null;
+  const c = decodeJwtPayload(token);
   const email =
-    (claims.email as string | undefined) ||
-    (claims.preferred_username as string | undefined) ||
-    (claims.upn as string | undefined);
-  if (!email) throw new Error("Could not read the email address from Microsoft's id_token.");
-  return email.toLowerCase();
+    (c.email as string | undefined) ||
+    (c.preferred_username as string | undefined) ||
+    (c.upn as string | undefined) ||
+    (c.unique_name as string | undefined);
+  return email && email.includes("@") ? email.toLowerCase() : null;
+}
+
+/**
+ * Works out which mailbox was just connected. Prefers the id_token, but
+ * falls back to the access token's own claims — depending on the account
+ * type Microsoft doesn't always return an id_token alongside a resource
+ * scope, and failing the whole connect over a missing claim (when we
+ * already hold a working IMAP token) would be needlessly brittle.
+ */
+function resolveEmailAddress(idToken: string | undefined, accessToken: string): string {
+  const email = claimEmail(idToken) ?? claimEmail(accessToken);
+  if (!email) {
+    throw new Error(
+      "Connected to Microsoft, but couldn't determine the mailbox address from the token. Please report this."
+    );
+  }
+  return email;
 }
 
 export async function exchangeCode(code: string): Promise<TokenExchangeResult> {
@@ -103,7 +127,11 @@ export async function exchangeCode(code: string): Promise<TokenExchangeResult> {
       scope: SCOPES,
     }),
   });
-  if (!res.ok) throw new Error(`Microsoft token exchange failed: ${await res.text()}`);
+  if (!res.ok) {
+    const body = await res.text();
+    console.error("[outlook] token exchange failed:", body);
+    throw new Error(`Microsoft token exchange failed: ${body}`);
+  }
   const json = (await res.json()) as {
     access_token: string;
     refresh_token?: string;
@@ -115,7 +143,7 @@ export async function exchangeCode(code: string): Promise<TokenExchangeResult> {
     accessToken: json.access_token,
     refreshToken: json.refresh_token ?? null,
     expiresIn: json.expires_in,
-    emailAddress: emailFromIdToken(json.id_token),
+    emailAddress: resolveEmailAddress(json.id_token, json.access_token),
   };
 }
 
