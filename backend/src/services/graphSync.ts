@@ -235,6 +235,61 @@ export async function fetchGraphMessagesStreaming(
   return processed;
 }
 
+export interface GraphReplyAttachment {
+  filename: string;
+  mimeType: string;
+  data: string; // base64, no data: prefix
+}
+
+/**
+ * Replies to a message using Graph's own reply endpoint rather than composing
+ * a fresh mail. Graph then sets In-Reply-To/References and keeps the reply in
+ * the original conversation automatically, which is what makes the app's
+ * reply-detection (matched on conversationId) line up afterwards.
+ *
+ * Requires the Mail.Send delegated scope — an account connected before that
+ * scope was requested must be reconnected before this will succeed.
+ */
+export async function sendGraphReply(
+  accessToken: string,
+  messageId: string,
+  body: string,
+  attachments: GraphReplyAttachment[] = []
+): Promise<void> {
+  const payload: Record<string, unknown> = {
+    message: {
+      body: { contentType: "Text", content: body },
+      ...(attachments.length
+        ? {
+            attachments: attachments.map((a) => ({
+              "@odata.type": "#microsoft.graph.fileAttachment",
+              name: a.filename,
+              contentType: a.mimeType,
+              contentBytes: a.data,
+            })),
+          }
+        : {}),
+    },
+  };
+
+  const res = await fetch(`${GRAPH_BASE}/me/messages/${messageId}/reply`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  // Graph returns 202 Accepted with an empty body on success.
+  if (!res.ok) {
+    const text = await res.text();
+    if (res.status === 403) {
+      throw new Error(
+        "Outlook denied the send request. Reconnect the Outlook account to grant send permission, then try again."
+      );
+    }
+    throw new Error(`Failed to send reply via Outlook (${res.status}): ${text}`);
+  }
+}
+
 /** Sent-folder metadata used for reply detection, mirroring the Gmail path. */
 export interface GraphSentMeta {
   threadId: string;

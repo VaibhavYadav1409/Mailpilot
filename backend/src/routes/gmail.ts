@@ -81,7 +81,10 @@ gmailRouter.get("/status", requireAuth, async (req, res) => {
   // this status flag): only a connected GMAIL account can send through
   // MailPilot. No connected account, or a MANUAL/IMAP one, means the
   // employee-app should hide/disable Reply, Compose, Forward, and Send.
-  const canSend = connected && account?.provider === "GMAIL";
+  // Conditional Sending: GMAIL sends via the Gmail API, OUTLOOK via Microsoft
+  // Graph. IMAP and MANUAL accounts remain read-only — there's no send path
+  // for them (see IMAP_SEND_DISABLED_MESSAGE in emailActions.ts).
+  const canSend = connected && (account?.provider === "GMAIL" || account?.provider === "OUTLOOK");
 
   return res.json({
     account,

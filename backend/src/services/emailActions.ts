@@ -1,5 +1,8 @@
 import { prisma } from "../lib/db";
 import { getValidAccessToken } from "./gmailAccountService";
+import { ensureFreshOutlookAccount } from "./outlookAccountService";
+import { sendGraphReply } from "./graphSync";
+import { decryptToken } from "../lib/crypto";
 import { recordReply } from "./replyTracking";
 
 // Conditional Sending business rule (see project spec "Conditional Sending
@@ -126,11 +129,21 @@ export async function sendReply(
       threadId: email.threadId ?? undefined,
       attachments: opts.attachments,
     });
-  } else if (email.gmailAccount.provider === "IMAP" || email.gmailAccount.provider === "OUTLOOK") {
+  } else if (email.gmailAccount.provider === "OUTLOOK") {
+    // Outlook sends through Graph's reply endpoint, which threads the reply
+    // onto the original conversation. The token is refreshed first because
+    // a reply can be sent long after the last sync, by which point the
+    // hour-long access token has usually expired.
+    const fresh = await ensureFreshOutlookAccount(email.gmailAccount);
+    await sendGraphReply(
+      decryptToken(fresh.accessToken),
+      email.gmailMessageId,
+      body,
+      opts.attachments
+    );
+  } else if (email.gmailAccount.provider === "IMAP") {
     // Conditional Sending: IMAP mailboxes are read-only in MailPilot,
     // regardless of SMTP details on file or IMAP_SEND_DRIVER config.
-    // OUTLOOK is read-only for the same reason — it syncs over IMAP, and
-    // sending would need a separate SMTP XOAUTH2 path that doesn't exist.
     throw new Error(IMAP_SEND_DISABLED_MESSAGE);
   } else {
     throw new Error("This mailbox has no connected send path.");

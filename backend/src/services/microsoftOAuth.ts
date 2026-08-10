@@ -37,6 +37,10 @@ const AUTHORITY = "https://login.microsoftonline.com/common/oauth2/v2.0";
 // User.Read is what lets us resolve the mailbox address via /me.
 const SCOPES = [
   "https://graph.microsoft.com/Mail.Read",
+  // Mail.Send powers replying from inside MailPilot (see sendGraphReply).
+  // Accounts connected before this scope was added must reconnect — their
+  // existing refresh token carries the old, narrower consent.
+  "https://graph.microsoft.com/Mail.Send",
   "https://graph.microsoft.com/User.Read",
   "offline_access",
   "openid",
