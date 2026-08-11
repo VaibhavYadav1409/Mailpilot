@@ -55,12 +55,18 @@ export async function connectOutlookAccount(employeeId: string, companyId: strin
     status: "CONNECTED" as const,
     isActive: true,
     imapUser: tokens.emailAddress,
+    // Reset on EVERY connect, including reconnecting a mailbox that's
+    // already on file. Without this the update path below keeps the old
+    // timestamp, so the next sync is incremental ("anything since 9:02?")
+    // and returns nothing — leaving the inbox stuck at whatever it had.
+    // Nulling it forces the next sync down the full "newest N" path.
+    lastSyncedAt: null,
   };
 
   const account = existingForMailbox
     ? await prisma.gmailAccount.update({ where: { id: existingForMailbox.id }, data })
     : await prisma.gmailAccount.create({
-        data: { emailAddress: tokens.emailAddress, lastSyncedAt: null, ...data },
+        data: { emailAddress: tokens.emailAddress, ...data },
       });
 
   await deactivateOtherAccounts(employeeId, account.id);
