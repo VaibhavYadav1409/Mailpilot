@@ -628,6 +628,8 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
         if (await persistParsedMessage(employeeId, account.id, parsed, account.emailAddress)) synced++;
       }
     );
+    const totalNow = await prisma.email.count({ where: { gmailAccountId: account.id } });
+    console.log(`[graph] account ${account.id}: ${synced} new this run, ${totalNow} total stored`);
   } else {
     // IMAP: stream messages one at a time straight into persistParsedMessage
     // so each message's memory is freed before the next is fetched.

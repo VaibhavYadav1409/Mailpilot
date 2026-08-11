@@ -226,8 +226,16 @@ export async function fetchGraphMessagesStreaming(
     `&$top=${pageSize}`;
 
   let processed = 0;
+  let pages = 0;
+  console.log(
+    `[graph] fetching ${folder}: max=${opts.max}, since=${opts.since ? opts.since.toISOString() : "(no date filter — newest first)"}`
+  );
   while (url && processed < opts.max) {
     const page = await graphGet<{ value: GraphMessage[]; "@odata.nextLink"?: string }>(url, accessToken);
+    pages++;
+    console.log(
+      `[graph] page ${pages}: Graph returned ${page.value?.length ?? 0} message(s), nextLink=${page["@odata.nextLink"] ? "yes" : "no"}`
+    );
     for (const msg of page.value ?? []) {
       if (processed >= opts.max) break;
       const attachments =
