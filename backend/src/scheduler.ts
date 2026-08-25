@@ -1,4 +1,6 @@
 import cron from "node-cron";
+import { prisma } from "./lib/db";
+import { syncEmployeeInbox } from "./services/emailSync";
 import { runDailyAnalyticsRollup } from "./services/analyticsEngine";
 import { runNotificationRules } from "./services/notificationEngine";
 import { generateScheduledCompanyReports } from "./services/reportEngine";
@@ -16,6 +18,64 @@ import {
  * set TZ=UTC in the deploy environment, or pass `{ timezone: "UTC" }` to
  * each job below, to make these times unambiguous across regions).
  */
+// How often the server syncs every connected mailbox on its own, with no
+// client involved. 0 disables it. Kept modest by default: each run touches
+// every account, and this instance has a 256MB heap.
+const BACKGROUND_SYNC_MINUTES = Math.max(0, Number(process.env.BACKGROUND_SYNC_MINUTES) || 5);
+
+// Guards against overlapping runs. A sync that takes longer than the interval
+// would otherwise start again on top of itself and multiply peak memory —
+// the exact condition that gets the process OOM-killed.
+let backgroundSyncRunning = false;
+
+/**
+ * Syncs every active, connected mailbox. Accounts are processed one at a time
+ * on purpose: syncing in parallel multiplies peak memory (each sync holds
+ * message bodies and attachment buffers), and on a 256MB heap that's what
+ * causes the SIGTERM restarts. Slower and alive beats faster and dead.
+ */
+async function runBackgroundSync(): Promise<void> {
+  if (backgroundSyncRunning) {
+    console.log("[BackgroundSync] Previous run still in progress, skipping this tick.");
+    return;
+  }
+  backgroundSyncRunning = true;
+  const startedAt = Date.now();
+
+  try {
+    const accounts = await prisma.gmailAccount.findMany({
+      where: { isActive: true, status: "CONNECTED", provider: { not: "MANUAL" } },
+      select: { employeeId: true, emailAddress: true },
+    });
+
+    if (accounts.length === 0) return;
+
+    let totalSynced = 0;
+    let failed = 0;
+    for (const account of accounts) {
+      try {
+        const { synced } = await syncEmployeeInbox(account.employeeId);
+        totalSynced += synced;
+      } catch (e) {
+        // One broken mailbox (revoked token, provider outage) must not stop
+        // the rest from syncing.
+        failed++;
+        console.error(`[BackgroundSync] Failed for ${account.emailAddress}:`, e instanceof Error ? e.message : e);
+      }
+    }
+
+    const secs = Math.round((Date.now() - startedAt) / 1000);
+    const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    console.log(
+      `[BackgroundSync] ${accounts.length} account(s), ${totalSynced} new email(s), ${failed} failed, ${secs}s, rss=${rssMb}MB`
+    );
+  } catch (e) {
+    console.error("[BackgroundSync] Run failed:", e);
+  } finally {
+    backgroundSyncRunning = false;
+  }
+}
+
 export function startScheduler() {
   // 00:05 daily — just after midnight UTC. We roll up YESTERDAY, the day that
   // just fully completed. Passing no date defaulted to `new Date()` (today),
@@ -37,6 +97,19 @@ export function startScheduler() {
     },
     { timezone: "UTC" },
   );
+
+  // Server-side mail sync, independent of any client. Without this, mail only
+  // syncs while someone has the app open and polling /api/emails/sync — so
+  // closing the app stopped the sync entirely.
+  if (BACKGROUND_SYNC_MINUTES > 0) {
+    cron.schedule(`*/${BACKGROUND_SYNC_MINUTES} * * * *`, runBackgroundSync);
+    console.log(`[Scheduler] Background mail sync every ${BACKGROUND_SYNC_MINUTES} minute(s)`);
+    // Kick one off shortly after boot so a restart doesn't leave mailboxes
+    // stale until the next tick. Delayed so it doesn't compete with startup.
+    setTimeout(() => void runBackgroundSync(), 30_000);
+  } else {
+    console.log("[Scheduler] Background mail sync disabled (BACKGROUND_SYNC_MINUTES=0)");
+  }
 
   // Every hour, on the hour — notification rules are cheap checks against
   // already-computed data, so hourly is frequent enough to catch things
