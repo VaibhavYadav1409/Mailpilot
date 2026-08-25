@@ -3,6 +3,7 @@ import { simpleParser } from "mailparser";
 import { decryptToken } from "../lib/crypto";
 import { htmlToPlainText } from "../lib/htmlToText";
 import { isPromotionalEmail, headerValue } from "./promoDetector";
+import { isDailyMailMode, startOfMailDay } from "./retentionEngine";
 import type { GmailAccount } from "../generated/prisma/client";
 import type { ImapSentMessageMeta } from "./replyTracking";
 
@@ -25,6 +26,19 @@ const MAX_MESSAGES_PER_RUN = Math.max(10, Number(process.env.IMAP_MAX_MESSAGES) 
 // SYNC_INITIAL_DAYS; fewer days = faster first sync. Default 7.
 const SYNC_INITIAL_DAYS = Math.max(1, Number(process.env.SYNC_INITIAL_DAYS) || 7);
 const initialSinceDate = () => new Date(Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS);
+
+/**
+ * The window this run should fetch. In daily mail mode nothing older than the
+ * start of the current day is ever pulled, so an IMAP account holds one day
+ * of mail like every other provider; within the day it stays incremental from
+ * lastSyncedAt.
+ */
+function syncSince(account: GmailAccount): Date {
+  const base = account.lastSyncedAt ?? initialSinceDate();
+  if (!isDailyMailMode()) return base;
+  const dayStart = startOfMailDay();
+  return base > dayStart ? base : dayStart;
+}
 
 // Folder names to fall back to (in order) when the server doesn't advertise
 // a \Sent special-use mailbox (see findSentMailboxPath) — covers the common
@@ -111,7 +125,7 @@ async function findSentMailboxPath(client: ImapFlow): Promise<string | null> {
 export async function fetchImapMessages(account: GmailAccount): Promise<ParsedImapMessage[]> {
   const client = buildClient(account);
 
-  const sinceDate = account.lastSyncedAt ?? initialSinceDate();
+  const sinceDate = syncSince(account);
   const results: ParsedImapMessage[] = [];
 
   try {
@@ -201,7 +215,7 @@ export async function fetchImapMessagesStreaming(
 ): Promise<number> {
   const client = buildClient(account);
 
-  const sinceDate = account.lastSyncedAt ?? initialSinceDate();
+  const sinceDate = syncSince(account);
   let count = 0;
   let attachmentBudget = ATTACHMENT_SYNC_BUDGET_BYTES;
 
@@ -293,7 +307,7 @@ export async function fetchImapMessagesStreaming(
 export async function fetchImapSentMessages(account: GmailAccount): Promise<ImapSentMessageMeta[]> {
   const client = buildClient(account);
 
-  const sinceDate = account.lastSyncedAt ?? initialSinceDate();
+  const sinceDate = syncSince(account);
   const results: ImapSentMessageMeta[] = [];
 
   try {

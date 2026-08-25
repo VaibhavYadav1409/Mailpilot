@@ -11,7 +11,13 @@ import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
 import { htmlToPlainText } from "../lib/htmlToText";
 import { createLimiter, QUEUE_FULL } from "../lib/concurrencyLimit";
-import { pruneAccountToLimit, getMaxEmailsPerAccount } from "./retentionEngine";
+import {
+  pruneAccountToLimit,
+  getMaxEmailsPerAccount,
+  isDailyMailMode,
+  startOfMailDay,
+  purgeEmailsBeforeToday,
+} from "./retentionEngine";
 
 // categorizeEmail/scoreEmailPriority are fired per-message without being
 // awaited (see persistParsedMessage below) so the sync loop itself isn't
@@ -526,7 +532,35 @@ async function persistParsedMessage(
  * server, so this is a no-op for them — manual emails are created directly
  * by POST /api/emails.
  */
+// Last time the day-boundary wipe ran from inside a sync, so it's attempted
+// at most once an hour no matter how many employees sync in that window.
+let lastDayBoundarySweep = 0;
+
+/**
+ * Safety net for the scheduled end-of-day wipe. Render's free tier sleeps
+ * when idle, and node-cron only fires while the process is awake — so a
+ * sleeping instance silently skips midnight entirely. Enforcing the same
+ * boundary at sync time means yesterday's mail is cleared on the first sync
+ * after the app wakes, even if the cron never ran.
+ */
+async function enforceDayBoundary(): Promise<void> {
+  if (!isDailyMailMode()) return;
+  if (Date.now() - lastDayBoundarySweep < 60 * 60 * 1000) return;
+  lastDayBoundarySweep = Date.now();
+  try {
+    const r = await purgeEmailsBeforeToday();
+    if (r.emailsDeleted > 0) {
+      console.log(`[daily] sync-time wipe removed ${r.emailsDeleted} email(s) from before today (cutoff ${r.cutoff})`);
+    }
+  } catch (e) {
+    // Never let cleanup failure block the sync itself.
+    console.error("[daily] sync-time wipe failed:", e);
+  }
+}
+
 export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: number }> {
+  await enforceDayBoundary();
+
   const activeAccount = await prisma.gmailAccount.findFirst({ where: { employeeId, isActive: true } });
   if (!activeAccount || activeAccount.status !== "CONNECTED") return { synced: 0 };
   if (activeAccount.provider === "MANUAL") return { synced: 0 };
@@ -551,9 +585,17 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
     if (!accessToken) return { synced: 0 };
     gmailAccessToken = accessToken;
 
-    gmailSinceEpochSec = account.lastSyncedAt
-      ? Math.floor(account.lastSyncedAt.getTime() / 1000)
-      : Math.floor((Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS) / 1000); // first sync: last SYNC_INITIAL_DAYS days
+    // Daily mail mode clamps the window to the start of today so Gmail
+    // accounts hold one day of mail like every other provider. Otherwise:
+    // incremental from lastSyncedAt, or the last SYNC_INITIAL_DAYS on a
+    // first sync.
+    const gmailDayStart = isDailyMailMode() ? startOfMailDay() : null;
+    const gmailSinceMs = account.lastSyncedAt
+      ? account.lastSyncedAt.getTime()
+      : Date.now() - 1000 * 60 * 60 * 24 * SYNC_INITIAL_DAYS;
+    gmailSinceEpochSec = Math.floor(
+      (gmailDayStart ? Math.max(gmailSinceMs, gmailDayStart.getTime()) : gmailSinceMs) / 1000
+    );
 
     // Cap every sync (first or incremental) at SYNC_MAX_MESSAGES. Since we only
     // ever retain the most recent N emails (pruned below), fetching more than
@@ -599,11 +641,14 @@ export async function syncEmployeeInbox(employeeId: string): Promise<{ synced: n
     // scope on consumer accounts), so Graph is the only supported route —
     // see graphSync.ts. Streamed one message at a time for the same
     // bounded-memory reason as the IMAP path below.
-    // First sync: no date filter at all, so Graph returns the newest
-    // SYNC_MAX_MESSAGES messages however old they are. Date-windowing the
-    // first sync means a mailbox whose traffic predates the window comes
-    // back nearly empty. Later syncs are incremental from lastSyncedAt.
-    const since = account.lastSyncedAt ?? undefined;
+    // Daily mail mode: never look further back than the start of today, so
+    // the app only ever holds one day of mail. Within the day the sync is
+    // still incremental from lastSyncedAt (whichever is later), so repeat
+    // syncs stay cheap. With daily mode off, a first sync uses no date
+    // filter and Graph returns the newest SYNC_MAX_MESSAGES at any age.
+    const dayStart = isDailyMailMode() ? startOfMailDay() : null;
+    const last = account.lastSyncedAt ?? undefined;
+    const since = dayStart ? (last && last > dayStart ? last : dayStart) : last;
     const graphToken = decryptToken(account.accessToken);
     await fetchGraphMessagesStreaming(
       graphToken,

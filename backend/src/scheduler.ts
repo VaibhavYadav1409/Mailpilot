@@ -2,7 +2,13 @@ import cron from "node-cron";
 import { runDailyAnalyticsRollup } from "./services/analyticsEngine";
 import { runNotificationRules } from "./services/notificationEngine";
 import { generateScheduledCompanyReports } from "./services/reportEngine";
-import { purgeOldEmails, getRetentionDays } from "./services/retentionEngine";
+import {
+  purgeOldEmails,
+  getRetentionDays,
+  purgeEmailsBeforeToday,
+  isDailyMailMode,
+  getMailDayTimezone,
+} from "./services/retentionEngine";
 
 /**
  * Registers all scheduled jobs. Called once from server.ts at startup.
@@ -45,31 +51,56 @@ export function startScheduler() {
     }
   });
 
-  // 00:20 daily — purge emails older than EMAIL_RETENTION_DAYS (default 30)
-  // so the database doesn't fill up and block new mail syncs. Runs after the
-  // 00:05 analytics rollup so nothing is deleted before it's been counted.
-  // Set EMAIL_RETENTION_DAYS=0 to disable.
-  cron.schedule(
-    "20 0 * * *",
-    async () => {
-      const days = getRetentionDays();
-      if (days <= 0) {
-        console.log("[Scheduler] Email retention disabled (EMAIL_RETENTION_DAYS<=0), skipping purge.");
-        return;
-      }
-      console.log(`[Scheduler] Purging emails older than ${days} days...`);
-      try {
-        const r = await purgeOldEmails(days);
-        console.log(
-          `[Scheduler] Retention purge: ${r.emailsDeleted} emails, ${r.attachmentRowsDeleted} attachments ` +
-            `(${r.attachmentFilesDeleted} blobs), ${r.repliesDeleted} replies removed; cutoff ${r.cutoff}`,
-        );
-      } catch (e) {
-        console.error("[Scheduler] Retention purge failed:", e);
-      }
-    },
-    { timezone: "UTC" },
-  );
+  if (isDailyMailMode()) {
+    // Daily mail mode: the app holds only the current day's mail. At 00:20
+    // local time (MAIL_DAY_TIMEZONE) the day that just ended is wiped, so the
+    // Email table never accumulates — this is what keeps the 512MB instance
+    // from being OOM-killed and Neon from filling up.
+    //
+    // 00:20 rather than 00:00 so it lands after the 00:05 analytics rollup:
+    // DailyAnalytics is pre-aggregated, so yesterday's numbers are already
+    // recorded before the raw emails behind them are deleted.
+    const tz = getMailDayTimezone();
+    cron.schedule(
+      "20 0 * * *",
+      async () => {
+        console.log(`[Scheduler] Daily mail wipe: deleting everything before today (${tz})...`);
+        try {
+          const r = await purgeEmailsBeforeToday();
+          console.log(
+            `[Scheduler] Daily wipe: ${r.emailsDeleted} emails, ${r.attachmentRowsDeleted} attachments ` +
+              `(${r.attachmentFilesDeleted} blobs), ${r.repliesDeleted} replies removed; cutoff ${r.cutoff}`,
+          );
+        } catch (e) {
+          console.error("[Scheduler] Daily mail wipe failed:", e);
+        }
+      },
+      { timezone: tz },
+    );
+  } else {
+    // Legacy N-day retention (DAILY_MAIL_MODE=false).
+    cron.schedule(
+      "20 0 * * *",
+      async () => {
+        const days = getRetentionDays();
+        if (days <= 0) {
+          console.log("[Scheduler] Email retention disabled (EMAIL_RETENTION_DAYS<=0), skipping purge.");
+          return;
+        }
+        console.log(`[Scheduler] Purging emails older than ${days} days...`);
+        try {
+          const r = await purgeOldEmails(days);
+          console.log(
+            `[Scheduler] Retention purge: ${r.emailsDeleted} emails, ${r.attachmentRowsDeleted} attachments ` +
+              `(${r.attachmentFilesDeleted} blobs), ${r.repliesDeleted} replies removed; cutoff ${r.cutoff}`,
+          );
+        } catch (e) {
+          console.error("[Scheduler] Retention purge failed:", e);
+        }
+      },
+      { timezone: "UTC" },
+    );
+  }
 
   // Monday 00:10 UTC — one company-wide WEEKLY report per company,
   // automatically, satisfying Phase 8's "scheduled report generation."
