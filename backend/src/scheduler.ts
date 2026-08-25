@@ -76,6 +76,42 @@ async function runBackgroundSync(): Promise<void> {
   }
 }
 
+// Keep-awake pinger.
+//
+// Render's free tier spins a service down after ~15 minutes with no INBOUND
+// HTTP traffic. Internal cron ticks don't count as traffic, so a background
+// sync alone won't keep the instance alive — it would sleep and stop syncing
+// the moment nobody had the app open, which is the exact thing this is
+// meant to prevent. Requesting our own public URL is real inbound traffic
+// and resets that idle timer.
+//
+// RENDER_EXTERNAL_URL is injected by Render automatically; KEEP_AWAKE_URL
+// overrides it if you host elsewhere. Set KEEP_AWAKE=false to turn this off
+// (e.g. on a paid instance, where it's unnecessary).
+const KEEP_AWAKE_MINUTES = Math.max(1, Number(process.env.KEEP_AWAKE_MINUTES) || 10);
+
+function keepAwakeUrl(): string | null {
+  if ((process.env.KEEP_AWAKE ?? "true").toLowerCase() === "false") return null;
+  const base = process.env.KEEP_AWAKE_URL || process.env.RENDER_EXTERNAL_URL;
+  if (!base) return null;
+  return `${base.replace(/\/$/, "")}/health`;
+}
+
+async function pingSelf(url: string): Promise<void> {
+  try {
+    // Short timeout: this is a liveness nudge, not something worth holding
+    // a socket open for.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) console.warn(`[KeepAwake] Ping returned ${res.status}`);
+  } catch (e) {
+    // A failed ping is not fatal — the next tick tries again.
+    console.warn("[KeepAwake] Ping failed:", e instanceof Error ? e.message : e);
+  }
+}
+
 export function startScheduler() {
   // 00:05 daily — just after midnight UTC. We roll up YESTERDAY, the day that
   // just fully completed. Passing no date defaulted to `new Date()` (today),
@@ -97,6 +133,16 @@ export function startScheduler() {
     },
     { timezone: "UTC" },
   );
+
+  // Keep the instance awake so the background sync below actually gets to
+  // run. Registered first: if the service is asleep, nothing else matters.
+  const awakeUrl = keepAwakeUrl();
+  if (awakeUrl) {
+    cron.schedule(`*/${KEEP_AWAKE_MINUTES} * * * *`, () => void pingSelf(awakeUrl));
+    console.log(`[Scheduler] Keep-awake ping every ${KEEP_AWAKE_MINUTES} min -> ${awakeUrl}`);
+  } else {
+    console.log("[Scheduler] Keep-awake disabled (set KEEP_AWAKE_URL or RENDER_EXTERNAL_URL to enable)");
+  }
 
   // Server-side mail sync, independent of any client. Without this, mail only
   // syncs while someone has the app open and polling /api/emails/sync — so

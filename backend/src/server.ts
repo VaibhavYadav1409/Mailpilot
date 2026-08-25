@@ -57,6 +57,13 @@ app.use(express.json({ limit: "25mb" }));
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
 app.use("/api/auth/login", loginLimiter);
 
+// Liveness probe. Deliberately does no DB work so it stays cheap enough to
+// be hit every few minutes by the keep-awake pinger (see scheduler.ts) and
+// by any external uptime monitor. Also the endpoint to point UptimeRobot at.
+app.get("/health", (_req, res) => {
+  res.json({ ok: true, uptimeSec: Math.round(process.uptime()), ts: new Date().toISOString() });
+});
+
 app.use("/api/auth", authRouter);
 app.use("/api/auth", imapRouter);
 app.use("/api/gmail", gmailRouter);
