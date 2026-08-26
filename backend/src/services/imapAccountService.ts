@@ -39,15 +39,41 @@ const NEVER_EXPIRES = new Date("2099-12-31T00:00:00Z");
 // packets instead of refusing the connection) makes the "Connect Email"
 // button hang for minutes before the user ever sees an error. 10s is
 // generous for any real IMAP/SMTP server on a normal network.
-const VERIFY_TIMEOUT_MS = 10_000;
+// Raised from 10s: slow or geographically distant mail hosts (and Render's
+// own cold-start latency) can legitimately take longer than that to complete
+// a TLS handshake, so 10s was rejecting servers that do actually work.
+// Override with IMAP_VERIFY_TIMEOUT_MS; set it to 0 to wait indefinitely.
+const VERIFY_TIMEOUT_MS = (() => {
+  const raw = process.env.IMAP_VERIFY_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return 45_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 45_000;
+})();
 
 function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  // 0 disables the guard entirely. Be aware ImapFlow has no built-in
+  // connect-timeout, so with no guard a host that silently drops packets
+  // (rather than refusing the connection) leaves the request hanging until
+  // the platform's own request timeout kills it.
+  if (VERIFY_TIMEOUT_MS === 0) return promise;
+
+  let timer: NodeJS.Timeout;
   return Promise.race([
     promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${VERIFY_TIMEOUT_MS / 1000}s — check the host and port.`)), VERIFY_TIMEOUT_MS)
-    ),
-  ]);
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `${label} timed out after ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s — check the host and port, or raise IMAP_VERIFY_TIMEOUT_MS.`
+            )
+          ),
+        VERIFY_TIMEOUT_MS
+      );
+    }),
+    // Clear the pending timer once the real work settles, so a successful
+    // connect doesn't leave a stray handle keeping the event loop busy.
+  ]).finally(() => clearTimeout(timer));
 }
 
 async function verifyImap(input: ImapConnectInput) {
