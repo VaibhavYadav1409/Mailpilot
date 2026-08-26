@@ -87,10 +87,31 @@ async function verifyImap(input: ImapConnectInput) {
   try {
     await withTimeout(client.connect(), "IMAP connection");
     await client.logout();
-  } catch (err) {
+  } catch (err: any) {
     // If connect() itself timed out, the socket may still be open in the
     // background — force it closed so it doesn't linger past the request.
     client.close();
+
+    // ImapFlow reports a rejected command as the bare message "Command
+    // failed" and puts the server's actual explanation ("Invalid
+    // credentials", "AUTHENTICATIONFAILED", "LOGIN disabled" ...) on
+    // responseText/response. Surfacing only err.message therefore told the
+    // user nothing at all, so pull the useful part out.
+    const detail = err?.responseText || err?.response || "";
+    console.error(
+      `[imap] verify failed for ${input.imapUser}@${input.imapHost}:${input.imapPort} —`,
+      `message="${err?.message}"`,
+      `responseText="${detail}"`,
+      `authFailed=${!!err?.authenticationFailed}`
+    );
+
+    if (err?.authenticationFailed || /auth/i.test(String(detail))) {
+      throw new Error(
+        `The mail server rejected these credentials${detail ? ` (${detail})` : ""}. ` +
+          `If this mailbox uses two-factor authentication, you may need an app-specific password rather than the normal one.`
+      );
+    }
+    if (detail) throw new Error(`${err.message}: ${detail}`);
     throw err;
   }
 }
