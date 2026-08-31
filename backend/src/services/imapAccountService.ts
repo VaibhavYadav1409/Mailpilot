@@ -104,6 +104,16 @@ async function verifyImap(input: ImapConnectInput) {
       `responseText="${detail}"`,
       `authFailed=${!!err?.authenticationFailed}`
     );
+    // What the server advertised before rejecting us. If LOGINDISABLED shows
+    // up, or the AUTH=* mechanisms don't include PLAIN/LOGIN, the failure is
+    // a mechanism mismatch rather than a bad password — a distinction the
+    // "AUTHENTICATE failed" text alone can't make.
+    try {
+      const caps = (client as any)?.capabilities;
+      if (caps) console.error(`[imap] server capabilities:`, JSON.stringify([...(caps.keys?.() ?? [])]));
+    } catch {
+      /* capability dump is best-effort diagnostics only */
+    }
 
     if (err?.authenticationFailed || /auth/i.test(String(detail))) {
       throw new Error(

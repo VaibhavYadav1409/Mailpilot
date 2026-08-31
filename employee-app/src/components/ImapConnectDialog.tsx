@@ -40,13 +40,21 @@ export function ImapConnectDialog({ open, onOpenChange, onSuccess }: ImapConnect
       smtpUser: email,
     };
 
+    // farsightshares.com is hosted on Microsoft 365, so its mailboxes live on
+    // outlook.office365.com — the previous webmail.nfcmail.io mapping pointed
+    // at an unrelated server, which accepted the TLS connection and then
+    // rejected every login ("AUTHENTICATE failed"), making a correct password
+    // look wrong. Note that password-based IMAP will still fail here:
+    // Microsoft disabled basic auth, so these accounts must use the
+    // "Connect Outlook" (OAuth) button instead. The host is kept accurate so
+    // the settings shown aren't actively misleading.
     if (domain === "farsightshares.com") {
       settings = {
         ...settings,
-        imapHost: "webmail.nfcmail.io",
+        imapHost: "outlook.office365.com",
         imapPort: "993",
-        smtpHost: "webmail.nfcmail.io",
-        smtpPort: "465",
+        smtpHost: "smtp.office365.com",
+        smtpPort: "587",
       };
     } else if (domain === "gmail.com") {
       settings = {

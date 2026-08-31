@@ -35,12 +35,24 @@ const AUTHORITY = "https://login.microsoftonline.com/common/oauth2/v2.0";
 // Exchange Online service principal in the tenant.
 //
 // User.Read is what lets us resolve the mailbox address via /me.
+// Mail.Send powers replying from inside MailPilot (see sendGraphReply).
+//
+// Adding a scope invalidates any consent already granted, and in a managed
+// tenant that means an admin has to approve the app again before ANY user can
+// connect — including accounts that were working fine. So sending is
+// separable: set MS_ENABLE_SEND=false to request read-only access and avoid
+// the re-consent, at the cost of replies from inside the app.
+const MS_ENABLE_SEND = (process.env.MS_ENABLE_SEND ?? "true").toLowerCase() !== "false";
+
+/** Whether Outlook accounts may send. False = read-only tracking, which
+ *  needs no Mail.Send consent. */
+export function isOutlookSendEnabled(): boolean {
+  return MS_ENABLE_SEND;
+}
+
 const SCOPES = [
   "https://graph.microsoft.com/Mail.Read",
-  // Mail.Send powers replying from inside MailPilot (see sendGraphReply).
-  // Accounts connected before this scope was added must reconnect — their
-  // existing refresh token carries the old, narrower consent.
-  "https://graph.microsoft.com/Mail.Send",
+  ...(MS_ENABLE_SEND ? ["https://graph.microsoft.com/Mail.Send"] : []),
   "https://graph.microsoft.com/User.Read",
   "offline_access",
   "openid",

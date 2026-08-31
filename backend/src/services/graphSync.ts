@@ -74,6 +74,30 @@ async function graphGet<T>(url: string, accessToken: string): Promise<T> {
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     const body = await res.text();
+
+    // Translate Graph's most common setup failures into something the person
+    // reading the toast can actually act on. The raw JSON ("the mailbox is
+    // either inactive, soft-deleted, or is hosted on-premise") describes the
+    // symptom but not the fix.
+    if (body.includes("MailboxNotEnabledForRESTAPI")) {
+      const err = new Error(
+        "This Microsoft account has no Exchange Online mailbox, so mail can't be read. " +
+          "In the Microsoft 365 admin center open this user, expand Apps, and make sure " +
+          "'Exchange Online' is enabled on their license — then wait ~15 minutes and reconnect. " +
+          "If Exchange is already enabled, the mailbox is hosted outside Microsoft 365 and must be connected via IMAP instead."
+      );
+      (err as any).status = res.status;
+      throw err;
+    }
+    if (res.status === 403 || body.includes("ErrorAccessDenied")) {
+      const err = new Error(
+        "Microsoft denied access to this mailbox. The organisation's admin may need to re-approve MailPilot " +
+          "(the requested permissions changed), or this account lacks permission to read its own mail."
+      );
+      (err as any).status = res.status;
+      throw err;
+    }
+
     const err = new Error(`Microsoft Graph request failed (${res.status}): ${body}`);
     // 401 means the access token is bad/expired — the caller refreshes and
     // retries rather than treating it as a permanent failure.

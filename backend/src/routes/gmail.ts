@@ -2,7 +2,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { requireAuth } from "../middleware/auth";
 import { buildAuthUrl, isGoogleConfigured } from "../services/googleOAuth";
-import { isMicrosoftConfigured } from "../services/microsoftOAuth";
+import { isMicrosoftConfigured, isOutlookSendEnabled } from "../services/microsoftOAuth";
 import { connectGmailAccount, disconnectGmailAccount } from "../services/gmailAccountService";
 import { IMAP_SEND_DISABLED_MESSAGE } from "../services/emailActions";
 import { prisma } from "../lib/db";
@@ -84,7 +84,13 @@ gmailRouter.get("/status", requireAuth, async (req, res) => {
   // Conditional Sending: GMAIL sends via the Gmail API, OUTLOOK via Microsoft
   // Graph. IMAP and MANUAL accounts remain read-only — there's no send path
   // for them (see IMAP_SEND_DISABLED_MESSAGE in emailActions.ts).
-  const canSend = connected && (account?.provider === "GMAIL" || account?.provider === "OUTLOOK");
+  // Outlook can only send when the Mail.Send scope was actually requested at
+  // connect time (MS_ENABLE_SEND). With sending off the account is read-only
+  // tracking, so the UI must hide Reply/Compose rather than offer an action
+  // that Microsoft would reject.
+  const canSend =
+    connected &&
+    (account?.provider === "GMAIL" || (account?.provider === "OUTLOOK" && isOutlookSendEnabled()));
 
   return res.json({
     account,
