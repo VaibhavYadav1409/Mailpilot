@@ -427,6 +427,56 @@ export async function getEmployeeEmailList(
   return { emails: emails.slice(0, limit), nextCursor };
 }
 
+/**
+ * Full detail of ONE of an employee's mails, for the admin/manager mail
+ * viewer. Scoped to the employee's active mail account, so an admin can only
+ * open a mail that actually belongs to the employee they're allowed to see
+ * (RBAC is enforced one level up via canActOnEmployee). Returns null when the
+ * employee has no active account or the id isn't theirs — the route maps both
+ * to 404 so it never leaks whether an id exists on another mailbox.
+ *
+ * Unlike getEmployeeEmailList this DOES include bodyText/bodyHtml and the To/
+ * Cc headers: reading the full mail is the whole point of the viewer. Raw
+ * attachment bytes are NOT returned (only filename/type/size) — downloading
+ * an employee's attachment stays out of scope here.
+ */
+export async function getEmployeeEmailDetail(employeeId: string, emailId: string) {
+  const account = await prisma.gmailAccount.findFirst({
+    where: { employeeId, isActive: true },
+    select: { id: true },
+  });
+  if (!account) return null;
+
+  const email = await prisma.email.findFirst({
+    where: { id: emailId, gmailAccountId: account.id },
+    select: {
+      id: true,
+      subject: true,
+      fromAddress: true,
+      fromName: true,
+      toAddresses: true,
+      ccAddresses: true,
+      receivedAt: true,
+      repliedAt: true,
+      snippet: true,
+      bodyText: true,
+      bodyHtml: true,
+      isRead: true,
+      isStarred: true,
+      isCc: true,
+      isReplied: true,
+      requiresReply: true,
+      replyClassification: true,
+      pendingDurationSec: true,
+      replyTimeSec: true,
+      threadId: true,
+      category: { select: { label: true } },
+      attachments: { select: { id: true, filename: true, mimeType: true, sizeBytes: true } },
+    },
+  });
+  return email; // null => not found / not this employee's, route -> 404
+}
+
 function rangeStart(range: "daily" | "weekly" | "monthly"): Date {
   const now = new Date();
   if (range === "daily") return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));

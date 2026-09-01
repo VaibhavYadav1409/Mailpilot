@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/db";
 import { requireAuth } from "../middleware/auth";
 import { requireMinRole, canActOnEmployee } from "../middleware/rbac";
-import { getCompanyOverview, getCompanyTrends, getDepartmentAnalytics, getEmployeeAnalytics, getEmployeeOverview, getEmployeeEmailList, getLeaderboard } from "../services/analyticsQuery";
+import { getCompanyOverview, getCompanyTrends, getDepartmentAnalytics, getEmployeeAnalytics, getEmployeeOverview, getEmployeeEmailList, getEmployeeEmailDetail, getLeaderboard } from "../services/analyticsQuery";
 import { runDailyAnalyticsRollup } from "../services/analyticsEngine";
 
 export const analyticsRouter = Router();
@@ -114,6 +114,21 @@ analyticsRouter.get("/employees/:id/emails", requireAuth, async (req, res) => {
   const result = await getEmployeeEmailList(req.params.id, parsed.data.status, parsed.data.limit, parsed.data.cursor);
   if (!result) return res.status(404).json({ error: "No mail account connected for this employee" });
   return res.json(result);
+});
+
+/**
+ * Full detail of one of an employee's mails — backs the admin mail viewer.
+ * Same canActOnEmployee RBAC as the list above; the service layer additionally
+ * scopes the mail to the employee's active account, so :emailId can't be used
+ * to read a mail from someone else's mailbox.
+ */
+analyticsRouter.get("/employees/:id/emails/:emailId", requireAuth, async (req, res) => {
+  const allowed = await canActOnEmployee(req.user!, req.params.id);
+  if (!allowed) return res.status(403).json({ error: "You do not have permission to view this employee" });
+
+  const email = await getEmployeeEmailDetail(req.params.id, req.params.emailId);
+  if (!email) return res.status(404).json({ error: "Email not found" });
+  return res.json({ email });
 });
 
 /**

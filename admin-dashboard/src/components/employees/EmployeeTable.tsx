@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/services/api';
-import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck } from 'lucide-react';
+import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck, X, Paperclip, Star } from 'lucide-react';
 import { useState, useEffect, Fragment } from 'react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
@@ -345,6 +345,8 @@ function EmployeeOverviewPanel({
   initialTab?: 'overview' | 'pending' | 'replied' | 'no_reply_needed';
 }) {
   const [tab, setTab] = useState<'overview' | 'pending' | 'replied' | 'no_reply_needed'>(initialTab);
+  // The mail currently opened in the full-detail modal (null = none open).
+  const [openMailId, setOpenMailId] = useState<string | null>(null);
 
   // Re-sync if the user clicks a different count cell while this row is already expanded.
   useEffect(() => {
@@ -425,7 +427,11 @@ function EmployeeOverviewPanel({
         </div>
       )}
 
-      {tab !== 'overview' && <EmployeeEmailList employeeId={employeeId} status={tab} />}
+      {tab !== 'overview' && <EmployeeEmailList employeeId={employeeId} status={tab} onOpen={setOpenMailId} />}
+
+      {openMailId && (
+        <MailDetailModal employeeId={employeeId} emailId={openMailId} onClose={() => setOpenMailId(null)} />
+      )}
     </div>
   );
 }
@@ -458,9 +464,11 @@ const STATUS_EMPTY_LABEL: Record<string, string> = {
 function EmployeeEmailList({
   employeeId,
   status,
+  onOpen,
 }: {
   employeeId: string;
   status: 'pending' | 'replied' | 'no_reply_needed';
+  onOpen: (emailId: string) => void;
 }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['employee-emails', employeeId, status],
@@ -482,7 +490,12 @@ function EmployeeEmailList({
   return (
     <div className="divide-y divide-gray-100 dark:divide-gray-800">
       {data.emails.map((e) => (
-        <div key={e.id} className="py-2.5 flex items-center justify-between gap-4">
+        <button
+          key={e.id}
+          type="button"
+          onClick={() => onOpen(e.id)}
+          className="w-full text-left py-2.5 px-2 -mx-2 flex items-center justify-between gap-4 rounded-lg hover:bg-gray-100/70 dark:hover:bg-gray-800/50 transition-colors"
+        >
           <div className="min-w-0">
             <div className="text-sm font-medium truncate flex items-center gap-1.5">
               <span className="truncate">{e.subject || '(no subject)'}</span>
@@ -517,11 +530,223 @@ function EmployeeEmailList({
               </>
             )}
           </div>
-        </div>
+        </button>
       ))}
       {data.nextCursor && (
         <div className="text-xs text-gray-400 pt-2">Showing most recent 20 — more exist.</div>
       )}
+    </div>
+  );
+}
+
+interface EmployeeEmailDetail {
+  id: string;
+  subject: string | null;
+  fromAddress: string;
+  fromName: string | null;
+  toAddresses: string | null;
+  ccAddresses: string | null;
+  receivedAt: string;
+  repliedAt: string | null;
+  snippet: string | null;
+  bodyText: string | null;
+  bodyHtml: string | null;
+  isRead: boolean;
+  isStarred: boolean;
+  isCc: boolean;
+  isReplied: boolean;
+  requiresReply: boolean | null;
+  replyClassification: string | null;
+  pendingDurationSec: number | null;
+  replyTimeSec: number | null;
+  threadId: string | null;
+  category: { label: string } | null;
+  attachments: { id: string; filename: string; mimeType: string; sizeBytes: number }[];
+}
+
+/** JSON-encoded string[] header (toAddresses/ccAddresses) -> readable line. */
+function parseAddressList(raw: string | null): string {
+  if (!raw) return '';
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.join(', ') : String(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * Full read-only view of a single employee mail, opened from the Pending /
+ * Replied / No-reply-needed lists. Shows every header (including the full
+ * date/time, which the compact list rows truncate), the body, and the
+ * attachment list. The HTML body is rendered inside a sandboxed iframe
+ * (sandbox="" — no script execution, no same-origin access) so untrusted
+ * mail markup can't run scripts against the admin dashboard.
+ */
+function MailDetailModal({
+  employeeId,
+  emailId,
+  onClose,
+}: {
+  employeeId: string;
+  emailId: string;
+  onClose: () => void;
+}) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['employee-email-detail', employeeId, emailId],
+    queryFn: async () => {
+      const { data } = await api.get<{ email: EmployeeEmailDetail }>(
+        `/analytics/employees/${employeeId}/emails/${emailId}`
+      );
+      return data.email;
+    },
+  });
+
+  // Close on Escape.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const to = data ? parseAddressList(data.toAddresses) : '';
+  const cc = data ? parseAddressList(data.ccAddresses) : '';
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
+      onClick={onClose}
+    >
+      <div
+        className="glass-card w-full max-w-3xl my-4 max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header bar */}
+        <div className="flex items-center justify-between gap-4 p-4 border-b border-gray-100 dark:border-gray-800 shrink-0">
+          <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide font-mono">Mail</h3>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {isLoading ? (
+          <div className="p-8 text-sm text-gray-400">Loading mail…</div>
+        ) : error || !data ? (
+          <div className="p-8 text-sm text-gray-400">Couldn't load this mail.</div>
+        ) : (
+          <div className="overflow-y-auto p-6 space-y-4">
+            {/* Subject + flags */}
+            <div>
+              <h2 className="text-lg font-semibold leading-snug flex items-start gap-2">
+                {data.isStarred && <Star className="w-4 h-4 mt-1 shrink-0 fill-amber-400 text-amber-400" />}
+                <span>{data.subject || '(no subject)'}</span>
+              </h2>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {!data.isRead && <span className="badge bg-primary/10 text-primary">Unread</span>}
+                {data.isReplied && <span className="badge bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Replied</span>}
+                {data.isCc && <span className="badge bg-gray-100 dark:bg-gray-800 text-gray-500">CC</span>}
+                {data.category?.label && (
+                  <span className="badge bg-gray-100 dark:bg-gray-800 text-gray-500">{data.category.label}</span>
+                )}
+                {data.replyClassification && REPLY_CLASS_LABELS[data.replyClassification] && (
+                  <span className="badge bg-gray-100 dark:bg-gray-800 text-gray-500">
+                    {REPLY_CLASS_LABELS[data.replyClassification]}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Headers — labels aligned, nothing truncated */}
+            <div className="text-sm space-y-1.5 border-y border-gray-100 dark:border-gray-800 py-3">
+              <div className="flex gap-2">
+                <span className="w-14 shrink-0 text-gray-400">From</span>
+                <span className="min-w-0 break-words">
+                  {data.fromName ? `${data.fromName} <${data.fromAddress}>` : data.fromAddress}
+                </span>
+              </div>
+              {to && (
+                <div className="flex gap-2">
+                  <span className="w-14 shrink-0 text-gray-400">To</span>
+                  <span className="min-w-0 break-words">{to}</span>
+                </div>
+              )}
+              {cc && (
+                <div className="flex gap-2">
+                  <span className="w-14 shrink-0 text-gray-400">Cc</span>
+                  <span className="min-w-0 break-words">{cc}</span>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <span className="w-14 shrink-0 text-gray-400">Date</span>
+                <span className="min-w-0 break-words font-medium">
+                  {new Date(data.receivedAt).toLocaleString(undefined, {
+                    weekday: 'short',
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+              </div>
+              {data.repliedAt && (
+                <div className="flex gap-2">
+                  <span className="w-14 shrink-0 text-gray-400">Replied</span>
+                  <span className="min-w-0 break-words">{new Date(data.repliedAt).toLocaleString()}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Body */}
+            {data.bodyHtml ? (
+              <iframe
+                title="Email body"
+                sandbox=""
+                className="w-full min-h-[240px] rounded-lg border border-gray-100 dark:border-gray-800 bg-white"
+                srcDoc={`<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>body{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:12px;word-wrap:break-word;overflow-wrap:break-word}img{max-width:100%;height:auto}</style></head><body>${data.bodyHtml}</body></html>`}
+              />
+            ) : (
+              <pre className="text-sm whitespace-pre-wrap break-words font-sans text-gray-800 dark:text-gray-200">
+                {data.bodyText || data.snippet || '(no content)'}
+              </pre>
+            )}
+
+            {/* Attachments (metadata only — no download from the admin side) */}
+            {data.attachments.length > 0 && (
+              <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-mono mb-2">
+                  {data.attachments.length} attachment{data.attachments.length === 1 ? '' : 's'}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {data.attachments.map((a) => (
+                    <div
+                      key={a.id}
+                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-900/40 text-xs max-w-[240px]"
+                      title={`${a.filename} (${a.mimeType})`}
+                    >
+                      <Paperclip className="w-3 h-3 shrink-0 text-gray-400" />
+                      <span className="truncate">{a.filename}</span>
+                      <span className="shrink-0 text-gray-400">{formatBytes(a.sizeBytes)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
