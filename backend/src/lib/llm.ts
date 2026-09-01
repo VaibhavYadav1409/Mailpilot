@@ -21,7 +21,10 @@ export type InvokeResult = {
 };
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+// Groq model. Overridable via GROQ_MODEL so a Groq deprecation can be fixed
+// from the Render dashboard without a code change. Default updated after Groq
+// decommissioned llama-3.3-70b-versatile (Aug 16, 2026) for free/dev tiers.
+const DEFAULT_MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
 // Groq's free tier enforces BOTH per-minute and per-DAY limits. A sync fires
 // many categorize/priority calls, so bursts hit HTTP 429. We retry the
