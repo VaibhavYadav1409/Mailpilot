@@ -22,30 +22,6 @@ interface Employee {
   inboxCounts: { pending: number; replied: number; noReplyNeeded?: number };
 }
 
-/**
- * Display name derived from the connected mailbox's local part (the text
- * before the @), title-cased: demat@farsightshares.com -> "Demat",
- * manager.support@acme.com -> "Manager Support". Falls back to the
- * employee's actual name when no mailbox is connected.
- */
-function mailboxName(emp: Employee): string {
-  const local = emp.gmailAccount?.emailAddress?.split('@')[0] ?? '';
-  if (!local) return `${emp.firstName} ${emp.lastName}`.trim();
-  return local
-    .split(/[._+-]+/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ');
-}
-
-/** Two-letter avatar initials matching the derived mailbox name. */
-function mailboxInitials(emp: Employee): string {
-  const name = mailboxName(emp);
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
-}
-
 export const EmployeeTable = () => {
   const [search, setSearch] = useState('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -149,11 +125,12 @@ export const EmployeeTable = () => {
                 }}>
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-primary/10 ring-1 ring-primary/15 flex items-center justify-center text-primary font-bold text-xs shrink-0">
-                      {mailboxInitials(employee)}
+                      {employee.firstName[0]}
+                      {employee.lastName[0]}
                     </div>
                     <div>
                       <div className="font-medium text-[13.5px]">
-                        {mailboxName(employee)}
+                        {employee.firstName} {employee.lastName}
                       </div>
                       <div className="text-xs text-gray-500">{employee.email}</div>
                     </div>
