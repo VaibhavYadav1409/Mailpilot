@@ -25,6 +25,7 @@
 import { PrismaClient } from "../src/generated/prisma";
 import { categorizeEmail, markNoReplyNeeded } from "../src/services/aiPipeline";
 import { isGroqCoolingDown } from "../src/lib/llm";
+import { isNoReplySender } from "../src/services/noReplySenders";
 
 const prisma = new PrismaClient();
 
@@ -84,8 +85,14 @@ interface Row {
   id: string;
   bodyText: string | null;
   subject: string | null;
+  fromAddress: string;
   category: { label: string } | null;
   gmailAccount: { employeeId: string };
+}
+
+/** True when this row can be settled with no LLM call at all. */
+function resolvesLocally(e: Row): boolean {
+  return e.category?.label === "Spam/Promotional" || isNoReplySender(e.fromAddress);
 }
 
 /**
@@ -94,7 +101,10 @@ interface Row {
  * burning most of the quota on foregone conclusions.
  */
 async function classifyOne(e: Row): Promise<void> {
-  if (e.category?.label === "Spam/Promotional") {
+  // Promotional mail (headers) and known automated senders (noReplySenders.ts)
+  // are both settled without the model — spending quota on them is spending it
+  // on foregone conclusions.
+  if (resolvesLocally(e)) {
     await markNoReplyNeeded(e.id);
     return;
   }
@@ -120,9 +130,9 @@ async function processBatch(emails: Row[], processedSoFar: number, total: number
       const r = results[j];
       if (r.status === "fulfilled") {
         ok++;
-        // Promotional mail resolves locally with no LLM call, so it doesn't
-        // consume quota and shouldn't trigger the pacing delay.
-        if (slice[j].category?.label !== "Spam/Promotional") neededLLM = true;
+        // Rows that resolve locally consume no quota, so they shouldn't
+        // trigger the pacing delay.
+        if (!resolvesLocally(slice[j])) neededLLM = true;
       } else {
         failed++;
         // One line per failure — the full stack traces were pure noise at
@@ -172,6 +182,7 @@ async function main() {
         id: true,
         bodyText: true,
         subject: true,
+        fromAddress: true,
         category: { select: { label: true } },
         gmailAccount: { select: { employeeId: true } },
       },
