@@ -477,6 +477,32 @@ export async function getEmployeeEmailDetail(employeeId: string, emailId: string
   return email; // null => not found / not this employee's, route -> 404
 }
 
+/**
+ * Resolves ONE attachment on one of an employee's mails, for the admin mail
+ * viewer's download button. Scoped the same way as getEmployeeEmailDetail:
+ * the attachment must hang off an email that belongs to this employee's
+ * active account, so an attachment id from another mailbox can't be pulled
+ * through this route (RBAC one level up via canActOnEmployee). Returns the
+ * storage key + metadata; reading the bytes is the route's job.
+ */
+export async function getEmployeeAttachment(employeeId: string, emailId: string, attachmentId: string) {
+  const account = await prisma.gmailAccount.findFirst({
+    where: { employeeId, isActive: true },
+    select: { id: true },
+  });
+  if (!account) return null;
+
+  const attachment = await prisma.attachment.findFirst({
+    where: {
+      id: attachmentId,
+      emailId,
+      email: { gmailAccountId: account.id },
+    },
+    select: { id: true, filename: true, mimeType: true, sizeBytes: true, storageKey: true },
+  });
+  return attachment; // null => not found / not this employee's, route -> 404
+}
+
 function rangeStart(range: "daily" | "weekly" | "monthly"): Date {
   const now = new Date();
   if (range === "daily") return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));

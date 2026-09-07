@@ -6,6 +6,7 @@ import { decryptToken } from "../lib/crypto";
 import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority, markNoReplyNeeded } from "./aiPipeline";
 import { isPromotionalEmail, PROMOTIONAL_LABEL, headerValue } from "./promoDetector";
+import { isNoReplySender } from "./noReplySenders";
 import { isGroqCoolingDown } from "../lib/llm";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
@@ -417,6 +418,12 @@ async function persistParsedMessage(
     where: { gmailAccountId_gmailMessageId: { gmailAccountId: accountId, gmailMessageId: parsed.gmailMessageId } },
     include: { category: true },
   });
+  // Hard "this sender never needs a reply" signal (bank/depository robots and
+  // the like). Independent of promotional detection: these carry no bulk-mail
+  // headers, so without this they fall through to the LLM and can be parked in
+  // Unreplied forever. See noReplySenders.ts.
+  const noReplySender = isNoReplySender(parsed.fromAddress);
+
   if (existing) {
     // Self-healing: an email can already exist but still lack a category —
     // either it predates the AI categorization feature (categorizeEmail
@@ -425,6 +432,14 @@ async function persistParsedMessage(
     // attempt failed transiently and was never retried (fire-and-forget
     // below only logs failures, it doesn't retry them). Catch it up here
     // rather than leaving it uncategorized forever.
+    if (noReplySender && existing.requiresReply !== false) {
+      // Settled by sender, not by the model — so a re-sync retroactively
+      // clears these out of Pending once this list is deployed.
+      await markNoReplyNeeded(existing.id).catch((e) =>
+        console.error(`[AI] failed to mark email ${existing.id} as no-reply-needed:`, e),
+      );
+    }
+
     if (parsed.isPromotional) {
       // Deterministic promo signal (Gmail label / List-Unsubscribe header).
       // Ensure it's filed under Promotions even if a prior LLM pass left it
@@ -447,7 +462,13 @@ async function persistParsedMessage(
       // Self-healing now also covers rows that have a category but no
       // reply-worthiness verdict — i.e. everything that synced before this
       // feature shipped. categorizeEmail sets both in one call.
-      aiCallLimiter(() => categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText)).catch(
+      aiCallLimiter(() =>
+        categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText).then(() =>
+          // The sender list outranks the model: re-assert the verdict after
+          // categorization, which would otherwise overwrite requiresReply.
+          noReplySender ? markNoReplyNeeded(existing.id) : undefined,
+        ),
+      ).catch(
         ignoreQueueFull(`[AI] backfill categorize failed for email ${existing.id}:`)
       );
     }
@@ -498,6 +519,14 @@ async function persistParsedMessage(
   // headers), not the LLM — so it lands in "Promotions" reliably even when
   // the LLM is rate-limited or wrong. Everything else goes to the LLM
   // categorizer as before.
+  if (noReplySender) {
+    // Deterministic sender-list verdict: holds even while the LLM breaker is
+    // open, and keeps these out of the Unreplied/Pending views.
+    await markNoReplyNeeded(email.id).catch((e) =>
+      console.error(`[AI] failed to mark email ${email.id} as no-reply-needed:`, e),
+    );
+  }
+
   if (parsed.isPromotional) {
     await labelPromotional(email.id);
     // Bulk/marketing mail never warrants a reply, and this verdict comes from
@@ -512,7 +541,13 @@ async function persistParsedMessage(
     // while the Groq breaker is open so a big sync doesn't queue hundreds of
     // doomed, memory-holding calls against an exhausted quota (the cause of a
     // prior Render OOM). Uncategorized rows are caught on a later sync.
-    aiCallLimiter(() => categorizeEmail(employeeId, email.id, parsed.bodyText)).catch(
+    aiCallLimiter(() =>
+      categorizeEmail(employeeId, email.id, parsed.bodyText).then(() =>
+        // Sender list outranks the model — re-assert after categorization,
+        // which sets requiresReply from the LLM verdict.
+        noReplySender ? markNoReplyNeeded(email.id) : undefined,
+      ),
+    ).catch(
       ignoreQueueFull(`[AI] categorize failed for email ${email.id}:`)
     );
   }

@@ -3,8 +3,9 @@ import { z } from "zod";
 import { prisma } from "../lib/db";
 import { requireAuth } from "../middleware/auth";
 import { requireMinRole, canActOnEmployee } from "../middleware/rbac";
-import { getCompanyOverview, getCompanyTrends, getDepartmentAnalytics, getEmployeeAnalytics, getEmployeeOverview, getEmployeeEmailList, getEmployeeEmailDetail, getLeaderboard } from "../services/analyticsQuery";
+import { getCompanyOverview, getCompanyTrends, getDepartmentAnalytics, getEmployeeAnalytics, getEmployeeOverview, getEmployeeEmailList, getEmployeeEmailDetail, getEmployeeAttachment, getLeaderboard } from "../services/analyticsQuery";
 import { runDailyAnalyticsRollup } from "../services/analyticsEngine";
+import { readAttachment } from "../lib/attachmentStorage";
 
 export const analyticsRouter = Router();
 
@@ -96,7 +97,7 @@ analyticsRouter.get("/employees/:id/overview", requireAuth, async (req, res) => 
 const emailListQuerySchema = z.object({
   status: z.enum(["pending", "replied", "no_reply_needed"]),
   cursor: z.string().optional(),
-  limit: z.coerce.number().min(1).max(50).default(20),
+  limit: z.coerce.number().min(1).max(100).default(20),
 });
 
 /**
@@ -129,6 +130,29 @@ analyticsRouter.get("/employees/:id/emails/:emailId", requireAuth, async (req, r
   const email = await getEmployeeEmailDetail(req.params.id, req.params.emailId);
   if (!email) return res.status(404).json({ error: "Email not found" });
   return res.json({ email });
+});
+
+/**
+ * Downloads one attachment from an employee's mail, for the admin mail
+ * viewer. Same canActOnEmployee RBAC as the detail route above, and the
+ * service layer additionally scopes the attachment to the employee's active
+ * account so an id from another mailbox can't be fetched here.
+ */
+analyticsRouter.get("/employees/:id/emails/:emailId/attachments/:attachmentId", requireAuth, async (req, res) => {
+  const allowed = await canActOnEmployee(req.user!, req.params.id);
+  if (!allowed) return res.status(403).json({ error: "You do not have permission to view this employee" });
+
+  const attachment = await getEmployeeAttachment(req.params.id, req.params.emailId, req.params.attachmentId);
+  if (!attachment) return res.status(404).json({ error: "Attachment not found" });
+
+  try {
+    const bytes = await readAttachment(attachment.storageKey);
+    res.setHeader("Content-Type", attachment.mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${attachment.filename.replace(/"/g, "")}"`);
+    return res.send(bytes);
+  } catch {
+    return res.status(500).json({ error: "Failed to read attachment" });
+  }
 });
 
 /**

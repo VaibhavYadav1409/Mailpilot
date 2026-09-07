@@ -1,9 +1,9 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/services/api';
-import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck, X, Paperclip, Star } from 'lucide-react';
-import { useState, useEffect, Fragment } from 'react';
+import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck, X, Paperclip, Star, Download, Loader2 } from 'lucide-react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
 
@@ -461,6 +461,9 @@ const STATUS_EMPTY_LABEL: Record<string, string> = {
   no_reply_needed: 'no-reply-needed',
 };
 
+/** Rows fetched per page. The list scrolls and pages in more as you reach the bottom. */
+const EMAIL_PAGE_SIZE = 50;
+
 function EmployeeEmailList({
   employeeId,
   status,
@@ -470,26 +473,58 @@ function EmployeeEmailList({
   status: 'pending' | 'replied' | 'no_reply_needed';
   onOpen: (emailId: string) => void;
 }) {
-  const { data, isLoading, error } = useQuery({
+  // Infinite, not a single capped page: the list used to fetch the most
+  // recent 20 and simply tell the admin "more exist", which made anything
+  // older than those 20 unreachable from the dashboard. The endpoint has
+  // always been cursor-paginated, so paging it here surfaces the whole
+  // mailbox inside a scroll container.
+  const { data, isLoading, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
     queryKey: ['employee-emails', employeeId, status],
-    queryFn: async () => {
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }) => {
       const { data } = await api.get<{ emails: EmployeeEmailListItem[]; nextCursor: string | null }>(
         `/analytics/employees/${employeeId}/emails`,
-        { params: { status, limit: 20 } }
+        { params: { status, limit: EMAIL_PAGE_SIZE, ...(pageParam ? { cursor: pageParam } : {}) } }
       );
       return data;
     },
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
 
+  // Auto-load the next page when the sentinel at the bottom of the scroll
+  // container comes into view, so scrolling alone walks the whole list.
+  // The sentinel node is held in state rather than a plain ref so the effect
+  // re-runs (and the observer is torn down) when it mounts/unmounts — a ref
+  // callback's return value is not a cleanup in React 18.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!sentinel || !hasNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) fetchNextPage();
+      },
+      { root: scrollRef.current, rootMargin: '120px' }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [sentinel, hasNextPage, fetchNextPage]);
+
   if (isLoading) return <div className="text-sm text-gray-400 py-2">Loading emails…</div>;
-  if (error) return <div className="text-sm text-gray-400 py-2">Couldn't load emails.</div>;
-  if (!data || data.emails.length === 0) {
+  if (error) return <div className="text-sm text-gray-400 py-2">Couldn&apos;t load emails.</div>;
+
+  const emails = data?.pages.flatMap((p) => p.emails) ?? [];
+  if (emails.length === 0) {
     return <div className="text-sm text-gray-400 py-2">No {STATUS_EMPTY_LABEL[status] ?? status} emails.</div>;
   }
 
   return (
-    <div className="divide-y divide-gray-100 dark:divide-gray-800">
-      {data.emails.map((e) => (
+    <div
+      ref={scrollRef}
+      className="max-h-[26rem] overflow-y-auto pr-1 divide-y divide-gray-100 dark:divide-gray-800"
+    >
+      {emails.map((e) => (
         <button
           key={e.id}
           type="button"
@@ -532,8 +567,25 @@ function EmployeeEmailList({
           </div>
         </button>
       ))}
-      {data.nextCursor && (
-        <div className="text-xs text-gray-400 pt-2">Showing most recent 20 — more exist.</div>
+
+      {/* Sentinel + manual fallback (a click still works if IntersectionObserver
+          never fires, e.g. the container never scrolls). */}
+      {hasNextPage ? (
+        <div ref={setSentinel} className="py-3 text-center">
+          <button
+            type="button"
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+            className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 inline-flex items-center gap-1.5"
+          >
+            {isFetchingNextPage && <Loader2 className="w-3 h-3 animate-spin" />}
+            {isFetchingNextPage ? 'Loading more…' : 'Load more'}
+          </button>
+        </div>
+      ) : (
+        <div className="text-xs text-gray-400 py-3 text-center">
+          {emails.length} email{emails.length === 1 ? '' : 's'} — end of list.
+        </div>
       )}
     </div>
   );
@@ -579,6 +631,73 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * One attachment chip that downloads on click. The bytes come back through
+ * the authenticated axios client as a blob (the endpoint needs the Bearer
+ * token, so a plain <a href> can't fetch it) and are handed to the browser
+ * via a temporary object URL, which is revoked immediately after.
+ */
+function AttachmentChip({
+  employeeId,
+  emailId,
+  attachment,
+}: {
+  employeeId: string;
+  emailId: string;
+  attachment: { id: string; filename: string; mimeType: string; sizeBytes: number };
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const download = async () => {
+    if (busy) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      const { data } = await api.get<Blob>(
+        `/analytics/employees/${employeeId}/emails/${emailId}/attachments/${attachment.id}`,
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = attachment.filename || 'attachment';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={download}
+      disabled={busy}
+      title={failed ? `Couldn't download ${attachment.filename}` : `Download ${attachment.filename} (${attachment.mimeType})`}
+      className={cn(
+        'group flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-xs max-w-[240px] transition-colors',
+        failed
+          ? 'border-red-200 dark:border-red-900/50 bg-red-50/60 dark:bg-red-950/30 text-red-600 dark:text-red-400'
+          : 'border-gray-100 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-900/40 hover:bg-gray-100 dark:hover:bg-gray-800/70'
+      )}
+    >
+      {busy ? (
+        <Loader2 className="w-3 h-3 shrink-0 animate-spin text-gray-400" />
+      ) : (
+        <Paperclip className="w-3 h-3 shrink-0 text-gray-400" />
+      )}
+      <span className="truncate">{attachment.filename}</span>
+      <span className="shrink-0 text-gray-400">{formatBytes(attachment.sizeBytes)}</span>
+      <Download className="w-3 h-3 shrink-0 text-gray-400 group-hover:text-primary" />
+    </button>
+  );
 }
 
 /**
@@ -723,7 +842,7 @@ function MailDetailModal({
               </pre>
             )}
 
-            {/* Attachments (metadata only — no download from the admin side) */}
+            {/* Attachments — click a chip to download the file. */}
             {data.attachments.length > 0 && (
               <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
                 <div className="text-[11px] uppercase tracking-wide text-gray-400 font-mono mb-2">
@@ -731,15 +850,7 @@ function MailDetailModal({
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {data.attachments.map((a) => (
-                    <div
-                      key={a.id}
-                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-900/40 text-xs max-w-[240px]"
-                      title={`${a.filename} (${a.mimeType})`}
-                    >
-                      <Paperclip className="w-3 h-3 shrink-0 text-gray-400" />
-                      <span className="truncate">{a.filename}</span>
-                      <span className="shrink-0 text-gray-400">{formatBytes(a.sizeBytes)}</span>
-                    </div>
+                    <AttachmentChip key={a.id} employeeId={employeeId} emailId={emailId} attachment={a} />
                   ))}
                 </div>
               </div>
