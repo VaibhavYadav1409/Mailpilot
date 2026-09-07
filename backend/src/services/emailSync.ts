@@ -6,7 +6,7 @@ import { decryptToken } from "../lib/crypto";
 import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority, markNoReplyNeeded } from "./aiPipeline";
 import { isPromotionalEmail, PROMOTIONAL_LABEL, headerValue } from "./promoDetector";
-import { isNoReplySender } from "./noReplySenders";
+import { isNoReplySender, isNoReplyPair } from "./noReplySenders";
 import { isGroqCoolingDown } from "../lib/llm";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
@@ -422,7 +422,13 @@ async function persistParsedMessage(
   // the like). Independent of promotional detection: these carry no bulk-mail
   // headers, so without this they fall through to the LLM and can be parked in
   // Unreplied forever. See noReplySenders.ts.
-  const noReplySender = isNoReplySender(parsed.fromAddress);
+  // Two signals, same verdict: a sender that is always automated, or mail
+  // between the two halves of a configured internal pair (which is only
+  // no-reply *to each other*, hence the recipient check — ownerEmail is
+  // included because the mailbox owner can be a Bcc and appear in no header).
+  const noReplySender =
+    isNoReplySender(parsed.fromAddress) ||
+    isNoReplyPair(parsed.fromAddress, [...parsed.toAddresses, ...parsed.ccAddresses, ownerEmail]);
 
   if (existing) {
     // Self-healing: an email can already exist but still lack a category —

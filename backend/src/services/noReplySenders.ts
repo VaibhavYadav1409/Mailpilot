@@ -38,6 +38,57 @@ const AUTOMATED_LOCAL_PARTS = [
   /^noreply[-_.]/,
 ];
 
+/**
+ * Address PAIRS whose mail to each other never needs a reply, in either
+ * direction. Distinct from the sender list above: these are real mailboxes
+ * that do need replies in general — it's only the traffic between the two
+ * that's internal housekeeping. Matching therefore looks at the recipients
+ * too, so mail from one of them to anyone else is untouched.
+ *
+ * Extend via NO_REPLY_PAIRS: "a@x.com:b@x.com,c@x.com:d@x.com".
+ */
+export const NO_REPLY_PAIRS: readonly (readonly [string, string])[] = [
+  ["global@farsightshares.com", "newaccount@farsightshares.com"],
+];
+
+function parsePairsEnv(): [string, string][] {
+  const raw = process.env.NO_REPLY_PAIRS;
+  if (!raw) return [];
+  const pairs: [string, string][] = [];
+  for (const entry of raw.split(",")) {
+    const [a, b] = entry.split(":").map((x) => x.trim().toLowerCase());
+    if (a && b) pairs.push([a, b]);
+  }
+  return pairs;
+}
+
+/**
+ * True when this is mail between the two halves of a configured pair, in
+ * either direction. `recipients` should be every address the message went to
+ * (To + Cc, plus the mailbox owner — an address can be a Bcc'd owner and so
+ * appear in neither header).
+ */
+export function isNoReplyPair(
+  from: string | null | undefined,
+  recipients: readonly (string | null | undefined)[],
+): boolean {
+  const sender = normalizeAddress(from);
+  if (!sender) return false;
+
+  const to = new Set(
+    recipients.map((r) => normalizeAddress(r)).filter((r): r is string => r !== null),
+  );
+  if (to.size === 0) return false;
+
+  for (const [a, b] of [...NO_REPLY_PAIRS, ...parsePairsEnv()]) {
+    const first = a.toLowerCase();
+    const second = b.toLowerCase();
+    if (sender === first && to.has(second)) return true;
+    if (sender === second && to.has(first)) return true;
+  }
+  return false;
+}
+
 function parseEnvList(): string[] {
   const raw = process.env.NO_REPLY_SENDERS;
   if (!raw) return [];
