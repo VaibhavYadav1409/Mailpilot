@@ -6,7 +6,7 @@ import { decryptToken } from "../lib/crypto";
 import { fetchImapMessages, fetchImapMessagesStreaming, fetchImapSentMessages } from "./imapSync";
 import { categorizeEmail, scoreEmailPriority, markNoReplyNeeded } from "./aiPipeline";
 import { isPromotionalEmail, PROMOTIONAL_LABEL, headerValue } from "./promoDetector";
-import { isNoReplySender, isNoReplyPair } from "./noReplySenders";
+import { isNoReplySender, isNoReplyPair, isOtpEmail } from "./noReplySenders";
 import { isGroqCoolingDown } from "../lib/llm";
 import { makeStorageKey, writeAttachment } from "../lib/attachmentStorage";
 import { matchGmailReplies, matchImapReplies, recordReply, refreshPendingDurations, type ReplyCandidate } from "./replyTracking";
@@ -428,7 +428,11 @@ async function persistParsedMessage(
   // included because the mailbox owner can be a Bcc and appear in no header).
   const noReplySender =
     isNoReplySender(parsed.fromAddress) ||
-    isNoReplyPair(parsed.fromAddress, [...parsed.toAddresses, ...parsed.ccAddresses, ownerEmail]);
+    isNoReplyPair(parsed.fromAddress, [...parsed.toAddresses, ...parsed.ccAddresses, ownerEmail]) ||
+    // OTP / verification codes: nobody replies to one, and they often come
+    // from a sender that is legitimate otherwise, so only the content settles
+    // them.
+    isOtpEmail(parsed.subject, parsed.bodyText);
 
   if (existing) {
     // Self-healing: an email can already exist but still lack a category —

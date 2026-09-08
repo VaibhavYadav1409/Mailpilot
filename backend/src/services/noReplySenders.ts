@@ -151,3 +151,47 @@ export function isNoReplySender(from: string | null | undefined): boolean {
 
   return AUTOMATED_LOCAL_PARTS.some((re) => re.test(local));
 }
+
+/**
+ * One-time-password / verification-code mail. Nobody replies to an OTP, and
+ * these often arrive from a sender that is otherwise legitimate (a bank, a
+ * portal, a broker) — so the sender list can't catch them and the LLM
+ * sometimes reads "action required" and files them as NEEDS_REPLY.
+ *
+ * Matching is deliberately phrase-based rather than keyword-based: a bare
+ * "code" or "verify" appears constantly in ordinary mail, so only the fixed
+ * phrasings that OTP mail actually uses count. The subject is checked first
+ * because it carries the signal almost every time; the body patterns are the
+ * tighter "here is your code" sentences, which don't occur in a human email
+ * asking a question.
+ */
+const OTP_SUBJECT_PATTERNS: readonly RegExp[] = [
+  /\bOTP\b/i,
+  /\bO\.T\.P\b/i,
+  /one[-\s]?time\s?(password|passcode|pin|code)/i,
+  /\b(verification|security|authentication|confirmation|login|access)\s+code\b/i,
+  /\bcode\s+(for|to)\s+(verify|verification|login|sign[-\s]?in)/i,
+  /\b(2fa|two[-\s]factor)\b/i,
+];
+
+const OTP_BODY_PATTERNS: readonly RegExp[] = [
+  /\b(is|as)\s+your\s+(otp|one[-\s]?time\s?(password|passcode|pin|code)|verification code|security code)\b/i,
+  /\byour\s+(otp|one[-\s]?time\s?(password|passcode|pin|code)|verification code|security code|login code)\s+(is|:)/i,
+  /\buse\s+(this\s+)?(otp|code)\s+to\s+(verify|login|log\s?in|sign\s?in|complete)/i,
+  /\bdo\s+not\s+share\s+(this\s+)?(otp|code)\b/i,
+  /\bvalid\s+for\s+\d+\s+(minute|min|second|sec)/i,
+];
+
+/**
+ * True when this looks like an OTP / verification-code mail. `bodyText` is
+ * optional — the subject alone settles most of them, and passing a snippet
+ * instead of a full body is fine (the patterns target the opening sentence).
+ */
+export function isOtpEmail(subject: string | null | undefined, bodyText?: string | null): boolean {
+  if (subject && OTP_SUBJECT_PATTERNS.some((re) => re.test(subject))) return true;
+  if (!bodyText) return false;
+  // Only the opening of the body: OTP phrasing is always up top, while
+  // scanning a long thread invites false positives from quoted footers.
+  const head = bodyText.slice(0, 600);
+  return OTP_BODY_PATTERNS.some((re) => re.test(head));
+}

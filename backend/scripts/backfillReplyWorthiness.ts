@@ -25,7 +25,7 @@
 import { PrismaClient } from "../src/generated/prisma";
 import { categorizeEmail, markNoReplyNeeded } from "../src/services/aiPipeline";
 import { isGroqCoolingDown } from "../src/lib/llm";
-import { isNoReplySender, isNoReplyPair } from "../src/services/noReplySenders";
+import { isNoReplySender, isNoReplyPair, isOtpEmail } from "../src/services/noReplySenders";
 
 const prisma = new PrismaClient();
 
@@ -107,6 +107,7 @@ function parseAddressColumn(raw: string | null): string[] {
 function resolvesLocally(e: Row): boolean {
   if (e.category?.label === "Spam/Promotional") return true;
   if (isNoReplySender(e.fromAddress)) return true;
+  if (isOtpEmail(e.subject, e.bodyText)) return true;
   return isNoReplyPair(e.fromAddress, [
     ...parseAddressColumn(e.toAddresses),
     ...parseAddressColumn(e.ccAddresses),

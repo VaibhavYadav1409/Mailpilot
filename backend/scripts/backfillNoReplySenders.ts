@@ -17,7 +17,13 @@
  * Safe to re-run: it only touches rows whose requiresReply isn't already false.
  */
 import { PrismaClient } from "../src/generated/prisma";
-import { NO_REPLY_SENDERS, NO_REPLY_PAIRS, isNoReplySender, isNoReplyPair } from "../src/services/noReplySenders";
+import {
+  NO_REPLY_SENDERS,
+  NO_REPLY_PAIRS,
+  isNoReplySender,
+  isNoReplyPair,
+  isOtpEmail,
+} from "../src/services/noReplySenders";
 
 const prisma = new PrismaClient();
 const dryRun = process.argv.includes("--dry-run");
@@ -40,11 +46,14 @@ async function main() {
   // re-implemented as a query that could drift from them.
   const rows = await prisma.email.findMany({
     where: { requiresReply: { not: false } },
-    select: { id: true, fromAddress: true, toAddresses: true, ccAddresses: true },
+    // snippet rather than bodyText: OTP phrasing is in the opening sentence,
+    // and pulling full bodies for the whole backlog is what OOM'd Render once.
+    select: { id: true, fromAddress: true, toAddresses: true, ccAddresses: true, subject: true, snippet: true },
   });
 
   const bySender: string[] = [];
   const byPair: string[] = [];
+  const byOtp: string[] = [];
   for (const r of rows) {
     if (isNoReplySender(r.fromAddress)) {
       bySender.push(r.id);
@@ -55,13 +64,15 @@ async function main() {
       ])
     ) {
       byPair.push(r.id);
+    } else if (isOtpEmail(r.subject, r.snippet)) {
+      byOtp.push(r.id);
     }
   }
 
-  const ids = [...bySender, ...byPair];
+  const ids = [...bySender, ...byPair, ...byOtp];
   console.log(
     `[backfill:no-reply] scanned ${rows.length} unsettled email(s): ` +
-      `${bySender.length} from listed senders, ${byPair.length} between listed pairs.`
+      `${bySender.length} from listed senders, ${byPair.length} between listed pairs, ${byOtp.length} OTP/verification code(s).`
   );
   console.log(
     `[backfill:no-reply] list: ${NO_REPLY_SENDERS.length} built-in sender(s), ${NO_REPLY_PAIRS.length} pair(s).`
