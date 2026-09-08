@@ -44,8 +44,12 @@ async function main() {
   // no-reply@ local-parts, *@domain entries, pair direction, env additions)
   // are applied by the same functions the sync path uses, instead of being
   // re-implemented as a query that could drift from them.
+  // NOT `{ requiresReply: { not: false } }`: in SQL's three-valued logic
+  // `requiresReply != false` is NULL for a NULL column, so that filter
+  // silently skipped every never-classified row — precisely the ones this
+  // script exists to settle. Spell both states out instead.
   const rows = await prisma.email.findMany({
-    where: { requiresReply: { not: false } },
+    where: { OR: [{ requiresReply: true }, { requiresReply: null }] },
     // snippet rather than bodyText: OTP phrasing is in the opening sentence,
     // and pulling full bodies for the whole backlog is what OOM'd Render once.
     select: { id: true, fromAddress: true, toAddresses: true, ccAddresses: true, subject: true, snippet: true },
