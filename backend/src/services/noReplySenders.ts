@@ -38,6 +38,57 @@ const AUTOMATED_LOCAL_PARTS = [
   /^noreply[-_.]/,
 ];
 
+/**
+ * Address PAIRS whose mail to each other never needs a reply, in either
+ * direction. Distinct from the sender list above: these are real mailboxes
+ * that do need replies in general — it's only the traffic between the two
+ * that's internal housekeeping. Matching therefore looks at the recipients
+ * too, so mail from one of them to anyone else is untouched.
+ *
+ * Extend via NO_REPLY_PAIRS: "a@x.com:b@x.com,c@x.com:d@x.com".
+ */
+export const NO_REPLY_PAIRS: readonly (readonly [string, string])[] = [
+  ["global@farsightshares.com", "newaccount@farsightshares.com"],
+];
+
+function parsePairsEnv(): [string, string][] {
+  const raw = process.env.NO_REPLY_PAIRS;
+  if (!raw) return [];
+  const pairs: [string, string][] = [];
+  for (const entry of raw.split(",")) {
+    const [a, b] = entry.split(":").map((x) => x.trim().toLowerCase());
+    if (a && b) pairs.push([a, b]);
+  }
+  return pairs;
+}
+
+/**
+ * True when this is mail between the two halves of a configured pair, in
+ * either direction. `recipients` should be every address the message went to
+ * (To + Cc, plus the mailbox owner — an address can be a Bcc'd owner and so
+ * appear in neither header).
+ */
+export function isNoReplyPair(
+  from: string | null | undefined,
+  recipients: readonly (string | null | undefined)[],
+): boolean {
+  const sender = normalizeAddress(from);
+  if (!sender) return false;
+
+  const to = new Set(
+    recipients.map((r) => normalizeAddress(r)).filter((r): r is string => r !== null),
+  );
+  if (to.size === 0) return false;
+
+  for (const [a, b] of [...NO_REPLY_PAIRS, ...parsePairsEnv()]) {
+    const first = a.toLowerCase();
+    const second = b.toLowerCase();
+    if (sender === first && to.has(second)) return true;
+    if (sender === second && to.has(first)) return true;
+  }
+  return false;
+}
+
 function parseEnvList(): string[] {
   const raw = process.env.NO_REPLY_SENDERS;
   if (!raw) return [];
@@ -99,4 +150,48 @@ export function isNoReplySender(from: string | null | undefined): boolean {
   if (domainCache!.has(domain)) return true;
 
   return AUTOMATED_LOCAL_PARTS.some((re) => re.test(local));
+}
+
+/**
+ * One-time-password / verification-code mail. Nobody replies to an OTP, and
+ * these often arrive from a sender that is otherwise legitimate (a bank, a
+ * portal, a broker) — so the sender list can't catch them and the LLM
+ * sometimes reads "action required" and files them as NEEDS_REPLY.
+ *
+ * Matching is deliberately phrase-based rather than keyword-based: a bare
+ * "code" or "verify" appears constantly in ordinary mail, so only the fixed
+ * phrasings that OTP mail actually uses count. The subject is checked first
+ * because it carries the signal almost every time; the body patterns are the
+ * tighter "here is your code" sentences, which don't occur in a human email
+ * asking a question.
+ */
+const OTP_SUBJECT_PATTERNS: readonly RegExp[] = [
+  /\bOTP\b/i,
+  /\bO\.T\.P\b/i,
+  /one[-\s]?time\s?(password|passcode|pin|code)/i,
+  /\b(verification|security|authentication|confirmation|login|access)\s+code\b/i,
+  /\bcode\s+(for|to)\s+(verify|verification|login|sign[-\s]?in)/i,
+  /\b(2fa|two[-\s]factor)\b/i,
+];
+
+const OTP_BODY_PATTERNS: readonly RegExp[] = [
+  /\b(is|as)\s+your\s+(otp|one[-\s]?time\s?(password|passcode|pin|code)|verification code|security code)\b/i,
+  /\byour\s+(otp|one[-\s]?time\s?(password|passcode|pin|code)|verification code|security code|login code)\s+(is|:)/i,
+  /\buse\s+(this\s+)?(otp|code)\s+to\s+(verify|login|log\s?in|sign\s?in|complete)/i,
+  /\bdo\s+not\s+share\s+(this\s+)?(otp|code)\b/i,
+  /\bvalid\s+for\s+\d+\s+(minute|min|second|sec)/i,
+];
+
+/**
+ * True when this looks like an OTP / verification-code mail. `bodyText` is
+ * optional — the subject alone settles most of them, and passing a snippet
+ * instead of a full body is fine (the patterns target the opening sentence).
+ */
+export function isOtpEmail(subject: string | null | undefined, bodyText?: string | null): boolean {
+  if (subject && OTP_SUBJECT_PATTERNS.some((re) => re.test(subject))) return true;
+  if (!bodyText) return false;
+  // Only the opening of the body: OTP phrasing is always up top, while
+  // scanning a long thread invites false positives from quoted footers.
+  const head = bodyText.slice(0, 600);
+  return OTP_BODY_PATTERNS.some((re) => re.test(head));
 }
