@@ -1,2 +1,7 @@
 old-*.ts
 old-*.prisma
+
+# Local copies of the env file (e.g. the pre-Aiven Neon backup) — these hold
+# live credentials and must never be committed.
+.env.*
+!.env.example

@@ -25,7 +25,7 @@
 import { PrismaClient } from "../src/generated/prisma";
 import { categorizeEmail, markNoReplyNeeded } from "../src/services/aiPipeline";
 import { isGroqCoolingDown } from "../src/lib/llm";
-import { isNoReplySender, isNoReplyPair, isOtpEmail } from "../src/services/noReplySenders";
+import { isNoReplySender } from "../src/services/noReplySenders";
 
 const prisma = new PrismaClient();
 
@@ -86,32 +86,13 @@ interface Row {
   bodyText: string | null;
   subject: string | null;
   fromAddress: string;
-  toAddresses: string | null;
-  ccAddresses: string | null;
   category: { label: string } | null;
   gmailAccount: { employeeId: string };
 }
 
-/** To/Cc are stored as JSON-encoded string[]; decode leniently. */
-function parseAddressColumn(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.map(String) : [String(raw)];
-  } catch {
-    return [raw];
-  }
-}
-
 /** True when this row can be settled with no LLM call at all. */
 function resolvesLocally(e: Row): boolean {
-  if (e.category?.label === "Spam/Promotional") return true;
-  if (isNoReplySender(e.fromAddress)) return true;
-  if (isOtpEmail(e.subject, e.bodyText)) return true;
-  return isNoReplyPair(e.fromAddress, [
-    ...parseAddressColumn(e.toAddresses),
-    ...parseAddressColumn(e.ccAddresses),
-  ]);
+  return e.category?.label === "Spam/Promotional" || isNoReplySender(e.fromAddress);
 }
 
 /**
@@ -202,8 +183,6 @@ async function main() {
         bodyText: true,
         subject: true,
         fromAddress: true,
-        toAddresses: true,
-        ccAddresses: true,
         category: { select: { label: true } },
         gmailAccount: { select: { employeeId: true } },
       },

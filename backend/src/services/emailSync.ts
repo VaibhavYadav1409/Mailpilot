@@ -414,9 +414,21 @@ async function persistParsedMessage(
 ): Promise<boolean> {
   // Dedup: unique constraint on (gmailAccountId, gmailMessageId) means a
   // re-sync (e.g. overlapping window) just no-ops rather than duplicating rows.
+  // `select`, not `include`: this lookup runs for EVERY message in EVERY sync
+  // window (every 5 minutes, per mailbox), and `include` returns all scalar
+  // columns — bodyText and bodyHtml included. A single mail's HTML is tens of
+  // kilobytes, so re-reading it hundreds of times a day per account is what
+  // burned through Neon's monthly data-transfer quota and took the whole
+  // service down with a "data transfer quota exceeded" error on every query.
+  // Only these fields are ever read off `existing`; the body is already in
+  // `parsed` when it's needed.
   const existing = await prisma.email.findUnique({
     where: { gmailAccountId_gmailMessageId: { gmailAccountId: accountId, gmailMessageId: parsed.gmailMessageId } },
-    include: { category: true },
+    select: {
+      id: true,
+      requiresReply: true,
+      category: { select: { label: true, source: true } },
+    },
   });
   // Hard "this sender never needs a reply" signal (bank/depository robots and
   // the like). Independent of promotional detection: these carry no bulk-mail
@@ -473,7 +485,7 @@ async function persistParsedMessage(
       // reply-worthiness verdict — i.e. everything that synced before this
       // feature shipped. categorizeEmail sets both in one call.
       aiCallLimiter(() =>
-        categorizeEmail(employeeId, existing.id, existing.bodyText ?? parsed.bodyText).then(() =>
+        categorizeEmail(employeeId, existing.id, parsed.bodyText).then(() =>
           // The sender list outranks the model: re-assert the verdict after
           // categorization, which would otherwise overwrite requiresReply.
           noReplySender ? markNoReplyNeeded(existing.id) : undefined,
