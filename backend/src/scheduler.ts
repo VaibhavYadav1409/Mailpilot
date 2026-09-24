@@ -11,6 +11,7 @@ import {
   isDailyMailMode,
   getMailDayTimezone,
 } from "./services/retentionEngine";
+import { purgeExpiredMsiReports } from "./services/msiService";
 
 /**
  * Registers all scheduled jobs. Called once from server.ts at startup.
@@ -234,8 +235,33 @@ export function startScheduler() {
     }
   });
 
+  // MSI Daily Work Report retention. Reports expire at 00:00 (MAIL_DAY_TIMEZONE)
+  // two days after their report date — see the RETENTION POLICY block in
+  // services/msiService.ts. Hourly rather than once at midnight because a
+  // Render free instance can be asleep at midnight and would silently skip a
+  // once-a-day tick; the delete is a single indexed query on expiresAt, so an
+  // hourly no-op run costs next to nothing. Also runs once shortly after boot
+  // to catch up after downtime. Reads already hide expired rows, so the worst
+  // case of a late run is "deleted up to an hour late", never "shown late".
+  // Only MsiDailyReport / MsiReportFile are ever touched by this job.
+  const runMsiRetention = async () => {
+    try {
+      const r = await purgeExpiredMsiReports();
+      if (r.reportsDeleted || r.filesDeleted || r.orphanFilesDeleted) {
+        console.log(
+          `[Scheduler] MSI retention: ${r.reportsDeleted} report(s) deleted by retention policy, ` +
+            `${r.filesDeleted} file(s) removed, ${r.orphanFilesDeleted} orphan file(s) swept; cutoff ${r.cutoff}`,
+        );
+      }
+    } catch (e) {
+      console.error("[Scheduler] MSI retention failed:", e);
+    }
+  };
+  cron.schedule("30 * * * *", runMsiRetention, { timezone: "UTC" });
+  setTimeout(() => void runMsiRetention(), 60_000);
+
   console.log(
     `[Scheduler] Cron jobs registered: daily rollup (00:05), notification rules (hourly), ` +
-      `email retention purge (00:20, ${getRetentionDays()}d), weekly reports (Mon 00:10)`,
+      `email retention purge (00:20, ${getRetentionDays()}d), weekly reports (Mon 00:10), MSI retention (hourly :30)`,
   );
 }

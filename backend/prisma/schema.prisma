@@ -46,6 +46,7 @@ model Company {
   auditLogs   AuditLog[]
   reports     Report[]
   notifications Notification[]
+  msiDailyReports MsiDailyReport[]
 }
 
 model CompanySettings {
@@ -97,6 +98,7 @@ model Employee {
   auditLogs       AuditLog[]
   aiActions       AIAction[]
   replies         Reply[]
+  msiDailyReports MsiDailyReport[]
 
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
@@ -414,5 +416,61 @@ model Report {
   periodStart DateTime
   periodEnd   DateTime
   fileUrl    String?  // generated PDF/CSV, if exported
+  createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// MSI Daily Work Report — temporary, auto-deleted after 2 days
+// ---------------------------------------------------------------------------
+// One row per employee per business day. "Business day" is a calendar day in
+// MAIL_DAY_TIMEZONE (default Asia/Kolkata — same day boundary the mail wipe
+// uses), always computed on the SERVER, never taken from the client.
+//
+// Retention (see services/msiService.ts — RETENTION_DAYS):
+//   reportDate 24 Sep -> expiresAt = 26 Sep 00:00 in MAIL_DAY_TIMEZONE
+//   24 Sep active, 25 Sep active, from 26 Sep 00:00 hidden + deleted.
+// The scheduler's MSI cleanup job deletes rows (and their files) once
+// expiresAt has passed, and every read filters expiresAt > now, so expired
+// data is never served even if a cleanup tick was missed.
+//
+// Both relations cascade: MSI data is disposable, and it must never block
+// deleting an employee or company.
+model MsiDailyReport {
+  id               String   @id @default(uuid())
+  companyId        String
+  company          Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employeeId       String
+  employee         Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  reportDate       DateTime @db.Date // business day this report belongs to
+  fileName         String   // sanitized original filename, for display/download only
+  fileType         String   // MIME type decided server-side from the extension
+  fileSize         Int      // bytes
+  // Opaque key into lib/msiStorage.ts — never a filesystem path or public URL,
+  // and never sent to the client.
+  storageReference String   @unique
+  // Separate from the file on purpose: this is what the CEO reads first.
+  importantMessage String?  @db.Text
+  status           String   @default("SUBMITTED")
+  submittedAt      DateTime @default(now()) // first submission for the day
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([employeeId, reportDate]) // one report per employee per day (also serves employeeId lookups)
+  @@index([companyId, reportDate])   // CEO dashboard: everything for one company + date
+  @@index([expiresAt])               // retention cleanup
+}
+
+// File bytes for MSI reports when MSI_STORAGE_DRIVER=db (the default).
+// Render's free tier has an ephemeral disk (wiped on every redeploy/restart/
+// spin-down), so the bytes live in Postgres instead. Kept in its own table so
+// dashboard/list queries on MsiDailyReport never pull file contents. Linked by
+// storageKey (= MsiDailyReport.storageReference) rather than a FK so the
+// storage driver stays swappable; orphans are swept by the cleanup job.
+model MsiReportFile {
+  id         String   @id @default(uuid())
+  storageKey String   @unique
+  data       Bytes
   createdAt  DateTime @default(now())
 }

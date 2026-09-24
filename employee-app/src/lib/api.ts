@@ -378,3 +378,113 @@ export const emailsApi = {
   saveManual: (data: { subject?: string; fromAddress?: string; bodyText: string }) =>
     post<{ email: EmailRecord }>("/api/emails", data).then((d) => d.email),
 };
+
+// ---------------------------------------------------------------------------
+// MSI Daily Work Report (backend: routes/msi.ts)
+// ---------------------------------------------------------------------------
+
+export interface MsiReport {
+  id: string;
+  reportDate: string; // YYYY-MM-DD business day, decided by the server
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  importantMessage: string | null;
+  hasImportantMessage: boolean;
+  status: string;
+  submittedAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+
+export interface MsiToday {
+  reportDate: string;
+  timezone: string;
+  serverTime: string;
+  submitted: boolean;
+  report: MsiReport | null;
+  rules: { maxFileBytes: number; allowedExtensions: string[]; retentionDays: number; maxMessageChars: number };
+}
+
+export interface MsiRecent {
+  retentionDays: number;
+  days: { date: string; label: string; submitted: boolean; report: MsiReport | null }[];
+}
+
+export interface MsiUploadBody {
+  file?: { fileName: string; dataBase64: string } | null;
+  importantMessage?: string | null;
+}
+
+/**
+ * JSON upload with real progress. fetch() can't report upload progress, so
+ * this one call uses XMLHttpRequest (built into the browser — no new
+ * dependency). Same auth contract as request(): Bearer token, one silent
+ * refresh + retry on 401.
+ */
+function sendWithProgress<T>(
+  method: "POST" | "PATCH",
+  path: string,
+  body: MsiUploadBody,
+  onProgress?: (pct: number) => void,
+  _retried = false,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, `${API_URL}${path}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Content-Type", "application/json");
+    if (accessToken) xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onerror = () => reject(new ApiError("Upload failed. Please try again.", 0));
+    xhr.onload = async () => {
+      if (xhr.status === 401 && !_retried && (await tryRefresh())) {
+        sendWithProgress<T>(method, path, body, onProgress, true).then(resolve, reject);
+        return;
+      }
+      let data: any = null;
+      try {
+        data = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+      } catch {
+        // non-JSON (e.g. proxy error page)
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
+      else {
+        const err = new ApiError(data?.error ?? "Upload failed. Please try again.", xhr.status) as ApiError & { code?: string };
+        err.code = data?.code;
+        reject(err);
+      }
+    };
+    xhr.send(JSON.stringify(body));
+  });
+}
+
+export const msiApi = {
+  today: () => get<MsiToday>("/api/msi/reports/today"),
+  recent: () => get<MsiRecent>("/api/msi/reports/my-reports"),
+  submit: (body: MsiUploadBody, onProgress?: (pct: number) => void) =>
+    sendWithProgress<{ report: MsiReport }>("POST", "/api/msi/reports", body, onProgress).then((d) => d.report),
+  update: (id: string, body: MsiUploadBody, onProgress?: (pct: number) => void) =>
+    sendWithProgress<{ report: MsiReport }>("PATCH", `/api/msi/reports/${id}`, body, onProgress).then((d) => d.report),
+  withdraw: (id: string) => request<void>(`/api/msi/reports/${id}`, { method: "DELETE" }),
+  async download(report: Pick<MsiReport, "id" | "fileName">) {
+    const doFetch = () => {
+      const headers = new Headers();
+      if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+      return fetch(`${API_URL}/api/msi/reports/${report.id}/download`, { headers, credentials: "include" });
+    };
+    let res = await doFetch();
+    if (res.status === 401 && (await tryRefresh())) res = await doFetch();
+    if (!res.ok) throw new ApiError("This report file is no longer available.", res.status);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = report.fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+};

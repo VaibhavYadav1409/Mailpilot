@@ -4,6 +4,8 @@ import { EmailBody } from "@/components/EmailBody";
 import { AttachmentList } from "@/components/AttachmentList";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { ImapConnectDialog } from "@/components/ImapConnectDialog";
+import { ModuleRail } from "@/components/ModuleRail";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -14,7 +16,7 @@ import {
   Eye, EyeOff, Send, MessageSquare, MessageSquareOff,
   CheckCircle, AlertCircle, User, X, PlusCircle,
   Star, Trash2, Reply, CornerUpLeft, Search, Tag, Settings, Paperclip, ChevronDown, ChevronUp, Mails, ArrowLeft,
-  Users, Info
+  Users, Info, ClipboardList
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
@@ -434,6 +436,10 @@ export default function Home() {
               </div>
             )}
             <span className="text-sm text-muted-foreground hidden sm:block">{user?.name}</span>
+            {/* Phones don't show the module rail — keep MSI reachable from the header. */}
+            <Link href="/msi" className="sm:hidden inline-flex items-center rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent" title="MSI Daily Report">
+              <ClipboardList className="w-4 h-4" />
+            </Link>
             <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(true)} title="Settings">
               <Settings className="w-4 h-4" />
             </Button>
@@ -446,6 +452,8 @@ export default function Home() {
       <ImapConnectDialog open={imapOpen} onOpenChange={setImapOpen} onSuccess={handleImapSuccess} />
 
       <div className="flex flex-1 overflow-hidden">
+        {/* Module rail: Mail | MSI Daily Report */}
+        <ModuleRail />
         {/* Sidebar — on mobile this is the only pane shown until an email
             (or the paste-email form) is opened, at which point it's hidden
             in favor of the detail pane's Back button; both panes show

@@ -13,6 +13,7 @@ import {
   LogOut,
   Loader2,
   Plane,
+  ClipboardList,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
@@ -29,6 +30,8 @@ const menuItems = [
   { icon: BarChart3, label: 'Analytics', href: '/analytics', minRole: 'MANAGER' },
   { icon: Trophy, label: 'Leaderboard', href: '/leaderboard', minRole: 'MANAGER' },
   { icon: FileText, label: 'Reports', href: '/reports', minRole: 'ADMIN' },
+  // MSI Daily Work Report — CEO/COO/ADMIN overview of employee daily submissions.
+  { icon: ClipboardList, label: 'MSI Daily Reports', href: '/msi-reports', minRole: 'ADMIN' },
   { icon: Settings, label: 'Settings', href: '/settings', minRole: 'ADMIN' },
 ];
 

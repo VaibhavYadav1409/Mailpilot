@@ -17,6 +17,7 @@ import { departmentsRouter } from "./routes/departments";
 import { settingsRouter } from "./routes/settings";
 import { notificationsRouter } from "./routes/notifications";
 import { reportsRouter } from "./routes/reports";
+import { msiRouter } from "./routes/msi";
 import { initSockets } from "./sockets";
 import { startScheduler } from "./scheduler";
 
@@ -75,6 +76,8 @@ app.use("/api/departments", departmentsRouter);
 app.use("/api/settings", settingsRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/reports", reportsRouter);
+// MSI Daily Work Report — employee daily submissions + CEO overview (see routes/msi.ts).
+app.use("/api/msi", msiRouter);
 // Phase 8 complete: scheduled analytics rollup, notification rules engine,
 // and scheduled report generation are wired in below via startScheduler().
 

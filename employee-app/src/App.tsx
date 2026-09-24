@@ -7,12 +7,14 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
+import MsiDailyReport from "./pages/MsiDailyReport";
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Home} />
       <Route path="/login" component={Login} />
+      <Route path="/msi" component={MsiDailyReport} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>
