@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:web": "tsc --noEmit && node -e \"process.env.MAILPILOT_WEB='1';require('child_process').execSync('vite build',{stdio:'inherit',env:process.env,shell:true})\"",
+    "dev:web": "node -e \"process.env.MAILPILOT_WEB='1';require('child_process').execSync('vite',{stdio:'inherit',env:process.env,shell:true})\"",
     "start": "vite preview --port 3002",
     "preview": "vite preview --port 3002",
     "check": "tsc --noEmit",

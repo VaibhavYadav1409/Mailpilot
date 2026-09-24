@@ -36,6 +36,13 @@ const electronAlias = {
   "@shared": path.resolve(import.meta.dirname, "..", "shared"),
 };
 
+// Web build: the employee app is deployed as a normal website (Vercel), not
+// only as the Electron desktop app. Vercel sets VERCEL=1 automatically, and
+// `pnpm build:web` / `pnpm dev:web` set MAILPILOT_WEB=1, so the Electron
+// plugin (which builds main/preload and launches a native window in dev) is
+// skipped and only the browser bundle in dist/ is produced.
+const webOnly = Boolean(process.env.VERCEL) || process.env.MAILPILOT_WEB === "1";
+
 export default defineConfig({
   plugins: [
     react(),
@@ -43,7 +50,7 @@ export default defineConfig({
     // This is what actually launches the Electron desktop window in dev.
     // Without it, `vite` / `pnpm dev` only starts a browser-facing dev
     // server and nothing ever opens the app as a native window.
-    electron({
+    !webOnly && electron({
       main: {
         entry: "electron/main.ts",
         vite: {
