@@ -549,6 +549,9 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
         email: true,
         role: true,
         department: { select: { name: true } },
+        // A connected mailbox marks a shared company inbox (accounts@, demat@ …),
+        // not a person — those aren't expected to file a daily report.
+        gmailAccounts: { where: { isActive: true }, select: { id: true }, take: 1 },
       },
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
     }),
@@ -567,6 +570,8 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
     const report = reportByEmployee.get(e.id) ?? null;
     // Leadership roles only appear if they actually submitted something.
     if (!report && !reportingRoles.has(e.role)) continue;
+    // Mailbox accounts only appear if they actually submitted something.
+    if (!report && e.gmailAccounts?.length) continue;
     const row: MsiEmployeeStatus = {
       employeeId: e.id,
       name: `${e.firstName} ${e.lastName}`.trim(),
