@@ -45,7 +45,7 @@ export function useLogin() {
   const setAuth = useAuthStore((s) => s.setAuth);
   return useMutation({
     mutationFn: async (creds: { email: string; password: string }) => {
-      const { data } = await api.post<{ accessToken: string; employee: AdminUser }>('/auth/login', creds);
+      const { data } = await api.post<{ accessToken: string; employee: AdminUser }>('/auth/login?client=admin', creds);
       return data;
     },
     onSuccess: (data) => setAuth(data.employee, data.accessToken),
@@ -56,7 +56,7 @@ export function useLogout() {
   const logout = useAuthStore((s) => s.logout);
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post('/auth/logout'),
+    mutationFn: () => api.post('/auth/logout?client=admin'),
     onSettled: () => {
       logout();
       queryClient.clear();

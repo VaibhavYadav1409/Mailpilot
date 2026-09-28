@@ -31,7 +31,10 @@ async function refreshAccessToken(): Promise<string | null> {
       // client-side, but this backend reads it from the httpOnly cookie, so
       // there's nothing here for the browser to hold or leak.
       const { data } = await axios.post(
-        `${api.defaults.baseURL}/auth/refresh`,
+        // ?client=admin → the backend uses the admin-only refresh cookie, so an
+        // employee signing in on the Employee Portal in the same browser can no
+        // longer replace this dashboard's session.
+        `${api.defaults.baseURL}/auth/refresh?client=admin`,
         {},
         { withCredentials: true }
       );

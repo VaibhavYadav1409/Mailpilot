@@ -37,6 +37,8 @@ export async function sendMail(args: SendMailArgs): Promise<void> {
 }
 
 export function sendTempPasswordEmail(to: string, tempPassword: string, isReset: boolean) {
+  // Some staff sign in with a plain username (no mailbox) — nothing to send to.
+  if (!to.includes("@")) return Promise.resolve();
   const subject = isReset ? "Your MailPilot password has been reset" : "Welcome to MailPilot";
   const text = isReset
     ? `Your MailPilot password was reset by an administrator.\n\nTemporary password: ${tempPassword}\n\nYou'll be asked to set a new password the next time you sign in.`
