@@ -1,4 +1,5 @@
 import { prisma } from "../lib/db";
+import { MAIL_EMPLOYEE_WHERE } from "./msiStaff";
 
 // Narrow structural shapes for the fields this file actually reads off
 // DailyAnalytics/Employee rows. These mirror the Prisma schema and let us
@@ -40,8 +41,9 @@ export async function getCompanyOverview(companyId: string) {
     aiActionsToday,
     replyTimeAgg,
   ] = await Promise.all([
-    prisma.employee.count({ where: { companyId } }),
-    prisma.employee.count({ where: { companyId, status: "ONLINE" } }),
+    // Mail employees only — MSI staff have no inbox and would skew these.
+    prisma.employee.count({ where: { companyId, ...MAIL_EMPLOYEE_WHERE } }),
+    prisma.employee.count({ where: { companyId, status: "ONLINE", ...MAIL_EMPLOYEE_WHERE } }),
     prisma.gmailAccount.count({ where: { companyId, status: "CONNECTED", isActive: true } }),
     prisma.email.count({
       where: { gmailAccount: { companyId }, receivedAt: { gte: start, lt: end } },
@@ -529,7 +531,7 @@ export async function getLeaderboard(companyId: string, range: "daily" | "weekly
   }
 
   const companyEmployees = (await prisma.employee.findMany({
-    where: { companyId },
+    where: { companyId, ...MAIL_EMPLOYEE_WHERE },
     select: { id: true, firstName: true, lastName: true, department: { select: { name: true } } },
   })) as LeaderboardEmployeeRow[];
   if (companyEmployees.length === 0) return [];

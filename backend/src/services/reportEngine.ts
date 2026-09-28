@@ -1,5 +1,6 @@
 import { prisma } from "../lib/db";
 import { writeReport } from "../lib/reportStorage";
+import { MAIL_EMPLOYEE_WHERE } from "./msiStaff";
 
 function toCsv(rows: Record<string, string | number>[]): string {
   if (rows.length === 0) return "";
@@ -48,8 +49,8 @@ export async function generateReport(args: GenerateReportArgs) {
     args.scope === "EMPLOYEE" && args.scopeId
       ? { id: args.scopeId }
       : args.scope === "DEPARTMENT" && args.scopeId
-      ? { companyId: args.companyId, departmentId: args.scopeId }
-      : { companyId: args.companyId };
+      ? { companyId: args.companyId, departmentId: args.scopeId, ...MAIL_EMPLOYEE_WHERE }
+      : { companyId: args.companyId, ...MAIL_EMPLOYEE_WHERE };
 
   const employees = await prisma.employee.findMany({
     where: employeeWhere,

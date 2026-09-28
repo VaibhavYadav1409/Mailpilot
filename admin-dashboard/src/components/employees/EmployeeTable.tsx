@@ -6,6 +6,7 @@ import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck, X, Paperclip,
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
+import { isMsiStaffLogin } from './staffKind';
 
 interface Employee {
   id: string;
@@ -51,10 +52,12 @@ export const EmployeeTable = () => {
     mutationFn: (id: string) => api.post<{ tempPassword: string }>(`/employees/${id}/reset-password`),
   });
 
+  // MSI staff (username logins, no mailbox) have their own section on the page.
   const filteredEmployees = employees?.filter(
     (emp) =>
-      `${emp.firstName} ${emp.lastName}`.toLowerCase().includes(search.toLowerCase()) ||
-      emp.email.toLowerCase().includes(search.toLowerCase())
+      !isMsiStaffLogin(emp.email) &&
+      (`${emp.firstName} ${emp.lastName}`.toLowerCase().includes(search.toLowerCase()) ||
+      emp.email.toLowerCase().includes(search.toLowerCase()))
   );
 
   if (isLoading) {

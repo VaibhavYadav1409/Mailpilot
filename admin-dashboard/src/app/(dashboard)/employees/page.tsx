@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { EmployeeTable } from '@/components/employees/EmployeeTable';
+import { MsiStaffTable } from '@/components/employees/MsiStaffTable';
 import { AddEmployeeModal } from '@/components/employees/AddEmployeeModal';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Plus, Download } from 'lucide-react';
@@ -14,7 +15,7 @@ export default function EmployeesPage() {
       <PageHeader
         eyebrow="Crew Roster"
         title="Employees"
-        subtitle="Manage and monitor your team members."
+        subtitle="Mail accounts and MSI staff, managed separately."
         actions={
           <>
             <button className="btn-secondary">
@@ -23,13 +24,30 @@ export default function EmployeesPage() {
             </button>
             <button onClick={() => setModalOpen(true)} className="btn-primary flex items-center gap-2">
               <Plus className="w-4 h-4" />
-              Add Employee
+              Add Mail Account
             </button>
           </>
         }
       />
 
-      <EmployeeTable />
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-base font-semibold">Mail accounts</h2>
+          <p className="text-sm text-gray-500">Company mailboxes and people who sign in with an email address.</p>
+        </div>
+        <EmployeeTable />
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-base font-semibold">MSI staff</h2>
+          <p className="text-sm text-gray-500">
+            Only submit the MSI Daily Report. They sign in on the Employee Portal with their name as username and
+            their name in CAPITALS as password.
+          </p>
+        </div>
+        <MsiStaffTable />
+      </section>
       <AddEmployeeModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </div>
   );

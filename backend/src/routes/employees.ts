@@ -8,6 +8,7 @@ import { requireMinRole, employeeScopeFilter, canActOnEmployee } from "../middle
 import { ROLE_RANK, type Role } from "../../../shared/const";
 import { emitToCompany } from "../sockets";
 import { sendTempPasswordEmail } from "../lib/email";
+import { upsertMsiStaff, MsiStaffError } from "../services/msiStaff";
 
 export const employeesRouter = Router();
 
@@ -200,6 +201,32 @@ employeesRouter.post("/", requireAuth, requireMinRole("ADMIN"), async (req, res)
   void sendTempPasswordEmail(employee.email, tempPassword, false);
 
   return res.status(201).json({ employee: withActiveGmailAccount(employee), tempPassword });
+});
+
+/**
+ * POST /msi-staff — Admin+ only. Adds a person who only files the MSI Daily
+ * Report (no mailbox, no email): username = name, password = NAME in capitals.
+ * Posting an existing name resets that person's password back to their name.
+ */
+employeesRouter.post("/msi-staff", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const parsed = z.object({ name: z.string().min(1).max(80) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Enter the person's name" });
+  try {
+    const result = await upsertMsiStaff(req.user!.companyId, parsed.data.name);
+    await prisma.auditLog.create({
+      data: {
+        companyId: req.user!.companyId,
+        employeeId: req.user!.employeeId,
+        action: result.created ? "EMPLOYEE_CREATED" : "EMPLOYEE_PASSWORD_RESET",
+        metadata: { targetEmployeeId: result.employee.id, msiStaff: true },
+      },
+    });
+    return res.status(result.created ? 201 : 200).json(result);
+  } catch (e) {
+    if (e instanceof MsiStaffError) return res.status(e.status).json({ error: e.message });
+    console.error("[employees] msi-staff upsert failed", e);
+    return res.status(500).json({ error: "Could not save this person. Please try again." });
+  }
 });
 
 const updateSchema = z.object({
