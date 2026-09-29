@@ -4,6 +4,7 @@ import { isMsiStaffLogin } from "./msiStaff";
 import { deleteMsiFiles, getMsiFile, makeMsiStorageKey, putMsiFile, sweepOrphanMsiFiles } from "../lib/msiStorage";
 import { getMailDayTimezone } from "./retentionEngine";
 import { emitToCompany } from "../sockets";
+import { ensureMisFresh, getMisStatusForDate, type MisEmployeeDay } from "./misService";
 
 /**
  * MSI Daily Work Report — business logic.
@@ -306,12 +307,16 @@ export async function getTodayForEmployee(actor: MsiActor, now = new Date()) {
     where: { employeeId: actor.employeeId, reportDate: dateColumnValue(reportDate), expiresAt: { gt: now } },
     select: reportPublicSelect,
   });
+  await ensureMisFresh(actor.companyId, { employeeId: actor.employeeId, timeoutMs: 6000 }).catch(() => undefined);
+  const mis = (await getMisStatusForDate(actor.companyId, reportDate, actor.employeeId)).get(actor.employeeId) ?? null;
   return {
     reportDate,
     timezone: getMsiTimezone(),
     serverTime: now.toISOString(),
     submitted: Boolean(report),
     report: report ? toPublicReport(report) : null,
+    /** MIS spreadsheet check for today (null = no MIS linked for this person). */
+    mis,
     rules: {
       maxFileBytes: getMsiMaxFileBytes(),
       allowedExtensions: ALLOWED_EXTENSIONS,
@@ -509,7 +514,11 @@ export interface MsiEmployeeStatus {
   department: string | null;
   role: string;
   submitted: boolean;
+  /** When the day counted as submitted: the upload time, or when the MIS sheet became complete. */
+  submittedAt: string | null;
   report: PublicMsiReport | null;
+  /** MIS auto-check for this day; null when the person has no MIS spreadsheet linked. */
+  mis: MisEmployeeDay | null;
 }
 
 /**
@@ -540,7 +549,11 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
     };
   }
 
-  const [employees, reports] = await Promise.all([
+  // Today's MIS spreadsheets are re-read if the last check is a few minutes old
+  // (bounded wait, so a slow Microsoft response never blocks the dashboard).
+  if (date === today) await ensureMisFresh(companyId, { timeoutMs: 6000 }).catch(() => undefined);
+
+  const [employees, reports, misByEmployee] = await Promise.all([
     prisma.employee.findMany({
       where: { companyId, status: { not: "SUSPENDED" } },
       select: {
@@ -557,6 +570,7 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
       where: { companyId, reportDate: dateColumnValue(date), expiresAt: { gt: now } },
       select: reportPublicSelect,
     }),
+    getMisStatusForDate(companyId, date),
   ]);
 
   const reportByEmployee = new Map(reports.map((r) => [r.employeeId, toPublicReport(r)]));
@@ -566,23 +580,28 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
   const notSubmitted: MsiEmployeeStatus[] = [];
   for (const e of employees) {
     const report = reportByEmployee.get(e.id) ?? null;
-    // Leadership roles only appear if they actually submitted something.
-    if (!report && !reportingRoles.has(e.role)) continue;
-    // Only MSI staff (username logins) are expected to report; mail employees
-    // (email logins such as accounts@, demat@ …) appear only if they submitted.
-    if (!report && !isMsiStaffLogin(e.email)) continue;
+    const mis = misByEmployee.get(e.id) ?? null;
+    // Anyone with an MIS spreadsheet linked is judged by it (every required
+    // column filled for the day); everyone else by the uploaded report.
+    const isSubmitted = mis ? mis.submitted : Boolean(report);
+    // Expected to report: people with an MIS sheet, and MSI staff (username
+    // logins). Mail accounts and leadership appear only if they submitted.
+    const expected = mis !== null || (reportingRoles.has(e.role) && isMsiStaffLogin(e.email));
+    if (!report && !isSubmitted && !expected) continue;
     const row: MsiEmployeeStatus = {
       employeeId: e.id,
       name: `${e.firstName} ${e.lastName}`.trim(),
       email: e.email,
       department: e.department?.name ?? null,
       role: e.role,
-      submitted: Boolean(report),
+      submitted: isSubmitted,
+      submittedAt: (mis?.submitted ? mis.completedAt : null) ?? report?.submittedAt ?? null,
       report,
+      mis,
     };
-    (report ? submitted : notSubmitted).push(row);
+    (isSubmitted ? submitted : notSubmitted).push(row);
   }
-  submitted.sort((a, b) => (a.report!.submittedAt < b.report!.submittedAt ? -1 : 1));
+  submitted.sort((a, b) => (a.submittedAt ?? "\uffff").localeCompare(b.submittedAt ?? "\uffff"));
 
   const total = submitted.length + notSubmitted.length;
   const important = submitted.filter((s) => s.report?.hasImportantMessage).length;

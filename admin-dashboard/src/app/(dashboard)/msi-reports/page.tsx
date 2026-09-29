@@ -1,13 +1,15 @@
 'use client';
 
 import { useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
   CalendarDays,
   CheckCircle2,
   ClipboardList,
   Download,
+  ExternalLink,
+  RefreshCw,
   FileText,
   Loader2,
   MessageSquareWarning,
@@ -37,6 +39,28 @@ interface MsiReport {
   updatedAt: string;
 }
 
+type MisStatus = 'COMPLETE' | 'INCOMPLETE' | 'MISSING' | 'ERROR' | 'NOT_CHECKED';
+
+/** MIS spreadsheet auto-check for one person and day (backend misService.getMisStatusForDate). */
+interface MisDay {
+  status: MisStatus;
+  submitted: boolean;
+  completedAt: string | null;
+  missingColumns: string[];
+  sources: {
+    id: string;
+    label: string;
+    fileName: string | null;
+    webUrl: string;
+    status: MisStatus;
+    rowCount: number;
+    missingColumns: string[];
+    blanks: { sheet: string; cell: string; field: string }[];
+    note: string | null;
+    checkedAt: string | null;
+  }[];
+}
+
 interface MsiEmployeeStatus {
   employeeId: string;
   name: string;
@@ -44,7 +68,9 @@ interface MsiEmployeeStatus {
   department: string | null;
   role: string;
   submitted: boolean;
+  submittedAt: string | null;
   report: MsiReport | null;
+  mis: MisDay | null;
 }
 
 interface MsiOverview {
@@ -103,6 +129,52 @@ function formatSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/** "Checking of CRM…, KYC software… and 4 more" */
+function listFields(fields: string[], max = 3) {
+  const short = fields.slice(0, max).map((f) => (f.length > 48 ? `${f.slice(0, 46)}…` : f));
+  return fields.length > max ? `${short.join(', ')} and ${fields.length - max} more` : short.join(', ');
+}
+
+function MisBadge({ mis }: { mis: MisDay }) {
+  const missing = mis.missingColumns;
+  const title = mis.sources
+    .map((s) => `${s.label}: ${s.status}${s.missingColumns.length ? ` — blank: ${s.missingColumns.join('; ')}` : ''}${s.note ? ` (${s.note})` : ''}`)
+    .join('\n');
+  const [cls, text] =
+    mis.status === 'COMPLETE'
+      ? ['bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', '✓ MIS filled']
+      : mis.status === 'INCOMPLETE'
+      ? ['bg-amber-500/15 text-amber-700 dark:text-amber-400', `⚠ Incomplete — ${missing.length} blank`]
+      : mis.status === 'MISSING'
+      ? ['bg-red-500/10 text-red-600 dark:text-red-400', "✗ Today's MIS not started"]
+      : mis.status === 'ERROR'
+      ? ['bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300', "Can't read MIS"]
+      : ['bg-gray-100 dark:bg-gray-800 text-gray-500', 'Checking MIS…'];
+  return (
+    <span className={cn('badge whitespace-nowrap', cls)} title={title}>
+      {text}
+    </span>
+  );
+}
+
+function MisLinks({ mis }: { mis: MisDay }) {
+  return (
+    <span className="inline-flex flex-wrap gap-x-3 gap-y-1">
+      {mis.sources.map((s) => (
+        <a
+          key={s.id}
+          href={s.webUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline whitespace-nowrap"
+        >
+          <ExternalLink className="w-3.5 h-3.5" /> {mis.sources.length > 1 ? s.label : 'Open MIS'}
+        </a>
+      ))}
+    </span>
+  );
+}
+
 function initials(name: string) {
   return name
     .split(/\s+/)
@@ -132,6 +204,13 @@ export default function MsiReportsPage() {
       return data;
     },
   });
+
+  // Re-reads every linked MIS spreadsheet right now (normally every 10 min).
+  const recheck = useMutation({
+    mutationFn: () => api.post('/mis/check', {}),
+    onSettled: () => refetch(),
+  });
+  const hasMis = !!data && [...data.submitted, ...data.notSubmitted].some((r) => r.mis);
 
   const forbidden = (error as { response?: { status?: number } } | null)?.response?.status === 403;
 
@@ -351,18 +430,28 @@ export default function MsiReportsPage() {
                           <td className="px-5 py-3.5">
                             <span className="badge whitespace-nowrap bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">✓ Submitted</span>
                           </td>
-                          <td className="px-5 py-3.5 text-sm font-tabular whitespace-nowrap">{formatTime(row.report!.submittedAt, data.timezone)}</td>
+                          <td className="px-5 py-3.5 text-sm font-tabular whitespace-nowrap">
+                            {row.submittedAt ? formatTime(row.submittedAt, data.timezone) : '—'}
+                          </td>
                           <td className="px-5 py-3.5 text-sm">
-                            <div className="flex items-center gap-2 max-w-[220px]">
-                              <FileText className="w-4 h-4 text-gray-400 shrink-0" />
-                              <span className="truncate" title={row.report!.fileName}>
-                                {row.report!.fileName}
-                              </span>
-                              <span className="text-xs text-gray-400 shrink-0">{formatSize(row.report!.fileSize)}</span>
-                            </div>
+                            {row.report ? (
+                              <div className="flex items-center gap-2 max-w-[220px]">
+                                <FileText className="w-4 h-4 text-gray-400 shrink-0" />
+                                <span className="truncate" title={row.report.fileName}>
+                                  {row.report.fileName}
+                                </span>
+                                <span className="text-xs text-gray-400 shrink-0">{formatSize(row.report.fileSize)}</span>
+                              </div>
+                            ) : row.mis ? (
+                              <div className="flex flex-col gap-1">
+                                <MisBadge mis={row.mis} />
+                              </div>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
                           </td>
                           <td className="px-5 py-3.5">
-                            {row.report!.hasImportantMessage ? (
+                            {row.report?.hasImportantMessage ? (
                               <button
                                 onClick={() => setViewing(row)}
                                 className="badge whitespace-nowrap bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 transition-colors"
@@ -374,18 +463,23 @@ export default function MsiReportsPage() {
                             )}
                           </td>
                           <td className="px-5 py-3.5 text-right">
-                            <button
-                              onClick={() => download(row)}
-                              disabled={downloadingId === row.report!.id}
-                              className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium whitespace-nowrap text-primary hover:bg-primary/10 rounded-lg transition-colors disabled:opacity-50"
-                            >
-                              {downloadingId === row.report!.id ? (
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                              ) : (
-                                <Download className="w-4 h-4" />
+                            <div className="inline-flex flex-col items-end gap-1">
+                              {row.report && (
+                                <button
+                                  onClick={() => download(row)}
+                                  disabled={downloadingId === row.report.id}
+                                  className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium whitespace-nowrap text-primary hover:bg-primary/10 rounded-lg transition-colors disabled:opacity-50"
+                                >
+                                  {downloadingId === row.report.id ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <Download className="w-4 h-4" />
+                                  )}
+                                  Download Report
+                                </button>
                               )}
-                              Download Report
-                            </button>
+                              {row.mis && <MisLinks mis={row.mis} />}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -404,6 +498,17 @@ export default function MsiReportsPage() {
                 <h2 className="text-[15px] font-semibold">
                   Not Submitted — {data.notSubmitted.length} {data.notSubmitted.length === 1 ? 'employee' : 'employees'}
                 </h2>
+                {hasMis && data.date === data.today && (
+                  <button
+                    onClick={() => recheck.mutate()}
+                    disabled={recheck.isPending}
+                    className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 rounded-lg transition-colors disabled:opacity-50"
+                    title="Read everyone's MIS spreadsheet again now (it is also checked automatically every 10 minutes)"
+                  >
+                    <RefreshCw className={cn('w-3.5 h-3.5', recheck.isPending && 'animate-spin')} />
+                    {recheck.isPending ? 'Checking MIS…' : 'Re-check MIS'}
+                  </button>
+                )}
               </div>
               {data.notSubmitted.length === 0 ? (
                 <p className="text-sm text-emerald-600 dark:text-emerald-400 px-6 py-8 text-center font-medium">
@@ -416,12 +521,31 @@ export default function MsiReportsPage() {
                       <span className="w-6 text-right text-sm font-tabular text-gray-400">{i + 1}.</span>
                       <div className="min-w-0 flex-1">
                         <div className="font-medium text-[13.5px] truncate">{row.name}</div>
-                        <div className="text-xs text-gray-500 truncate">{row.email}</div>
+                        {row.mis?.status === 'INCOMPLETE' ? (
+                          <div className="text-xs text-amber-700 dark:text-amber-400" title={row.mis.missingColumns.join('\n')}>
+                            Blank: {listFields(row.mis.missingColumns)}
+                          </div>
+                        ) : row.mis?.status === 'ERROR' ? (
+                          <div className="text-xs text-gray-500 truncate" title={row.mis.sources.map((s) => s.note).filter(Boolean).join('\n')}>
+                            {row.mis.sources.find((s) => s.note)?.note}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-gray-500 truncate">{row.email}</div>
+                        )}
+                        {row.mis && (
+                          <div className="mt-1">
+                            <MisLinks mis={row.mis} />
+                          </div>
+                        )}
                       </div>
                       <span className="text-sm text-gray-600 dark:text-gray-400 w-40 truncate hidden sm:block">
                         {row.department ?? '—'}
                       </span>
-                      <span className="badge whitespace-nowrap bg-red-500/10 text-red-600 dark:text-red-400">✗ Not Submitted</span>
+                      {row.mis ? (
+                        <MisBadge mis={row.mis} />
+                      ) : (
+                        <span className="badge whitespace-nowrap bg-red-500/10 text-red-600 dark:text-red-400">✗ Not Submitted</span>
+                      )}
                     </li>
                   ))}
                 </ol>

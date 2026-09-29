@@ -99,6 +99,7 @@ model Employee {
   aiActions       AIAction[]
   replies         Reply[]
   msiDailyReports MsiDailyReport[]
+  misSources      MisSource[]
 
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
@@ -473,4 +474,71 @@ model MsiReportFile {
   storageKey String   @unique
   data       Bytes
   createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// MIS auto-check: MailPilot reads each MSI staff member's MIS spreadsheet
+// (Excel in OneDrive/SharePoint) and marks them submitted for the day only
+// when today's row exists with every required column filled.
+// ---------------------------------------------------------------------------
+
+/// The Microsoft 365 account MailPilot reads MIS spreadsheets with (one per company).
+/// Read-only Graph access (Files.Read.All); the refresh token is AES-GCM encrypted.
+model MisConnection {
+  id              String   @id @default(uuid())
+  companyId       String   @unique
+  accountEmail    String
+  refreshTokenEnc String   @db.Text
+  status          String   @default("CONNECTED") // CONNECTED | NEEDS_RECONNECT
+  lastError       String?  @db.Text
+  connectedById   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+/// One MIS spreadsheet belonging to one MSI staff member.
+model MisSource {
+  id              String    @id @default(uuid())
+  companyId       String
+  employeeId      String
+  employee        Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  label           String                // e.g. "Mutual Fund MIS"
+  shareUrl        String    @db.Text    // the SharePoint/OneDrive link the admin pasted
+  driveId         String?               // resolved from shareUrl on first check
+  itemId          String?
+  fileName        String?
+  webUrl          String?   @db.Text
+  sheetName       String?               // null = scan every worksheet
+  dateColumn      String?               // null = auto-detect ("Date")
+  requiredColumns Json?                 // string[]; null = every named column except S.No / Remarks
+  detectedColumns Json?                 // string[] seen on the last successful read (for the admin UI)
+  lastCheckedAt   DateTime?
+  lastError       String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  checks          MisDailyCheck[]
+
+  @@index([companyId])
+  @@index([employeeId])
+}
+
+/// Result of checking one MIS source for one business day (kept 7 days).
+model MisDailyCheck {
+  id             String    @id @default(uuid())
+  sourceId       String
+  source         MisSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  companyId      String
+  employeeId     String
+  checkDate      DateTime  @db.Date
+  status         String    // COMPLETE | INCOMPLETE | MISSING | ERROR
+  rowCount       Int       @default(0)
+  missingColumns Json?     // string[]
+  incompleteRows Json?     // { sheet, row, missing[] }[]
+  note           String?   @db.Text
+  completedAt    DateTime? // first time this day became COMPLETE
+  checkedAt      DateTime  @default(now())
+
+  @@unique([sourceId, checkDate])
+  @@index([companyId, checkDate])
+  @@index([employeeId, checkDate])
 }

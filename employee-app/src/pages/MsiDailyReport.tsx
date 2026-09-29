@@ -9,7 +9,10 @@ import {
   ClipboardList,
   Clock,
   Download,
+  ExternalLink,
+  FileSpreadsheet,
   FileText,
+  RefreshCw,
   History,
   Loader2,
   LogOut,
@@ -25,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
-import { ApiError, msiApi, type MsiReport, type MsiToday } from "@/lib/api";
+import { ApiError, msiApi, type MsiMis, type MsiReport, type MsiToday } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Formatting — every date/time shown here is rendered in the SERVER's
@@ -42,6 +45,86 @@ function formatLongDate(dateStr: string) {
     year: "numeric",
     timeZone: "UTC",
   });
+}
+
+/**
+ * Today's MIS spreadsheet: MailPilot reads it and counts the day as submitted
+ * only when every required particular has something in today's column.
+ */
+function MisCard({ mis, reportDate, tz, onUpdate }: { mis: MsiMis; reportDate: string; tz: string; onUpdate: (m: MsiMis | null) => void }) {
+  const [checking, setChecking] = useState(false);
+  const dayText = reportDate.split("-").reverse().join("-");
+  const check = async () => {
+    setChecking(true);
+    try {
+      const r = await msiApi.checkMis();
+      onUpdate(r.mis);
+      if (r.mis?.status === "COMPLETE") toast.success("Your MIS for today is complete.");
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Couldn't check your MIS. Try again.");
+    } finally {
+      setChecking(false);
+    }
+  };
+  const tone =
+    mis.status === "COMPLETE"
+      ? "border-green-200 bg-green-50/70 dark:bg-green-950/20 dark:border-green-900"
+      : mis.status === "INCOMPLETE" || mis.status === "MISSING"
+      ? "border-amber-200 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-900"
+      : "";
+  const lastChecked = mis.sources.map((s) => s.checkedAt).filter(Boolean).sort().at(-1);
+  return (
+    <Card className={`p-5 space-y-3 ${tone}`}>
+      <div className="flex items-start gap-3">
+        <FileSpreadsheet className={`w-6 h-6 shrink-0 ${mis.status === "COMPLETE" ? "text-green-600" : "text-amber-600"}`} />
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold">
+            {mis.status === "COMPLETE"
+              ? "Today's MIS is complete — counted as submitted ✓"
+              : mis.status === "INCOMPLETE"
+              ? `Today's MIS is not complete — ${mis.missingColumns.length} ${mis.missingColumns.length === 1 ? "field is" : "fields are"} blank`
+              : mis.status === "MISSING"
+              ? `Today's MIS not started — add the ${dayText} column in your MIS and fill it`
+              : mis.status === "ERROR"
+              ? "MailPilot couldn't read your MIS file — your admin has been shown why"
+              : "Checking your MIS…"}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Your MIS spreadsheet is checked automatically every 10 minutes. It counts as submitted only when every required
+            row has something in today's column.
+            {lastChecked && <> Last checked {formatTime(lastChecked, tz)}.</>}
+          </p>
+        </div>
+      </div>
+      {mis.sources.map((s) => (
+        <div key={s.id} className="rounded-lg border bg-background/60 p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="font-medium">{s.label}</span>
+            <span className="text-xs text-muted-foreground">
+              {s.status === "COMPLETE" ? "✓ complete" : s.status === "INCOMPLETE" ? `${s.missingColumns.length} blank` : s.status === "MISSING" ? "today's column not found" : s.status === "ERROR" ? "can't read" : "not checked yet"}
+            </span>
+            <a href={s.webUrl} target="_blank" rel="noreferrer" className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+              <ExternalLink className="w-3.5 h-3.5" /> Open my MIS
+            </a>
+          </div>
+          {s.status === "INCOMPLETE" && s.blanks.length > 0 && (
+            <ul className="text-xs space-y-0.5 max-h-48 overflow-auto">
+              {s.blanks.map((b) => (
+                <li key={`${b.sheet}!${b.cell}`} className="flex gap-2">
+                  <span className="font-mono text-muted-foreground w-12 shrink-0">{b.cell}</span>
+                  <span>{b.field}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+      <Button size="sm" variant="outline" onClick={check} disabled={checking}>
+        <RefreshCw className={`w-4 h-4 mr-2 ${checking ? "animate-spin" : ""}`} />
+        {checking ? "Checking…" : "I've filled it — check again"}
+      </Button>
+    </Card>
+  );
 }
 
 function formatTime(iso: string, tz: string) {
@@ -277,6 +360,15 @@ export default function MsiDailyReport() {
               <Card className="p-8 flex justify-center">
                 <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
               </Card>
+            )}
+
+            {data?.mis && (
+              <MisCard
+                mis={data.mis}
+                reportDate={data.reportDate}
+                tz={tz}
+                onUpdate={(mis) => queryClient.setQueryData<MsiToday>(["msi", "today"], (old) => (old ? { ...old, mis } : old))}
+              />
             )}
 
             {/* Status */}

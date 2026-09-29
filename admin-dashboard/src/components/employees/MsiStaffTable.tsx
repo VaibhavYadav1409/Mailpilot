@@ -1,12 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, KeyRound, UserX, UserCheck, Loader2, Search } from 'lucide-react';
+import { Plus, KeyRound, UserX, UserCheck, Loader2, Search, FileSpreadsheet } from 'lucide-react';
 import api from '@/services/api';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
 import { isMsiStaffLogin } from './staffKind';
+import { MisConnectionCard } from './MisConnectionCard';
+import { MisSourcesPanel } from './MisSourcesPanel';
+import { misStatusLabel, useMisSources, type MisSource } from './misApi';
 
 interface StaffRow {
   id: string;
@@ -36,6 +39,9 @@ export function MsiStaffTable() {
   const [name, setName] = useState('');
   const [search, setSearch] = useState('');
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [openMis, setOpenMis] = useState<string | null>(null);
+  const { data: misSources } = useMisSources();
+  const sourcesOf = (id: string): MisSource[] => (misSources ?? []).filter((m) => m.employeeId === id);
 
   // Same query key as the mail table, so both sections share one request.
   const { data: employees, isLoading } = useQuery({
@@ -68,6 +74,8 @@ export function MsiStaffTable() {
   });
 
   return (
+    <div className="space-y-3">
+    <MisConnectionCard canManage={!!canManage} />
     <div className="glass-card overflow-hidden">
       <div className="p-4 border-b border-gray-100 dark:border-gray-800 flex flex-wrap items-center justify-between gap-3">
         <div className="relative flex-1 min-w-[200px] max-w-md">
@@ -133,6 +141,7 @@ export function MsiStaffTable() {
                 <th className="px-6 py-3.5">Name</th>
                 <th className="px-6 py-3.5">Username</th>
                 <th className="px-6 py-3.5">Password</th>
+                <th className="px-6 py-3.5">MIS today</th>
                 <th className="px-6 py-3.5">Status</th>
                 <th className="px-6 py-3.5">Last active</th>
                 {canManage && <th className="px-6 py-3.5 text-right">Actions</th>}
@@ -141,8 +150,13 @@ export function MsiStaffTable() {
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {staff.map((s) => {
                 const fullName = `${s.firstName} ${s.lastName}`.trim();
+                const mine = sourcesOf(s.id);
+                const worst = mine.find((m) => m.today?.status !== 'COMPLETE') ?? mine[0];
+                const blanks = mine.reduce((n, m) => n + (m.today?.missingColumns.length ?? 0), 0);
+                const mis = worst ? misStatusLabel(worst.today?.status ?? (worst.lastError ? 'ERROR' : undefined), blanks) : null;
                 return (
-                  <tr key={s.id} className="hover:bg-gray-50/60 dark:hover:bg-gray-900/40 transition-colors">
+                  <Fragment key={s.id}>
+                  <tr className="hover:bg-gray-50/60 dark:hover:bg-gray-900/40 transition-colors">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-full bg-primary/10 ring-1 ring-primary/15 flex items-center justify-center text-primary font-bold text-xs shrink-0">
@@ -154,6 +168,17 @@ export function MsiStaffTable() {
                     </td>
                     <td className="px-6 py-4 text-sm font-mono">{s.email.toUpperCase()}</td>
                     <td className="px-6 py-4 text-xs text-gray-500">Name in CAPITALS</td>
+                    <td className="px-6 py-4">
+                      <button
+                        onClick={() => setOpenMis(openMis === s.id ? null : s.id)}
+                        className="flex items-center gap-2 text-xs hover:underline underline-offset-2"
+                        title="Linked MIS spreadsheets"
+                      >
+                        <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                        {mis ? <span className={cn('badge', mis.cls)}>{mis.text}</span> : <span className="text-gray-500">Link MIS</span>}
+                        {mine.length > 1 && <span className="text-gray-400">({mine.length} files)</span>}
+                      </button>
+                    </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
                         <div
@@ -202,12 +227,21 @@ export function MsiStaffTable() {
                       </td>
                     )}
                   </tr>
+                  {openMis === s.id && (
+                    <tr>
+                      <td colSpan={canManage ? 7 : 6} className="px-6 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
+                        <MisSourcesPanel employeeId={s.id} sources={mine} canManage={!!canManage} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
       )}
+    </div>
     </div>
   );
 }

@@ -12,6 +12,7 @@ import {
   getMailDayTimezone,
 } from "./services/retentionEngine";
 import { purgeExpiredMsiReports } from "./services/msiService";
+import { purgeOldMisChecks, runAllMisChecks } from "./services/misService";
 
 /**
  * Registers all scheduled jobs. Called once from server.ts at startup.
@@ -260,8 +261,26 @@ export function startScheduler() {
   cron.schedule("30 * * * *", runMsiRetention, { timezone: "UTC" });
   setTimeout(() => void runMsiRetention(), 60_000);
 
+  // MIS auto-check: re-read every linked MIS spreadsheet every 10 minutes so
+  // MSI Reports shows who has filled today's MIS. Opening MSI Reports or the
+  // staff MSI page also triggers a check (the free Render instance may be
+  // asleep between ticks). Old check results are pruned with MSI retention.
+  let misRunning = false;
+  cron.schedule("*/10 * * * *", async () => {
+    if (misRunning) return;
+    misRunning = true;
+    try {
+      await runAllMisChecks();
+    } catch (e) {
+      console.error("[Scheduler] MIS check failed:", e);
+    } finally {
+      misRunning = false;
+    }
+  });
+  cron.schedule("35 * * * *", () => void purgeOldMisChecks().catch((e) => console.error("[Scheduler] MIS prune failed:", e)), { timezone: "UTC" });
+
   console.log(
     `[Scheduler] Cron jobs registered: daily rollup (00:05), notification rules (hourly), ` +
-      `email retention purge (00:20, ${getRetentionDays()}d), weekly reports (Mon 00:10), MSI retention (hourly :30)`,
+      `email retention purge (00:20, ${getRetentionDays()}d), weekly reports (Mon 00:10), MSI retention (hourly :30), MIS check (every 10 min)`,
   );
 }

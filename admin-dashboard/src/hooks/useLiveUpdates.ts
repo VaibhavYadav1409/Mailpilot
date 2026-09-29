@@ -37,6 +37,7 @@ export function useLiveUpdates() {
     // retention job purged old reports — refresh the MSI page, no polling.
     socket.on('msi:updated', () => {
       queryClient.invalidateQueries({ queryKey: ['msi-admin'] });
+      queryClient.invalidateQueries({ queryKey: ['mis-sources'] });
     });
 
     socket.on('notification:new', () => {

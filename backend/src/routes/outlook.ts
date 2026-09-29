@@ -5,6 +5,7 @@ import { buildAuthUrl, isMicrosoftConfigured } from "../services/microsoftOAuth"
 import { connectOutlookAccount } from "../services/outlookAccountService";
 import { disconnectGmailAccount } from "../services/gmailAccountService";
 import { prisma } from "../lib/db";
+import { completeMisConnect } from "../services/misService";
 
 export const outlookRouter = Router();
 
@@ -31,8 +32,41 @@ outlookRouter.get("/connect", requireAuth, (req, res) => {
 
 const EMPLOYEE_APP_URL = process.env.EMPLOYEE_APP_URL || "http://localhost:3002";
 
+type MisState = { purpose: "mis"; employeeId: string; companyId: string; returnTo: string | null };
+
+/**
+ * The MIS auto-check connects a Microsoft account through this same redirect
+ * URI (so no extra Azure setup). Its state is signed like the Outlook one and
+ * carries purpose: "mis" plus the admin site to return to.
+ */
+async function handleMisCallback(req: import("express").Request, res: import("express").Response, st: MisState) {
+  const back = (qs: string) => res.redirect(`${st.returnTo ?? EMPLOYEE_APP_URL}/employees?${qs}`);
+  if (req.query.error) {
+    const description = typeof req.query.error_description === "string" ? req.query.error_description : String(req.query.error);
+    console.error("[mis] OAuth callback returned an error:", description);
+    return back(`misError=${encodeURIComponent(description.slice(0, 500))}`);
+  }
+  if (typeof req.query.code !== "string") return back("misError=Missing%20code");
+  try {
+    const email = await completeMisConnect(st.companyId, st.employeeId, req.query.code);
+    return back(`mis=connected&account=${encodeURIComponent(email)}`);
+  } catch (err: any) {
+    console.error("[mis] Failed to connect account:", err);
+    return back(`misError=${encodeURIComponent(String(err?.message ?? err).slice(0, 500))}`);
+  }
+}
+
 outlookRouter.get("/callback", async (req, res) => {
   const { code, state, error } = req.query;
+
+  if (typeof state === "string") {
+    try {
+      const st = jwt.verify(state, OAUTH_STATE_SECRET as string) as { purpose?: string };
+      if (st.purpose === "mis") return handleMisCallback(req, res, st as MisState);
+    } catch {
+      /* fall through: the Outlook path reports an invalid state */
+    }
+  }
 
   if (error) {
     // Microsoft sends the useful part in error_description (e.g. an AADSTS
