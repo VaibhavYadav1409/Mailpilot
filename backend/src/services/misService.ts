@@ -276,6 +276,19 @@ export function splitImportName(raw: string): { person: string; label: string } 
   return { person, label: label && !/^\d+$/.test(label) ? label.slice(0, 80) : "MIS" };
 }
 
+/**
+ * An existing MIS login for an imported name: the exact name, or — when it's
+ * the only one — a login that is the first word(s) of the name ("anjali" for
+ * "ANJALI JHA"). Returns null when unsure, so a new login is created instead.
+ */
+export function matchExistingStaff<T extends { email: string }>(staff: T[], person: string): T | null {
+  const full = person.toLowerCase();
+  const exact = staff.find((s) => s.email.toLowerCase() === full);
+  if (exact) return exact;
+  const prefix = staff.filter((s) => full.startsWith(`${s.email.toLowerCase()} `));
+  return prefix.length === 1 ? prefix[0] : null;
+}
+
 /** sourcedoc GUID of a SharePoint "Doc.aspx" link — spots the same file pasted with a different link. */
 export function docGuid(url: string): string | null {
   try {
@@ -299,6 +312,12 @@ export async function importMisRows(
   const out: MisImportResult[] = [];
   const existing = await prisma.misSource.findMany({ where: { companyId }, select: { id: true, employeeId: true, shareUrl: true } });
   const linked = new Map(existing.map((e) => [`${e.employeeId}|${docGuid(e.shareUrl) ?? e.shareUrl}`, e.id]));
+  // Which person a file already belongs to — the file itself identifies the person.
+  const ownerOfFile = new Map(existing.map((e) => [docGuid(e.shareUrl) ?? e.shareUrl, e.employeeId]));
+  const staff = await prisma.employee.findMany({
+    where: { companyId, NOT: { email: { contains: "@" } } },
+    select: { id: true, email: true },
+  });
 
   for (const row of rows.slice(0, 300)) {
     const { person, label } = splitImportName(row.name ?? "");
@@ -322,18 +341,26 @@ export async function importMisRows(
     }
     try {
       let employeeId: string;
+      const fileOwner = ownerOfFile.get(docGuid(url) ?? url);
+      const match = matchExistingStaff(staff, person);
       if (row.username?.trim()) {
-        const emp = await prisma.employee.findFirst({
-          where: { companyId, email: { equals: row.username.trim(), mode: "insensitive" } },
-          select: { id: true, email: true },
-        });
+        const emp = staff.find((s) => s.email.toLowerCase() === row.username!.trim().toLowerCase());
         if (!emp) throw new MisError(404, `No staff with username "${row.username}".`);
         employeeId = emp.id;
         base.username = emp.email.toUpperCase();
+      } else if (fileOwner) {
+        // Same file already linked (e.g. "Joji Jopesh" = Joseph): keep it with that person.
+        employeeId = fileOwner;
+        base.username = staff.find((s) => s.id === fileOwner)?.email.toUpperCase() ?? null;
+      } else if (match) {
+        // "Anjali Jha" → existing login "anjali", "Gurmeet Singh" → "gurmeet".
+        employeeId = match.id;
+        base.username = match.email.toUpperCase();
       } else {
         const r = await upsertMsiStaff(companyId, person, { keepPassword: true });
         employeeId = r.employee.id;
         base.username = r.username;
+        staff.push({ id: r.employee.id, email: r.employee.email });
       }
       const k = `${employeeId}|${docGuid(url) ?? url}`;
       const already = linked.get(k);
@@ -357,6 +384,7 @@ export async function importMisRows(
         select: { id: true },
       });
       linked.set(k, created.id);
+      ownerOfFile.set(docGuid(url) ?? url, employeeId);
       out.push({ ...base, result: "linked", detail: "Linked — first check runs within a minute." });
     } catch (e) {
       out.push({ ...base, result: "failed", detail: e instanceof Error ? e.message : String(e) });

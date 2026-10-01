@@ -21,6 +21,7 @@ import { msiRouter } from "./routes/msi";
 import { misRouter } from "./routes/mis";
 import { initSockets } from "./sockets";
 import { startScheduler } from "./scheduler";
+import { ensureSchema } from "./lib/ensureSchema";
 
 // A single unhandled promise rejection (e.g. the login route's Prisma call
 // when the Neon database is briefly unreachable) was taking the WHOLE server
@@ -99,7 +100,8 @@ const httpServer = createServer(app);
 initSockets(httpServer);
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
-httpServer.listen(port, () => {
+// Additive schema changes are applied before accepting traffic (see lib/ensureSchema.ts).
+void ensureSchema().finally(() => httpServer.listen(port, () => {
   console.log(`MailPilot backend listening on :${port}`);
   // Boot diagnostics — lets us confirm from the deploy logs that the memory-
   // hardened build is the one actually running (vs. a stale cached build).
@@ -114,4 +116,4 @@ httpServer.listen(port, () => {
       `initialDays=${process.env.SYNC_INITIAL_DAYS ?? 7}`,
   );
   startScheduler();
-});
+}));
