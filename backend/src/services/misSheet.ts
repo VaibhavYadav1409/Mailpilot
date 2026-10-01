@@ -257,6 +257,12 @@ function findColumnLayout(sheet: MisSheetInput): ColumnLayout | null {
 }
 
 const HISTORY_DAYS = 10;
+/**
+ * This many blank entries among the particulars the person usually fills
+ * (learned from past days, or the admin's list) = the MIS wasn't filled at
+ * all for that day, rather than "almost done".
+ */
+export const NOT_FILLED_BLANKS = 20;
 const REQUIRED_FILL_RATIO = 0.5;
 
 function medianMs(l: ColumnLayout): number {
@@ -351,21 +357,33 @@ function checkColumns(layouts: ColumnLayout[], opts: MisCheckOptions): MisCheckR
     }
   }
 
-  const status: MisStatus = missing.size > 0 ? "INCOMPLETE" : filled > 0 ? "COMPLETE" : "INCOMPLETE";
+  // Nothing filled, or NOT_FILLED_BLANKS+ of the usual particulars left
+  // empty: that's an unfilled MIS, not a nearly-done one — report it as not
+  // submitted instead of listing dozens of blanks.
+  if (filled === 0 || blanks.length >= NOT_FILLED_BLANKS) {
+    return {
+      status: "MISSING",
+      layout: "DAY_COLUMNS",
+      sheet: todays[0].sheet.name,
+      filledCount: filled,
+      missingFields: [],
+      blanks: [],
+      fields,
+      note:
+        filled === 0 && missing.size === 0
+          ? "The day's column exists but no required fields were found."
+          : `Not filled for ${fmt(opts.date)} — ${blanks.length} of ${filled + blanks.length} usual entries are blank.`,
+    };
+  }
   return {
-    status,
+    status: missing.size > 0 ? "INCOMPLETE" : "COMPLETE",
     layout: "DAY_COLUMNS",
     sheet: todays[0].sheet.name,
     filledCount: filled,
     missingFields: [...missing],
     blanks: blanks.slice(0, 50),
     fields,
-    note:
-      filled === 0 && missing.size === 0
-        ? "The day's column exists but no required fields were found."
-        : !configured && !hasHistory
-        ? "No earlier days to learn from — every particular is required today."
-        : null,
+    note: !configured && !hasHistory ? "No earlier days to learn from — every particular is required." : null,
   };
 }
 

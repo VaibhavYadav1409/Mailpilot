@@ -511,6 +511,9 @@ model MisSource {
   sheetName       String?               // null = scan every worksheet
   dateColumn      String?               // null = auto-detect ("Date")
   requiredColumns Json?                 // string[]; null = every named column except S.No / Remarks
+  checkedBy       String?               // who checks this MIS (shown to the CEO)
+  approvedBy      String?               // who approves it
+  lastETag        String?               // file version at the last full read — unchanged files aren't re-read
   detectedColumns Json?                 // string[] seen on the last successful read (for the admin UI)
   lastCheckedAt   DateTime?
   lastError       String?   @db.Text

@@ -380,7 +380,7 @@ export const emailsApi = {
 };
 
 // ---------------------------------------------------------------------------
-// MSI Daily Work Report (backend: routes/msi.ts)
+// MIS Daily Work Report (backend: routes/msi.ts)
 // ---------------------------------------------------------------------------
 
 export interface MsiReport {
@@ -397,9 +397,9 @@ export interface MsiReport {
   expiresAt: string;
 }
 
-/** Today's MIS spreadsheet check (backend misService.getMisStatusForDate). */
+/** One day's MIS spreadsheet check (backend misService.getMisStatusForDate). */
 export interface MsiMis {
-  status: "COMPLETE" | "INCOMPLETE" | "MISSING" | "ERROR" | "NOT_CHECKED";
+  status: "COMPLETE" | "INCOMPLETE" | "MISSING" | "ERROR" | "NOT_CHECKED" | "OFF";
   submitted: boolean;
   completedAt: string | null;
   missingColumns: string[];
@@ -417,14 +417,20 @@ export interface MsiMis {
   }[];
 }
 
+export interface MisDayResult {
+  date: string;
+  label: string;
+  mis: MsiMis;
+}
+
 export interface MsiToday {
   reportDate: string;
   timezone: string;
   serverTime: string;
   submitted: boolean;
   report: MsiReport | null;
-  /** Null when no MIS spreadsheet is linked for this person. */
-  mis?: MsiMis | null;
+  /** MIS checks for yesterday and the day before (empty when no MIS spreadsheet is linked). */
+  misDays?: MisDayResult[];
   rules: { maxFileBytes: number; allowedExtensions: string[]; retentionDays: number; maxMessageChars: number };
 }
 
@@ -486,7 +492,7 @@ function sendWithProgress<T>(
 export const msiApi = {
   today: () => get<MsiToday>("/api/msi/reports/today"),
   /** Re-read my MIS spreadsheet now. */
-  checkMis: () => request<{ reportDate: string; mis: MsiMis | null }>("/api/mis/me/check", { method: "POST" }),
+  checkMis: () => request<{ misDays: MisDayResult[] }>("/api/mis/me/check", { method: "POST" }),
   recent: () => get<MsiRecent>("/api/msi/reports/my-reports"),
   submit: (body: MsiUploadBody, onProgress?: (pct: number) => void) =>
     sendWithProgress<{ report: MsiReport }>("POST", "/api/msi/reports", body, onProgress).then((d) => d.report),

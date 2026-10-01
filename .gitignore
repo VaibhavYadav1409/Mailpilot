@@ -57,3 +57,6 @@ generated-reports/
 # Large build artifacts — never commit these (GitHub rejects >100MB)
 admin-dashboard.zip
 *.zip
+
+# MIS import lists hold internal SharePoint links — never commit them
+*.local.json

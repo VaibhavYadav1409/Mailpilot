@@ -1,14 +1,25 @@
 /** Types + hooks for the MIS auto-check (backend/src/routes/mis.ts). */
 import { useQuery } from '@tanstack/react-query';
 import api from '@/services/api';
+import type { MisBlank, MisStatus } from '@/components/mis/misUi';
 
-export type MisStatus = 'COMPLETE' | 'INCOMPLETE' | 'MISSING' | 'ERROR' | 'NOT_CHECKED';
+export type { MisStatus };
 
 export interface MisConnection {
   connected: boolean;
   accountEmail?: string;
   status?: 'CONNECTED' | 'NEEDS_RECONNECT';
   lastError?: string | null;
+}
+
+export interface MisCheck {
+  status: MisStatus;
+  rowCount: number;
+  missingColumns: string[];
+  blanks: MisBlank[];
+  note: string | null;
+  completedAt: string | null;
+  checkedAt: string;
 }
 
 export interface MisSource {
@@ -20,18 +31,13 @@ export interface MisSource {
   webUrl: string;
   sheetName: string | null;
   requiredColumns: string[] | null; // null = learned automatically
+  checkedBy: string | null;
+  approvedBy: string | null;
   fields: { name: string; required: boolean }[];
   lastCheckedAt: string | null;
   lastError: string | null;
-  today: {
-    status: MisStatus;
-    rowCount: number;
-    missingColumns: string[];
-    blanks: { sheet: string; cell: string; field: string }[];
-    note: string | null;
-    completedAt: string | null;
-    checkedAt: string;
-  } | null;
+  /** [yesterday, day before] */
+  days: { date: string; label: string; check: MisCheck | null }[];
 }
 
 export function useMisConnection() {
@@ -48,17 +54,28 @@ export function useMisSources() {
   });
 }
 
-export function misStatusLabel(status: MisStatus | undefined, blanks = 0): { text: string; cls: string } {
-  switch (status) {
-    case 'COMPLETE':
-      return { text: '✓ Filled today', cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' };
-    case 'INCOMPLETE':
-      return { text: `⚠ ${blanks} blank`, cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-400' };
-    case 'MISSING':
-      return { text: '✗ Not started', cls: 'bg-red-500/10 text-red-600 dark:text-red-400' };
-    case 'ERROR':
-      return { text: "Can't read file", cls: 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300' };
-    default:
-      return { text: 'Not checked yet', cls: 'bg-gray-100 dark:bg-gray-800 text-gray-500' };
-  }
+/** One file's status for day i (0 = yesterday, 1 = day before). */
+export function sourceStatus(s: MisSource, i: number): MisStatus {
+  return s.days[i]?.check?.status ?? (s.lastError ? 'ERROR' : 'NOT_CHECKED');
+}
+
+/** A person's status for day i across all their files (same rule as the backend). */
+export function personStatus(sources: MisSource[], i: number): { status: MisStatus; blanks: number } | null {
+  if (sources.length === 0) return null;
+  const all = sources.map((s) => sourceStatus(s, i));
+  const st = all.filter((x) => x !== 'OFF');
+  const blanks = sources.reduce((n, s) => n + (s.days[i]?.check?.missingColumns.length ?? 0), 0);
+  const status: MisStatus =
+    st.length === 0
+      ? 'OFF'
+      : st.every((x) => x === 'COMPLETE')
+      ? 'COMPLETE'
+      : st.includes('INCOMPLETE')
+      ? 'INCOMPLETE'
+      : st.includes('MISSING')
+      ? 'MISSING'
+      : st.includes('ERROR')
+      ? 'ERROR'
+      : 'NOT_CHECKED';
+  return { status, blanks };
 }

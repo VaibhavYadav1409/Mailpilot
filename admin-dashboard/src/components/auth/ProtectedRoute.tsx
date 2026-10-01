@@ -9,7 +9,7 @@ import { useLiveUpdates } from '@/hooks/useLiveUpdates';
 
 const ROLE_RANK: Record<string, number> = { EMPLOYEE: 0, MANAGER: 1, ADMIN: 2, COO: 3, CEO: 4 };
 
-// Where employees work (email + MSI Daily Report). Employees who sign in to the
+// Where employees work (email + MIS Daily Report). Employees who sign in to the
 // admin site by mistake are pointed there instead of hitting a dead end.
 const EMPLOYEE_PORTAL_URL = process.env.NEXT_PUBLIC_EMPLOYEE_APP_URL || 'https://mailpilot-employee.vercel.app';
 
@@ -49,7 +49,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
           </p>
           <p className="text-gray-500 text-sm mt-3">
             Employees use the <span className="font-medium text-gray-700 dark:text-gray-300">Employee Portal</span> for
-            email and the MSI Daily Report.
+            email and the MIS Daily Report.
           </p>
           <div className="mt-6 flex flex-col sm:flex-row gap-3 justify-center">
             <a href={EMPLOYEE_PORTAL_URL} className="btn-primary flex items-center justify-center gap-2">

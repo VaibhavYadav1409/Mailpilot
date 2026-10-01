@@ -33,11 +33,12 @@ export function useLiveUpdates() {
       queryClient.invalidateQueries({ queryKey: ['employees'] });
     });
 
-    // MSI Daily Reports: an employee submitted/updated/withdrew, or the
-    // retention job purged old reports — refresh the MSI page, no polling.
+    // MIS Daily Reports: an employee submitted/updated/withdrew, or the
+    // retention job purged old reports — refresh the MIS page, no polling.
     socket.on('msi:updated', () => {
       queryClient.invalidateQueries({ queryKey: ['msi-admin'] });
       queryClient.invalidateQueries({ queryKey: ['mis-sources'] });
+      queryClient.invalidateQueries({ queryKey: ['msi-admin-summary'] });
     });
 
     socket.on('notification:new', () => {

@@ -13,19 +13,39 @@ import { prisma } from "../lib/db";
 import { Prisma } from "../generated/prisma/client";
 import { emitToCompany } from "../sockets";
 import { encryptToken } from "../lib/crypto";
+import { upsertMsiStaff } from "./msiStaff";
 import { checkMisWorkbook, normHeader, type MisBlank, type MisCheckResult, type MisField } from "./misSheet";
 import {
   MisGraphError,
   cacheMisToken,
   exchangeMisCode,
   forgetMisToken,
+  getItemVersion,
   getMisAccessToken,
   readWorkbook,
   resolveShareLink,
 } from "./misMicrosoft";
-import { availableDates, businessDateString, dateColumnValue } from "./msiService";
+import { addDays, availableDates, businessDateString, dateColumnValue } from "./msiService";
 
-export type MisSourceStatus = "COMPLETE" | "INCOMPLETE" | "MISSING" | "ERROR" | "NOT_CHECKED";
+/** OFF = a Sunday with nothing filled — not counted against anyone. */
+export type MisSourceStatus = "COMPLETE" | "INCOMPLETE" | "MISSING" | "ERROR" | "NOT_CHECKED" | "OFF";
+
+/**
+ * MIS is reviewed for the previous days: the company gives staff one day to
+ * fill a day's MIS, so everything focuses on yesterday and the day before.
+ * Today is not checked.
+ */
+export function misFocusDates(now = new Date()) {
+  const today = businessDateString(now);
+  return { today, yesterday: addDays(today, -1), dayBefore: addDays(today, -2) };
+}
+
+export function misCheckDates(now = new Date()): string[] {
+  const f = misFocusDates(now);
+  return [f.yesterday, f.dayBefore];
+}
+
+const isSunday = (date: string) => new Date(`${date}T00:00:00Z`).getUTCDay() === 0;
 
 export class MisError extends Error {
   constructor(public status: number, message: string) {
@@ -103,7 +123,11 @@ export interface MisSourceInput {
   sheetName?: string | null;
   dateColumn?: string | null;
   requiredColumns?: string[] | null;
+  checkedBy?: string | null;
+  approvedBy?: string | null;
 }
+
+const cleanPerson = (v: string | null | undefined) => (v === undefined ? undefined : normHeader(v ?? "").slice(0, 80) || null);
 
 function cleanOptional(s: string | null | undefined): string | null | undefined {
   if (s === undefined) return undefined;
@@ -124,6 +148,8 @@ export async function createMisSource(companyId: string, input: MisSourceInput) 
       sheetName: cleanOptional(input.sheetName) ?? null,
       dateColumn: cleanOptional(input.dateColumn) ?? null,
       requiredColumns: input.requiredColumns?.length ? input.requiredColumns.map(normHeader).filter(Boolean) : undefined,
+      checkedBy: cleanPerson(input.checkedBy) ?? null,
+      approvedBy: cleanPerson(input.approvedBy) ?? null,
     },
   });
   void runMisChecks(companyId, { sourceId: source.id, force: true }).catch((e) => console.error("[MIS] first check failed:", e));
@@ -143,6 +169,8 @@ export async function updateMisSource(companyId: string, id: string, input: MisS
       ...(shareUrl && shareUrl !== existing.shareUrl ? { driveId: null, itemId: null, fileName: null, webUrl: null } : {}),
       sheetName: cleanOptional(input.sheetName),
       dateColumn: cleanOptional(input.dateColumn),
+      checkedBy: cleanPerson(input.checkedBy),
+      approvedBy: cleanPerson(input.approvedBy),
       requiredColumns:
         input.requiredColumns === undefined
           ? undefined
@@ -184,12 +212,13 @@ function publicCheck(c: {
 
 /** Admin list: every source with today's result. */
 export async function listMisSources(companyId: string, now = new Date()) {
-  const today = businessDateString(now);
+  const f = misFocusDates(now);
   const sources = await prisma.misSource.findMany({
     where: { companyId },
     orderBy: [{ employeeId: "asc" }, { createdAt: "asc" }],
-    include: { checks: { where: { checkDate: dateColumnValue(today) }, take: 1 } },
+    include: { checks: { where: { checkDate: { in: [f.yesterday, f.dayBefore].map(dateColumnValue) } } } },
   });
+  const on = <T extends { checkDate: Date }>(checks: T[], date: string) => checks.find((c) => c.checkDate.toISOString().slice(0, 10) === date);
   return sources.map((s) => ({
     id: s.id,
     employeeId: s.employeeId,
@@ -200,11 +229,144 @@ export async function listMisSources(companyId: string, now = new Date()) {
     sheetName: s.sheetName,
     dateColumn: s.dateColumn,
     requiredColumns: asStringArray(s.requiredColumns),
+    checkedBy: s.checkedBy,
+    approvedBy: s.approvedBy,
     fields: (Array.isArray(s.detectedColumns) ? s.detectedColumns : []) as unknown as MisField[],
     lastCheckedAt: s.lastCheckedAt?.toISOString() ?? null,
     lastError: s.lastError,
-    today: publicCheck(s.checks[0]),
+    /** Yesterday first, then the day before — what the dashboard reviews. */
+    days: [
+      { date: f.yesterday, label: "Yesterday", check: publicCheck(on(s.checks, f.yesterday)) },
+      { date: f.dayBefore, label: "Day before", check: publicCheck(on(s.checks, f.dayBefore)) },
+    ],
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Bulk import (e.g. pasting the "All MIS Spreadsheet Link" sheet)
+// ---------------------------------------------------------------------------
+
+export interface MisImportRow {
+  /** Person's name as written in the sheet, e.g. "Anjali Jha (MF MIS)". */
+  name: string;
+  url: string;
+  checkedBy?: string | null;
+  approvedBy?: string | null;
+  /** Existing MIS staff username to attach the file to instead of creating a new person, e.g. "anjali". */
+  username?: string | null;
+}
+
+export interface MisImportResult {
+  name: string;
+  username: string | null;
+  label: string;
+  result: "linked" | "already linked" | "skipped" | "failed";
+  detail: string;
+}
+
+/** "Anjali Jha (MF MIS)" -> { person: "ANJALI JHA", label: "MF MIS" }; "(226)"-style codes are dropped. */
+export function splitImportName(raw: string): { person: string; label: string } {
+  const label = /\(([^)]*)\)/.exec(raw)?.[1]?.trim() ?? "";
+  const person = raw
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^A-Za-z .'-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+  return { person, label: label && !/^\d+$/.test(label) ? label.slice(0, 80) : "MIS" };
+}
+
+/** sourcedoc GUID of a SharePoint "Doc.aspx" link — spots the same file pasted with a different link. */
+export function docGuid(url: string): string | null {
+  try {
+    return (new URL(url).searchParams.get("sourcedoc") ?? "").replace(/[{}]/g, "").toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Creates MIS staff (username = name, password = NAME in capitals) and links
+ * their MIS spreadsheets in one go. Safe to repeat: a file already linked to
+ * that person is only updated (checked by / approved by). Only SharePoint /
+ * OneDrive Excel links are taken — Google Sheets are reported as skipped.
+ */
+export async function importMisRows(
+  companyId: string,
+  rows: MisImportRow[],
+  opts: { runChecks?: boolean } = {},
+): Promise<MisImportResult[]> {
+  const out: MisImportResult[] = [];
+  const existing = await prisma.misSource.findMany({ where: { companyId }, select: { id: true, employeeId: true, shareUrl: true } });
+  const linked = new Map(existing.map((e) => [`${e.employeeId}|${docGuid(e.shareUrl) ?? e.shareUrl}`, e.id]));
+
+  for (const row of rows.slice(0, 300)) {
+    const { person, label } = splitImportName(row.name ?? "");
+    const base = { name: row.name, username: null as string | null, label };
+    let url: string;
+    try {
+      url = validateShareUrl(row.url ?? "");
+    } catch (e) {
+      out.push({
+        ...base,
+        result: "skipped",
+        detail: /docs\.google\.com/.test(row.url ?? "")
+          ? "Google Sheets link — only Excel files in SharePoint/OneDrive can be checked."
+          : (e as Error).message,
+      });
+      continue;
+    }
+    if (!person && !row.username) {
+      out.push({ ...base, result: "skipped", detail: "No name." });
+      continue;
+    }
+    try {
+      let employeeId: string;
+      if (row.username?.trim()) {
+        const emp = await prisma.employee.findFirst({
+          where: { companyId, email: { equals: row.username.trim(), mode: "insensitive" } },
+          select: { id: true, email: true },
+        });
+        if (!emp) throw new MisError(404, `No staff with username "${row.username}".`);
+        employeeId = emp.id;
+        base.username = emp.email.toUpperCase();
+      } else {
+        const r = await upsertMsiStaff(companyId, person, { keepPassword: true });
+        employeeId = r.employee.id;
+        base.username = r.username;
+      }
+      const k = `${employeeId}|${docGuid(url) ?? url}`;
+      const already = linked.get(k);
+      if (already) {
+        await prisma.misSource.update({
+          where: { id: already },
+          data: { checkedBy: cleanPerson(row.checkedBy ?? undefined), approvedBy: cleanPerson(row.approvedBy ?? undefined) },
+        });
+        out.push({ ...base, result: "already linked", detail: "Already linked — checked by / approved by updated." });
+        continue;
+      }
+      const created = await prisma.misSource.create({
+        data: {
+          companyId,
+          employeeId,
+          label,
+          shareUrl: url,
+          checkedBy: cleanPerson(row.checkedBy) ?? null,
+          approvedBy: cleanPerson(row.approvedBy) ?? null,
+        },
+        select: { id: true },
+      });
+      linked.set(k, created.id);
+      out.push({ ...base, result: "linked", detail: "Linked — first check runs within a minute." });
+    } catch (e) {
+      out.push({ ...base, result: "failed", detail: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  if (out.some((r) => r.result === "linked") && opts.runChecks !== false) {
+    void runMisChecks(companyId).catch((e) => console.error("[MIS] check after import failed:", e));
+    emitToCompany(companyId, "msi:updated", { source: "mis-import" });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +393,7 @@ export function runMisChecks(
 
 async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: string; force?: boolean }) {
   const now = new Date();
-  const dates = availableDates(now); // [today, yesterday]
+  const dates = misCheckDates(now); // [yesterday, day before]
   const sources = await prisma.misSource.findMany({
     where: {
       companyId,
@@ -261,6 +423,19 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
         ({ driveId, itemId } = r);
         Object.assign(patch, r);
       }
+      // Unchanged file + results already saved for every day = nothing to do.
+      // One tiny request instead of reading the whole workbook again.
+      const version = await getItemVersion(token, driveId!, itemId!).catch(() => null);
+      if (!opts.force && version && version === s.lastETag) {
+        const have = await prisma.misDailyCheck.count({
+          where: { sourceId: s.id, checkDate: { in: dates.map(dateColumnValue) }, status: { notIn: ["ERROR", "NOT_CHECKED"] } },
+        });
+        if (have === dates.length) {
+          await prisma.misSource.update({ where: { id: s.id }, data: { ...patch, lastCheckedAt: now, lastError: null } });
+          continue;
+        }
+      }
+      patch.lastETag = version;
       const sheets = await readWorkbook(token, driveId!, itemId!, dates, s.sheetName);
       const results = dates.map((date) => ({
         date,
@@ -283,18 +458,18 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[MIS] check failed for source ${s.id}:`, msg);
       await prisma.misSource.update({ where: { id: s.id }, data: { lastError: msg.slice(0, 1000), lastCheckedAt: now } });
-      // Keep a COMPLETE result if Graph hiccups later in the day; otherwise record the error.
-      const existing = await prisma.misDailyCheck.findUnique({
-        where: { sourceId_checkDate: { sourceId: s.id, checkDate: dateColumnValue(dates[0]) } },
-      });
-      if (!existing || existing.status !== "COMPLETE") {
+      // Keep results already recorded for each day; only days with nothing usable show the error.
+      for (const date of dates) {
+        const where = { sourceId_checkDate: { sourceId: s.id, checkDate: dateColumnValue(date) } };
+        const existing = await prisma.misDailyCheck.findUnique({ where });
+        if (existing && existing.status !== "ERROR" && existing.status !== "NOT_CHECKED") continue;
         await prisma.misDailyCheck.upsert({
-          where: { sourceId_checkDate: { sourceId: s.id, checkDate: dateColumnValue(dates[0]) } },
+          where,
           create: {
             sourceId: s.id,
             companyId,
             employeeId: s.employeeId,
-            checkDate: dateColumnValue(dates[0]),
+            checkDate: dateColumnValue(date),
             status: "ERROR",
             note: msg.slice(0, 1000),
             checkedAt: now,
@@ -319,8 +494,10 @@ async function saveCheck(
   const where = { sourceId_checkDate: { sourceId: s.id, checkDate: dateColumnValue(date) } };
   const prev = await prisma.misDailyCheck.findUnique({ where });
   const completedAt = r.status === "COMPLETE" ? prev?.completedAt ?? now : null;
+  // A Sunday with nothing filled is a day off, not a missed MIS.
+  const status: MisSourceStatus = r.status === "MISSING" && r.filledCount === 0 && isSunday(date) ? "OFF" : r.status;
   const data = {
-    status: r.status,
+    status,
     rowCount: r.filledCount,
     missingColumns: r.missingFields,
     incompleteRows: r.blanks as unknown as Prisma.InputJsonValue,
@@ -335,7 +512,7 @@ async function saveCheck(
   });
   return (
     !prev ||
-    prev.status !== r.status ||
+    prev.status !== status ||
     JSON.stringify(asStringArray(prev.missingColumns) ?? []) !== JSON.stringify(r.missingFields)
   );
 }
@@ -381,6 +558,8 @@ export interface MisEmployeeDay {
     label: string;
     fileName: string | null;
     webUrl: string;
+    checkedBy: string | null;
+    approvedBy: string | null;
     status: MisSourceStatus;
     rowCount: number;
     missingColumns: string[];
@@ -390,7 +569,9 @@ export interface MisEmployeeDay {
   }[];
 }
 
-function aggregate(statuses: MisSourceStatus[]): MisSourceStatus {
+function aggregate(all: MisSourceStatus[]): MisSourceStatus {
+  const statuses = all.filter((s) => s !== "OFF");
+  if (statuses.length === 0) return "OFF";
   if (statuses.every((s) => s === "COMPLETE")) return "COMPLETE";
   if (statuses.includes("INCOMPLETE")) return "INCOMPLETE";
   if (statuses.includes("MISSING")) return "MISSING";
@@ -416,6 +597,8 @@ export async function getMisStatusForDate(companyId: string, date: string, emplo
         label: s.label,
         fileName: s.fileName,
         webUrl: s.webUrl ?? s.shareUrl,
+        checkedBy: s.checkedBy,
+        approvedBy: s.approvedBy,
         status: c?.status ?? "NOT_CHECKED",
         rowCount: c?.rowCount ?? 0,
         missingColumns: c?.missingColumns ?? [],

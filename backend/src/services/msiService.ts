@@ -4,7 +4,7 @@ import { isMsiStaffLogin } from "./msiStaff";
 import { deleteMsiFiles, getMsiFile, makeMsiStorageKey, putMsiFile, sweepOrphanMsiFiles } from "../lib/msiStorage";
 import { getMailDayTimezone } from "./retentionEngine";
 import { emitToCompany } from "../sockets";
-import { ensureMisFresh, getMisStatusForDate, type MisEmployeeDay } from "./misService";
+import { ensureMisFresh, getMisStatusForDate, misCheckDates, misFocusDates, type MisEmployeeDay } from "./misService";
 
 /**
  * MSI Daily Work Report — business logic.
@@ -307,16 +307,15 @@ export async function getTodayForEmployee(actor: MsiActor, now = new Date()) {
     where: { employeeId: actor.employeeId, reportDate: dateColumnValue(reportDate), expiresAt: { gt: now } },
     select: reportPublicSelect,
   });
-  await ensureMisFresh(actor.companyId, { employeeId: actor.employeeId, timeoutMs: 6000 }).catch(() => undefined);
-  const mis = (await getMisStatusForDate(actor.companyId, reportDate, actor.employeeId)).get(actor.employeeId) ?? null;
+  const misDays = await getMisDaysForEmployee(actor, now);
   return {
     reportDate,
     timezone: getMsiTimezone(),
     serverTime: now.toISOString(),
     submitted: Boolean(report),
     report: report ? toPublicReport(report) : null,
-    /** MIS spreadsheet check for today (null = no MIS linked for this person). */
-    mis,
+    /** MIS spreadsheet checks for yesterday and the day before (empty = no MIS linked). */
+    misDays,
     rules: {
       maxFileBytes: getMsiMaxFileBytes(),
       allowedExtensions: ALLOWED_EXTENSIONS,
@@ -324,6 +323,22 @@ export async function getTodayForEmployee(actor: MsiActor, now = new Date()) {
       maxMessageChars: MAX_MESSAGE_CHARS,
     },
   };
+}
+
+/** The staff member's own MIS results for yesterday and the day before (re-read if stale). */
+export async function getMisDaysForEmployee(actor: MsiActor, now = new Date()) {
+  await ensureMisFresh(actor.companyId, { employeeId: actor.employeeId, timeoutMs: 6000 }).catch(() => undefined);
+  const f = misFocusDates(now);
+  const days = [
+    { date: f.yesterday, label: "Yesterday" },
+    { date: f.dayBefore, label: "Day before yesterday" },
+  ];
+  const out = [];
+  for (const d of days) {
+    const mis = (await getMisStatusForDate(actor.companyId, d.date, actor.employeeId)).get(actor.employeeId) ?? null;
+    if (mis) out.push({ ...d, mis });
+  }
+  return out;
 }
 
 /** Today + yesterday for the employee — the only days that can still exist. */
@@ -528,8 +543,10 @@ export interface MsiEmployeeStatus {
  */
 export async function getAdminOverview(companyId: string, dateParam: string | undefined, now = new Date()) {
   const today = businessDateString(now);
-  const dates = availableDates(now);
-  const date = dateParam ?? today;
+  // MIS is reviewed a day late (staff get one day to fill it): the dashboard
+  // shows yesterday (default) and the day before — never today.
+  const dates = misCheckDates(now);
+  const date = dateParam ?? dates[0];
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
     throw new MsiError(400, "BAD_DATE", "Invalid date.");
   }
@@ -543,15 +560,17 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
     return {
       ...base,
       expired: true,
-      summary: { totalEmployees: 0, submitted: 0, notSubmitted: 0, important: 0, submissionRate: 0 },
+      dayOffDate: false,
+      summary: { totalEmployees: 0, submitted: 0, notSubmitted: 0, incomplete: 0, notFilled: 0, important: 0, submissionRate: 0 },
       submitted: [] as MsiEmployeeStatus[],
       notSubmitted: [] as MsiEmployeeStatus[],
+      dayOff: [] as MsiEmployeeStatus[],
     };
   }
 
-  // Today's MIS spreadsheets are re-read if the last check is a few minutes old
+  // MIS spreadsheets are re-read if the last check is a few minutes old
   // (bounded wait, so a slow Microsoft response never blocks the dashboard).
-  if (date === today) await ensureMisFresh(companyId, { timeoutMs: 6000 }).catch(() => undefined);
+  await ensureMisFresh(companyId, { timeoutMs: 6000 }).catch(() => undefined);
 
   const [employees, reports, misByEmployee] = await Promise.all([
     prisma.employee.findMany({
@@ -578,6 +597,7 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
 
   const submitted: MsiEmployeeStatus[] = [];
   const notSubmitted: MsiEmployeeStatus[] = [];
+  const dayOff: MsiEmployeeStatus[] = [];
   for (const e of employees) {
     const report = reportByEmployee.get(e.id) ?? null;
     const mis = misByEmployee.get(e.id) ?? null;
@@ -599,24 +619,34 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
       report,
       mis,
     };
-    (isSubmitted ? submitted : notSubmitted).push(row);
+    // A Sunday with nothing filled isn't held against anyone.
+    if (!isSubmitted && !report && mis?.status === "OFF") dayOff.push(row);
+    else (isSubmitted ? submitted : notSubmitted).push(row);
   }
   submitted.sort((a, b) => (a.submittedAt ?? "\uffff").localeCompare(b.submittedAt ?? "\uffff"));
+  // Red (not filled / can't read) before amber (a few blanks), then by name.
+  const rank = (r: MsiEmployeeStatus) => (r.mis?.status === "INCOMPLETE" ? 1 : 0);
+  notSubmitted.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 
   const total = submitted.length + notSubmitted.length;
   const important = submitted.filter((s) => s.report?.hasImportantMessage).length;
+  const incomplete = notSubmitted.filter((r) => r.mis?.status === "INCOMPLETE").length;
   return {
     ...base,
     expired: false,
+    dayOffDate: new Date(`${date}T00:00:00Z`).getUTCDay() === 0,
     summary: {
       totalEmployees: total,
       submitted: submitted.length,
       notSubmitted: notSubmitted.length,
+      incomplete,
+      notFilled: notSubmitted.length - incomplete,
       important,
       submissionRate: total ? Math.round((submitted.length / total) * 100) : 0,
     },
     submitted,
     notSubmitted,
+    dayOff,
   };
 }
 

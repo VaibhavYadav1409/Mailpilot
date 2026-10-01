@@ -52,7 +52,7 @@ export const EmployeeTable = () => {
     mutationFn: (id: string) => api.post<{ tempPassword: string }>(`/employees/${id}/reset-password`),
   });
 
-  // MSI staff (username logins, no mailbox) have their own section on the page.
+  // MIS staff (username logins, no mailbox) have their own section on the page.
   const filteredEmployees = employees?.filter(
     (emp) =>
       !isMsiStaffLogin(emp.email) &&

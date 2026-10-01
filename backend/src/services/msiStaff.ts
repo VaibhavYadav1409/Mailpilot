@@ -62,7 +62,7 @@ async function nextEmployeeCode(companyId: string): Promise<string> {
  * company — resets its password back to the name and re-activates it.
  * Username = name (any case), password = name in CAPITALS. Never sends mail.
  */
-export async function upsertMsiStaff(companyId: string, rawName: string) {
+export async function upsertMsiStaff(companyId: string, rawName: string, opts: { keepPassword?: boolean } = {}) {
   const name = normaliseStaffName(rawName);
   const username = name.toLowerCase();
   const [firstName, ...rest] = titleCase(name).split(" ");
@@ -77,6 +77,14 @@ export async function upsertMsiStaff(companyId: string, rawName: string) {
   if (existing) {
     if (existing.companyId !== companyId) {
       throw new MsiStaffError(409, "That username is already taken.");
+    }
+    if (opts.keepPassword) {
+      // Bulk import: an existing person is just matched, never reset.
+      const employee = await prisma.employee.findUniqueOrThrow({
+        where: { id: existing.id },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      });
+      return { employee, created: false, username: name, password: name };
     }
     const employee = await prisma.employee.update({
       where: { id: existing.id },

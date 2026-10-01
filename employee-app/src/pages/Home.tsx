@@ -5,7 +5,7 @@ import { AttachmentList } from "@/components/AttachmentList";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { ImapConnectDialog } from "@/components/ImapConnectDialog";
 import { ModuleRail } from "@/components/ModuleRail";
-import { Link } from "wouter";
+import { Link, Redirect } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -366,6 +366,8 @@ export default function Home() {
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Loader2 className="animate-spin w-6 h-6 text-muted-foreground" /></div>;
   if (!isAuthenticated) return null;
+  // MIS staff sign in with a username and have no mailbox — their home is "My MIS".
+  if (user && !user.email.includes("@")) return <Redirect to="/msi" />;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -436,8 +438,8 @@ export default function Home() {
               </div>
             )}
             <span className="text-sm text-muted-foreground hidden sm:block">{user?.name}</span>
-            {/* Phones don't show the module rail — keep MSI reachable from the header. */}
-            <Link href="/msi" className="sm:hidden inline-flex items-center rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent" title="MSI Daily Report">
+            {/* Phones don't show the module rail — keep MIS reachable from the header. */}
+            <Link href="/msi" className="sm:hidden inline-flex items-center rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent" title="MIS Daily Report">
               <ClipboardList className="w-4 h-4" />
             </Link>
             <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(true)} title="Settings">
@@ -452,7 +454,7 @@ export default function Home() {
       <ImapConnectDialog open={imapOpen} onOpenChange={setImapOpen} onSuccess={handleImapSuccess} />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Module rail: Mail | MSI Daily Report */}
+        {/* Module rail: Mail | MIS Daily Report */}
         <ModuleRail />
         {/* Sidebar — on mobile this is the only pane shown until an email
             (or the paste-email form) is opened, at which point it's hidden

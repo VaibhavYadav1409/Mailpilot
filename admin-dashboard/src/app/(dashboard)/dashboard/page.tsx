@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import api from '@/services/api';
 import { StatCard } from '@/components/dashboard/StatCard';
 import { PageHeader } from '@/components/layout/PageHeader';
+import { MisSnapshot } from '@/components/mis/MisSnapshot';
 import { useDepartmentPerformance } from '@/hooks/useDepartmentPerformance';
 import { Users, Mail, Clock, CheckCircle, Reply } from 'lucide-react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
@@ -91,6 +92,8 @@ export default function DashboardPage() {
         title="Dashboard"
         subtitle="Welcome back — here's what's happening across the fleet today."
       />
+
+      <MisSnapshot />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         <StatCard title="Total Employees" value={stats?.totalEmployees ?? 0} icon={Users} />

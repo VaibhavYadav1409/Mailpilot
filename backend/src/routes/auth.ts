@@ -81,7 +81,7 @@ authRouter.post("/login", async (req, res) => {
 
     if (isAdminClient(req) && !ADMIN_MIN_ROLES.has(employee.role)) {
       return res.status(403).json({
-        error: "This is an employee account. Please sign in on the Employee Portal to use email and the MSI Daily Report.",
+        error: "This is an employee account. Please sign in on the Employee Portal to use email and My MIS.",
       });
     }
 

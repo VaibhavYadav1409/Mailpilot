@@ -9,13 +9,13 @@ import {
   deleteMisSource,
   disconnectMis,
   getMisConnection,
-  getMisStatusForDate,
+  importMisRows,
   listMisSources,
   runMisChecks,
   updateMisSource,
 } from "../services/misService";
 import { MisGraphError, buildMisAuthUrl } from "../services/misMicrosoft";
-import { businessDateString } from "../services/msiService";
+import { getMisDaysForEmployee } from "../services/msiService";
 
 /**
  * MIS auto-check — /api/mis
@@ -27,6 +27,7 @@ import { businessDateString } from "../services/msiService";
  *   POST   /sources                 { employeeId, label, shareUrl, sheetName?, requiredColumns? }
  *   PATCH  /sources/:id             same fields, all optional; requiredColumns: [] = automatic
  *   DELETE /sources/:id
+ *   POST   /import                  { rows: [{ name, url, checkedBy?, approvedBy?, username? }] } (Admin+)
  *   POST   /check                   { employeeId? } re-read now                  (Admin+)
  *   POST   /me/check                re-read the caller's own MIS now             (any employee)
  */
@@ -98,6 +99,33 @@ const sourceSchema = z.object({
   sheetName: z.string().max(120).nullish(),
   dateColumn: z.string().max(120).nullish(),
   requiredColumns: z.array(z.string().max(300)).max(300).nullish(),
+  checkedBy: z.string().max(80).nullish(),
+  approvedBy: z.string().max(80).nullish(),
+});
+
+const importSchema = z.object({
+  rows: z
+    .array(
+      z.object({
+        name: z.string().max(200),
+        url: z.string().max(4000),
+        checkedBy: z.string().max(80).nullish(),
+        approvedBy: z.string().max(80).nullish(),
+        username: z.string().max(80).nullish(),
+      }),
+    )
+    .min(1)
+    .max(300),
+});
+
+misRouter.post("/import", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = importSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Nothing to import — paste rows with a name and a link." });
+  try {
+    return res.json({ results: await importMisRows(req.user!.companyId, body.data.rows) });
+  } catch (e) {
+    return handle(res, e);
+  }
 });
 
 misRouter.post("/sources", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
@@ -151,9 +179,8 @@ misRouter.post("/me/check", requireAuth, async (req, res) => {
   try {
     // Not forced: a source read less than a minute ago is not read again.
     await withinMs(runMisChecks(req.user!.companyId, { employeeId: req.user!.employeeId }), 20_000);
-    const today = businessDateString();
-    const mis = (await getMisStatusForDate(req.user!.companyId, today, req.user!.employeeId)).get(req.user!.employeeId) ?? null;
-    return res.json({ reportDate: today, mis });
+    const misDays = await getMisDaysForEmployee({ employeeId: req.user!.employeeId, companyId: req.user!.companyId });
+    return res.json({ misDays });
   } catch (e) {
     return handle(res, e);
   }

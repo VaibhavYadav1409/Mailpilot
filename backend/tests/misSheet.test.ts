@@ -77,10 +77,37 @@ describe("checkMisWorkbook — dates across the top (Farsight MIS layout)", () =
     expect(r.blanks).toEqual([{ sheet: "Sep-2026", cell: "I5", field: "2 Accounts activated" }]);
   });
 
-  it("a date column added but not filled is INCOMPLETE", () => {
+  it("a date column added but not filled counts as not submitted", () => {
     const r = checkMisWorkbook([sheet(["", ""])], { date: TODAY });
-    expect(r.status).toBe("INCOMPLETE");
+    expect(r.status).toBe("MISSING");
     expect(r.filledCount).toBe(0);
+    expect(r.blanks).toEqual([]);
+  });
+
+  it("20+ blanks among the usually-filled particulars counts as not submitted", () => {
+    const days2 = ["2026-09-26", "2026-09-28"];
+    const head = ["#", "Particulars", ...days2.map((d) => d.split("-").reverse().join(".")), "29.09.2026"];
+    const rows = Array.from({ length: 25 }, (_, i) => [i + 1, `Task ${i + 1}`, "done", "done", i < 4 ? "done" : ""]);
+    const r = checkMisWorkbook([{ name: "S", values: [head, ...rows] }], { date: TODAY });
+    expect(r.status).toBe("MISSING");
+    expect(r.note).toMatch(/21 of 25/);
+    const few = rows.map((row, i) => (i < 6 ? [...row.slice(0, 4), ""] : [...row.slice(0, 4), "done"]));
+    expect(checkMisWorkbook([{ name: "S", values: [head, ...few] }], { date: TODAY }).status).toBe("INCOMPLETE");
+  });
+
+  it("rows that are usually left empty don't count towards the 20", () => {
+    const days2 = ["2026-09-26", "2026-09-28"];
+    const head = ["#", "Particulars", ...days2.map((d) => d.split("-").reverse().join(".")), "29.09.2026"];
+    // 30 rows that are never filled + 3 rows that always are.
+    const rows = [
+      ...Array.from({ length: 30 }, (_, i) => [i + 1, `Rarely used ${i + 1}`, "", "", ""]),
+      [31, "Daily A", "x", "x", "x"],
+      [32, "Daily B", "x", "x", "x"],
+      [33, "Daily C", "x", "x", ""],
+    ];
+    const r = checkMisWorkbook([{ name: "S", values: [head, ...rows] }], { date: TODAY });
+    expect(r.status).toBe("INCOMPLETE");
+    expect(r.missingFields).toEqual(["33 Daily C"]);
   });
 
   it("MISSING when today's column doesn't exist yet", () => {
@@ -90,7 +117,7 @@ describe("checkMisWorkbook — dates across the top (Farsight MIS layout)", () =
   });
 
   it("an admin-pinned list overrides what was learned", () => {
-    const r = checkMisWorkbook([sheet(["Nil", "N.A"])], { date: TODAY, requiredColumns: ["Weekly Checking"] });
+    const r = checkMisWorkbook([sheet(["Nil", "N.A"])], { date: TODAY, requiredColumns: ["Weekly Checking", "Accounts received"] });
     expect(r.status).toBe("INCOMPLETE");
     expect(r.missingFields).toEqual(["3 Weekly Checking"]);
   });

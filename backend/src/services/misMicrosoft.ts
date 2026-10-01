@@ -205,6 +205,15 @@ export async function resolveShareLink(token: string, shareUrl: string) {
   return toResolved(match);
 }
 
+/** Current version of a file — changes whenever someone edits it. */
+export async function getItemVersion(token: string, driveId: string, itemId: string): Promise<string | null> {
+  const item = await graphJson<{ eTag?: string; lastModifiedDateTime?: string }>(
+    token,
+    `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}?$select=eTag,lastModifiedDateTime`,
+  );
+  return item.eTag ?? item.lastModifiedDateTime ?? null;
+}
+
 /** Top-left cell of an A1 address like "'Sep 26'!B3:K40" -> { firstRow: 3, firstCol: 2 }. */
 export function topLeftOf(address: string | undefined): { firstRow: number; firstCol: number } {
   const m = /!\$?([A-Z]+)\$?(\d+)/i.exec(address ?? "");
