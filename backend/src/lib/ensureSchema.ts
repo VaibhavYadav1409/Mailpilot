@@ -11,6 +11,37 @@ const STATEMENTS: { migration: string; sql: string }[] = [
   { migration: "20261001120000_mis_reviewers", sql: `ALTER TABLE "MisSource" ADD COLUMN IF NOT EXISTS "checkedBy" TEXT` },
   { migration: "20261001120000_mis_reviewers", sql: `ALTER TABLE "MisSource" ADD COLUMN IF NOT EXISTS "approvedBy" TEXT` },
   { migration: "20261001120000_mis_reviewers", sql: `ALTER TABLE "MisSource" ADD COLUMN IF NOT EXISTS "lastETag" TEXT` },
+  {
+    migration: "20261002120000_mis_circle_marks",
+    sql: `CREATE TABLE IF NOT EXISTS "MisCircleMark" (
+      "id" TEXT NOT NULL,
+      "companyId" TEXT NOT NULL,
+      "employeeId" TEXT NOT NULL,
+      "date" DATE NOT NULL,
+      "code" TEXT NOT NULL,
+      "source" TEXT NOT NULL DEFAULT 'AUTO',
+      "autoCode" TEXT,
+      "note" TEXT,
+      "updatedById" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL,
+      CONSTRAINT "MisCircleMark_pkey" PRIMARY KEY ("id"))`,
+  },
+  {
+    migration: "20261002120000_mis_circle_marks",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisCircleMark_employeeId_date_key" ON "MisCircleMark"("employeeId", "date")`,
+  },
+  {
+    migration: "20261002120000_mis_circle_marks",
+    sql: `CREATE INDEX IF NOT EXISTS "MisCircleMark_companyId_date_idx" ON "MisCircleMark"("companyId", "date")`,
+  },
+  {
+    migration: "20261002120000_mis_circle_marks",
+    sql: `DO $$ BEGIN
+      ALTER TABLE "MisCircleMark" ADD CONSTRAINT "MisCircleMark_employeeId_fkey" FOREIGN KEY ("employeeId") REFERENCES "Employee"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$`,
+  },
 ];
 
 export async function ensureSchema(): Promise<void> {

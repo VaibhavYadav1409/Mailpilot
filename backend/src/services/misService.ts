@@ -509,6 +509,13 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
       if (e instanceof MisGraphError && e.reconnect) break; // every other source would fail the same way
     }
   }
+  // Keep the monthly Circle Report in step with the latest results.
+  try {
+    const { recordAutoMarks } = await import("./misCircle");
+    await recordAutoMarks(companyId, dates);
+  } catch (e) {
+    console.error("[MIS] circle marks update failed:", e instanceof Error ? e.message : e);
+  }
   if (changed) emitToCompany(companyId, "msi:updated", { reportDate: dates[0], source: "mis" });
 }
 

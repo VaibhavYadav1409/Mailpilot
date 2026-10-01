@@ -417,6 +417,20 @@ export interface MsiMis {
   }[];
 }
 
+export interface MyCircle {
+  month: string;
+  title: string;
+  today: string;
+  yesterday: string;
+  days: { date: string; day: number; dow: string; isOff: boolean }[];
+  codes: { code: string; label: string; meaning: string; isCircle: boolean; tone: string }[];
+  rules: string[];
+  row: {
+    cells: Record<string, { code: string | null; source: string | null; note: string | null; pending: boolean }>;
+    summary: { circles: number; pendingCircles: number; deductionDays: number; untilNextDeduction: number; message: string };
+  } | null;
+}
+
 export interface MisDayResult {
   date: string;
   label: string;
@@ -493,6 +507,8 @@ export const msiApi = {
   today: () => get<MsiToday>("/api/msi/reports/today"),
   /** Re-read my MIS spreadsheet now. */
   checkMis: () => request<{ misDays: MisDayResult[] }>("/api/mis/me/check", { method: "POST" }),
+  /** My row of the monthly MIS Circle Report. */
+  myCircle: (month?: string) => get<MyCircle>(`/api/mis/me/circle${month ? `?month=${month}` : ""}`),
   recent: () => get<MsiRecent>("/api/msi/reports/my-reports"),
   submit: (body: MsiUploadBody, onProgress?: (pct: number) => void) =>
     sendWithProgress<{ report: MsiReport }>("POST", "/api/msi/reports", body, onProgress).then((d) => d.report),

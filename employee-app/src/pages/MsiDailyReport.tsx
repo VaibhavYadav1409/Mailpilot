@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
-import { ApiError, msiApi, type MisDayResult, type MsiMis, type MsiReport, type MsiToday } from "@/lib/api";
+import { ApiError, msiApi, type MisDayResult, type MsiMis, type MsiReport, type MsiToday, type MyCircle } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Formatting — every date/time shown here is rendered in the SERVER's
@@ -199,6 +199,55 @@ function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string
   );
 }
 
+const CELL_TONE: Record<string, string> = {
+  red: "bg-red-100 text-red-800 font-bold",
+  green: "bg-green-100 text-green-800",
+  amber: "bg-amber-100 text-amber-800",
+  grey: "bg-muted text-muted-foreground",
+  blue: "bg-sky-100 text-sky-800",
+  purple: "bg-violet-100 text-violet-800",
+};
+
+/** This month's red circles (MIS not submitted) and what they cost. */
+function CircleCard({ data }: { data: MyCircle }) {
+  const row = data.row;
+  if (!row) return null;
+  const s = row.summary;
+  const tone = data.codes.reduce<Record<string, string>>((m, c) => ((m[c.code] = c.tone), m), {});
+  return (
+    <Card className={`p-5 space-y-3 ${s.deductionDays ? "border-red-200 bg-red-50/60" : ""}`}>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <p className="font-semibold">Red circles this month</p>
+        <p className="text-sm">
+          <span className={`text-2xl font-bold ${s.circles ? "text-red-600" : "text-green-600"}`}>{s.circles}</span>
+          {s.pendingCircles > 0 && <span className="text-red-500"> (+{s.pendingCircles} pending)</span>}
+        </p>
+        <p className={`text-sm font-medium ${s.deductionDays ? "text-red-700" : "text-muted-foreground"}`}>
+          Salary deduction: {s.deductionDays} day{s.deductionDays === 1 ? "" : "s"}
+        </p>
+      </div>
+      <p className="text-sm text-muted-foreground">{s.message}</p>
+      <div className="flex flex-wrap gap-1">
+        {data.days.map((d) => {
+          const c = row.cells[d.date];
+          return (
+            <div key={d.date} className="text-center" title={c?.code ? `${d.date.split("-").reverse().join("-")}: ${c.code}${c.pending ? " (pending)" : ""}${c.note ? ` — ${c.note}` : ""}` : d.date}>
+              <div className="text-[9px] text-muted-foreground">{d.day}</div>
+              <div className={`w-7 h-6 rounded text-[9px] flex items-center justify-center ${c?.code ? CELL_TONE[tone[c.code]] ?? "" : "bg-muted/40"} ${c?.pending ? "outline-dashed outline-1 outline-red-400" : ""}`}>
+                {c?.code ?? ""}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        CM = red circle (MIS not submitted). Every 3 red circles in a month = 1 day's salary deducted — they don't need to be in a row. The count
+        restarts on the 1st. Leave, on duty, Sundays and 2nd/4th Saturdays never count.
+      </p>
+    </Card>
+  );
+}
+
 function formatTime(iso: string, tz: string) {
   return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz });
 }
@@ -261,6 +310,7 @@ export default function MsiDailyReport() {
   const rules = data?.rules;
   const showForm = !report || editing;
   const hasMis = (data?.misDays?.length ?? 0) > 0;
+  const circle = useQuery({ queryKey: ["mis", "circle"], queryFn: () => msiApi.myCircle(), enabled: hasMis, staleTime: 60_000 });
   const uploading = progress !== null;
 
   const applyReport = (next: MsiReport | null) => {
@@ -437,11 +487,16 @@ export default function MsiDailyReport() {
               </Card>
             )}
 
+            {hasMis && circle.data?.row && <CircleCard data={circle.data} />}
+
             {hasMis && (
               <MisDaysPanel
                 days={data!.misDays!}
                 tz={tz}
-                onUpdate={(misDays) => queryClient.setQueryData<MsiToday>(["msi", "today"], (old) => (old ? { ...old, misDays } : old))}
+                onUpdate={(misDays) => {
+                  queryClient.setQueryData<MsiToday>(["msi", "today"], (old) => (old ? { ...old, misDays } : old));
+                  queryClient.invalidateQueries({ queryKey: ["mis", "circle"] });
+                }}
               />
             )}
 

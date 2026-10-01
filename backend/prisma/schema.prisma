@@ -100,6 +100,7 @@ model Employee {
   replies         Reply[]
   msiDailyReports MsiDailyReport[]
   misSources      MisSource[]
+  misCircleMarks  MisCircleMark[]
 
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
@@ -544,4 +545,27 @@ model MisDailyCheck {
   @@unique([sourceId, checkDate])
   @@index([companyId, checkDate])
   @@index([employeeId, checkDate])
+}
+
+/// One cell of the monthly MIS Circle Report: a person's mark for one day.
+/// AUTO marks come from the MIS check (CM = red circle / not submitted,
+/// NC = submitted, IN = incomplete, SU = Sunday, SSO/FSO = 2nd/4th Saturday off).
+/// MANUAL marks are set by an admin (OL leave, A absent, ON on duty, SO …) and
+/// always win over AUTO. Every 3 CM in a month = 1 day's salary deducted.
+model MisCircleMark {
+  id          String   @id @default(uuid())
+  companyId   String
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date        DateTime @db.Date
+  code        String
+  source      String   @default("AUTO") // AUTO | MANUAL
+  autoCode    String?  // what the MIS check said, kept when an admin overrides it
+  note        String?  @db.Text
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([employeeId, date])
+  @@index([companyId, date])
 }

@@ -12,6 +12,8 @@ import { MisConnectionCard } from './MisConnectionCard';
 import { MisSourcesPanel } from './MisSourcesPanel';
 import { MisImportPanel } from './MisImportPanel';
 import { personStatus, useMisSources, type MisSource } from './misApi';
+import Link from 'next/link';
+import { CIRCLES_PER_DEDUCTION, useCircleMonth } from '@/components/mis/circleApi';
 
 interface StaffRow {
   id: string;
@@ -53,6 +55,8 @@ export function MsiStaffTable() {
   const { data: misSources } = useMisSources();
   const sourcesOf = (id: string): MisSource[] => (misSources ?? []).filter((m) => m.employeeId === id);
   const days = misSources?.[0]?.days.map((d) => d.date) ?? [];
+  const { data: circle } = useCircleMonth(null);
+  const circleOf = new Map((circle?.rows ?? []).map((r) => [r.employeeId, r.summary]));
 
   // Same query key as the mail table, so both sections share one request.
   const { data: employees, isLoading } = useQuery({
@@ -197,6 +201,10 @@ export function MsiStaffTable() {
                     MIS · Day before
                     {days[1] && <span className="block normal-case font-normal tracking-normal">{shortDay(days[1])}</span>}
                   </th>
+                  <th className="px-5 py-3.5" title={`Every ${CIRCLES_PER_DEDUCTION} red circles in a month = 1 day's salary deducted`}>
+                    Red circles
+                    <span className="block normal-case font-normal tracking-normal">this month</span>
+                  </th>
                   <th className="px-5 py-3.5">MIS files</th>
                   <th className="px-5 py-3.5">Last sign-in</th>
                   {canManage && <th className="px-5 py-3.5 text-right">Actions</th>}
@@ -237,6 +245,21 @@ export function MsiStaffTable() {
                             )}
                           </td>
                         ))}
+                        <td className="px-5 py-3.5">
+                          {(() => {
+                            const c = circleOf.get(s.id);
+                            if (!c) return <span className="text-xs text-gray-400">—</span>;
+                            return (
+                              <Link href="/mis-circle" title={c.message} className="text-xs hover:underline">
+                                <span className={cn('font-bold', c.circles ? 'text-red-600' : 'text-emerald-600')}>{c.circles}</span>
+                                {c.pendingCircles > 0 && <span className="text-red-400"> +{c.pendingCircles}?</span>}
+                                <span className={cn('block text-[11px]', c.deductionDays ? 'text-red-600 font-medium' : 'text-gray-500')}>
+                                  {c.deductionDays ? `${c.deductionDays} day${c.deductionDays === 1 ? '' : 's'} salary cut` : `${c.untilNextDeduction} more = 1 day cut`}
+                                </span>
+                              </Link>
+                            );
+                          })()}
+                        </td>
                         <td className="px-5 py-3.5">
                           <button
                             onClick={() => setOpenMis(open ? null : s.id)}
@@ -282,7 +305,7 @@ export function MsiStaffTable() {
                       </tr>
                       {open && (
                         <tr>
-                          <td colSpan={canManage ? 6 : 5} className="px-5 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
+                          <td colSpan={canManage ? 7 : 6} className="px-5 pb-4 bg-gray-50/40 dark:bg-gray-900/20">
                             <MisSourcesPanel employeeId={s.id} sources={mine} canManage={canManage} />
                           </td>
                         </tr>

@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, FileSpreadsheet } from 'lucide-react';
 import api from '@/services/api';
 import { shortDay } from './misUi';
+import { useCircleMonth } from './circleApi';
 
 interface Summary {
   date: string;
@@ -20,6 +21,7 @@ export function MisSnapshot() {
     retry: false,
     refetchInterval: 5 * 60_000,
   });
+  const { data: circle } = useCircleMonth(null);
   if (isError || !data || data.expired || data.summary.totalEmployees === 0) return null;
   const s = data.summary;
   return (
@@ -35,6 +37,12 @@ export function MisSnapshot() {
         <span className="text-emerald-700 dark:text-emerald-400"><b>{s.submitted}</b> submitted</span>
         <span className="text-amber-700 dark:text-amber-400"><b>{s.incomplete}</b> incomplete</span>
         <span className="text-red-600 dark:text-red-400"><b>{s.notFilled}</b> not submitted</span>
+        {circle && (
+          <span className="text-gray-600 dark:text-gray-400">
+            · This month: <b className="text-red-600">{circle.totals.circles}</b> red circles,{' '}
+            <b className="text-red-600">{circle.totals.deductionDays}</b> salary day{circle.totals.deductionDays === 1 ? '' : 's'} to deduct
+          </span>
+        )}
       </div>
       <span className="ml-auto inline-flex items-center gap-1 text-sm font-medium text-primary">
         Open MIS Reports <ArrowRight className="w-4 h-4" />

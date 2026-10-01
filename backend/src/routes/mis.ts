@@ -16,6 +16,7 @@ import {
 } from "../services/misService";
 import { MisGraphError, buildMisAuthUrl } from "../services/misMicrosoft";
 import { getMisDaysForEmployee } from "../services/msiService";
+import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../services/misCircle";
 
 /**
  * MIS auto-check — /api/mis
@@ -30,13 +31,17 @@ import { getMisDaysForEmployee } from "../services/msiService";
  *   POST   /import                  { rows: [{ name, url, checkedBy?, approvedBy?, username? }] } (Admin+)
  *   POST   /check                   { employeeId? } re-read now                  (Admin+)
  *   POST   /me/check                re-read the caller's own MIS now             (any employee)
+ *   GET    /circle?month=YYYY-MM    monthly Circle Report (red circles, salary deduction)  (Admin+)
+ *   GET    /circle/export?month=    the same as an Excel file                    (Admin+)
+ *   PUT    /circle/mark             { employeeId, date, code|null, note? } override one cell (Admin+)
+ *   GET    /me/circle?month=        the caller's own row                          (any employee)
  */
 export const misRouter = Router();
 
 const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET as string;
 
 function handle(res: Response, e: unknown) {
-  if (e instanceof MisError || e instanceof MisGraphError) return res.status(e.status).json({ error: e.message });
+  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError) return res.status(e.status).json({ error: e.message });
   console.error("[MIS] request failed:", e);
   return res.status(500).json({ error: "Something went wrong. Please try again." });
 }
@@ -181,6 +186,62 @@ misRouter.post("/me/check", requireAuth, async (req, res) => {
     await withinMs(runMisChecks(req.user!.companyId, { employeeId: req.user!.employeeId }), 20_000);
     const misDays = await getMisDaysForEmployee({ employeeId: req.user!.employeeId, companyId: req.user!.companyId });
     return res.json({ misDays });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Circle Report
+// ---------------------------------------------------------------------------
+
+const monthParam = (req: Request) => (typeof req.query.month === "string" ? req.query.month : undefined);
+
+misRouter.get("/circle", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    return res.json(await getCircleMonth(req.user!.companyId, monthParam(req)));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.get("/circle/export", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    const data = await getCircleMonth(req.user!.companyId, monthParam(req));
+    const file = circleWorkbook(data);
+    const name = `MIS CIRCLE REPORT ${data.month}.xlsx`;
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Length", String(file.length));
+    res.setHeader("Content-Disposition", `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(name)}`);
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.end(file);
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+const markSchema = z.object({
+  employeeId: z.string().uuid(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  code: z.string().max(5).nullable(),
+  note: z.string().max(300).nullish(),
+});
+
+misRouter.put("/circle/mark", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = markSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid request." });
+  try {
+    await setCircleMark(req.user!.companyId, req.user!.employeeId, body.data);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.get("/me/circle", requireAuth, async (req, res) => {
+  try {
+    const data = await getCircleMonth(req.user!.companyId, monthParam(req), { employeeId: req.user!.employeeId });
+    return res.json({ ...data, row: data.rows[0] ?? null });
   } catch (e) {
     return handle(res, e);
   }

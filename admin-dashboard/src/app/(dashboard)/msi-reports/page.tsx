@@ -21,6 +21,8 @@ import api from '@/services/api';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { StatCard } from '@/components/dashboard/StatCard';
 import { cn } from '@/utils/cn';
+import Link from 'next/link';
+import { CIRCLES_PER_DEDUCTION, useCircleMonth, type CircleSummary } from '@/components/mis/circleApi';
 import {
   BlankList,
   MisLegend,
@@ -133,6 +135,10 @@ export default function MisReportsPage() {
     queryFn: async () => (await api.get<Overview>('/msi/admin/reports', { params: date ? { date } : {} })).data,
   });
 
+  // Red circles so far this month (MIS Circle Report) for each person.
+  const { data: circle } = useCircleMonth(data ? data.date.slice(0, 7) : null);
+  const circleOf = useMemo(() => new Map((circle?.rows ?? []).map((r) => [r.employeeId, r.summary])), [circle]);
+
   const recheck = useMutation({
     mutationFn: () => api.post('/mis/check', {}),
     onSettled: () => refetch(),
@@ -218,6 +224,9 @@ export default function MisReportsPage() {
                 <span className={cn('block text-[11px] font-normal', selected === d ? 'text-white/80' : 'text-gray-500')}>{shortDay(d)}</span>
               </button>
             ))}
+            <Link href="/mis-circle" className="btn-secondary flex items-center gap-2" title="Monthly red circles and salary deduction">
+              <XCircle className="w-4 h-4 text-red-500" /> Circle Report
+            </Link>
             <button
               onClick={() => recheck.mutate()}
               disabled={recheck.isPending}
@@ -349,6 +358,7 @@ export default function MisReportsPage() {
               date={data.date}
               empty="Nobody is in red for this day."
               tz={data.timezone}
+              circleOf={circleOf}
             />
           )}
 
@@ -361,6 +371,7 @@ export default function MisReportsPage() {
               date={data.date}
               empty="Nobody has partly-filled MIS for this day."
               tz={data.timezone}
+              circleOf={circleOf}
             />
           )}
 
@@ -373,6 +384,7 @@ export default function MisReportsPage() {
               date={data.date}
               empty="Nobody has fully submitted for this day yet."
               tz={data.timezone}
+              circleOf={circleOf}
               onDownload={download}
               downloadingId={downloadingId}
               onViewMessage={setViewing}
@@ -380,7 +392,7 @@ export default function MisReportsPage() {
           )}
 
           {filter === 'all' && data.dayOff.length > 0 && (
-            <PeopleSection tone="gray" title="Day off" hint="Sunday, nothing filled — not counted." rows={data.dayOff} date={data.date} empty="" tz={data.timezone} />
+            <PeopleSection tone="gray" title="Day off" hint="Sunday, nothing filled — not counted." rows={data.dayOff} date={data.date} empty="" tz={data.timezone} circleOf={circleOf} />
           )}
 
           {show('important') && important.length > 0 && (
@@ -464,7 +476,9 @@ function PeopleSection({
   onDownload,
   downloadingId,
   onViewMessage,
+  circleOf,
 }: {
+  circleOf?: Map<string, CircleSummary>;
   tone: 'green' | 'amber' | 'red' | 'gray';
   title: string;
   hint: string;
@@ -497,6 +511,7 @@ function PeopleSection({
               onDownload={onDownload}
               downloading={!!row.report && downloadingId === row.report.id}
               onViewMessage={onViewMessage}
+              circle={circleOf?.get(row.employeeId)}
             />
           ))}
         </ul>
@@ -512,7 +527,9 @@ function PersonRow({
   onDownload,
   downloading,
   onViewMessage,
+  circle,
 }: {
+  circle?: CircleSummary;
   row: PersonDay;
   date: string;
   tz: string;
@@ -566,6 +583,16 @@ function PersonRow({
         <div className="flex flex-col items-end gap-1.5 ml-auto">
           <StatusBadge status={status} blanks={blanks.length} />
           {row.submitted && row.submittedAt && <span className="text-[11px] text-gray-500">filled by {formatTime(row.submittedAt, tz)}</span>}
+          {circle && (circle.circles > 0 || circle.pendingCircles > 0) && (
+            <Link
+              href="/mis-circle"
+              title={circle.message}
+              className={cn('text-[11px] font-medium hover:underline', circle.deductionDays ? 'text-red-600' : 'text-gray-500')}
+            >
+              {circle.circles} red circle{circle.circles === 1 ? '' : 's'} this month
+              {circle.deductionDays ? ` · ${circle.deductionDays} day salary cut` : ` · ${CIRCLES_PER_DEDUCTION - (circle.circles % CIRCLES_PER_DEDUCTION)} more = 1 day cut`}
+            </Link>
+          )}
           {row.report && (
             <div className="flex items-center gap-2">
               {row.report.hasImportantMessage && onViewMessage && (
