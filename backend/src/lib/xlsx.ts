@@ -1,8 +1,9 @@
 /**
- * A tiny, dependency-free .xlsx writer — enough for one formatted sheet
+ * A tiny, dependency-free .xlsx writer — enough for formatted sheets
  * (text/number cells, fills, bold, borders, merged cells, column widths,
- * frozen panes). Used for the MIS Circle Report download. Files are stored
- * in the zip uncompressed, which every Excel version opens fine.
+ * frozen panes, filter buttons, several tabs). Used for the MIS Circle Report
+ * download. Files are stored in the zip uncompressed, which every Excel
+ * version opens fine.
  */
 
 export interface XlsxStyle {
@@ -33,6 +34,16 @@ export interface XlsxSheet {
   /** Freeze rows above / columns left of this cell (1-based). */
   freeze?: { row: number; col: number };
   rowHeights?: Record<number, number>;
+  /** Filter buttons on a header row, e.g. "A4:H40". */
+  autoFilter?: string;
+  /** Tab colour, "RRGGBB". */
+  tabColor?: string;
+}
+
+/** Several tabs sharing one list of styles. */
+export interface XlsxBook {
+  styles: XlsxStyle[];
+  sheets: Omit<XlsxSheet, "styles">[];
 }
 
 const esc = (s: string) =>
@@ -84,7 +95,7 @@ function stylesXml(styles: XlsxStyle[]): string {
   );
 }
 
-function sheetXml(sheet: XlsxSheet): string {
+function sheetXml(sheet: Omit<XlsxSheet, "styles">, selected: boolean): string {
   const rows = sheet.rows
     .map((row, ri) => {
       const r = ri + 1;
@@ -108,23 +119,32 @@ function sheetXml(sheet: XlsxSheet): string {
     : "";
   const f = sheet.freeze;
   const view = f
-    ? `<sheetViews><sheetView workbookViewId="0"><pane xSplit="${f.col - 1}" ySplit="${f.row - 1}" topLeftCell="${colName(f.col)}${f.row}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews>`
-    : '<sheetViews><sheetView workbookViewId="0"/></sheetViews>';
+    ? `<sheetViews><sheetView${selected ? ' tabSelected="1"' : ""} workbookViewId="0">${freezePane(f)}</sheetView></sheetViews>`
+    : `<sheetViews><sheetView${selected ? ' tabSelected="1"' : ""} workbookViewId="0"/></sheetViews>`;
   const merges = sheet.merges?.length
     ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map((m) => `<mergeCell ref="${m}"/>`).join("")}</mergeCells>`
     : "";
   return (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-    '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
+    `<sheetPr>${sheet.tabColor ? `<tabColor rgb="FF${sheet.tabColor}"/>` : ""}<pageSetUpPr fitToPage="1"/></sheetPr>` +
     view +
     cols +
     `<sheetData>${rows}</sheetData>` +
+    (sheet.autoFilter ? `<autoFilter ref="${sheet.autoFilter}"/>` : "") +
     merges +
     '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>' +
     '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>' +
     "</worksheet>"
   );
+}
+
+function freezePane(f: { row: number; col: number }): string {
+  const x = f.col - 1;
+  const y = f.row - 1;
+  if (x <= 0 && y <= 0) return "";
+  const pane = x > 0 && y > 0 ? "bottomRight" : y > 0 ? "bottomLeft" : "topRight";
+  return `<pane${x > 0 ? ` xSplit="${x}"` : ""}${y > 0 ? ` ySplit="${y}"` : ""} topLeftCell="${colName(f.col)}${f.row}" activePane="${pane}" state="frozen"/>`;
 }
 
 // --- zip (stored, no compression) ------------------------------------------
@@ -197,7 +217,23 @@ function zip(files: { name: string; data: Buffer }[]): Buffer {
 
 /** Builds a single-sheet .xlsx file. */
 export function buildXlsx(sheet: XlsxSheet): Buffer {
-  const name = esc(sheet.name.replace(/[\\/?*[\]:]/g, " ").slice(0, 31) || "Sheet1");
+  const { styles, ...rest } = sheet;
+  return buildWorkbook({ styles, sheets: [rest] });
+}
+
+const sheetName = (n: string, i: number) => n.replace(/[\\/?*[\]:]/g, " ").trim().slice(0, 31) || `Sheet${i + 1}`;
+
+/** Builds an .xlsx file with one tab per sheet (first tab opens first). */
+export function buildWorkbook(book: XlsxBook): Buffer {
+  if (book.sheets.length === 0) throw new Error("A workbook needs at least one sheet.");
+  // Excel refuses duplicate tab names (case-insensitive).
+  const used = new Set<string>();
+  const names = book.sheets.map((sh, i) => {
+    let n = sheetName(sh.name, i);
+    for (let k = 2; used.has(n.toLowerCase()); k++) n = `${sheetName(sh.name, i).slice(0, 27)} (${k})`;
+    used.add(n.toLowerCase());
+    return n;
+  });
   const files = [
     {
       name: "[Content_Types].xml",
@@ -207,7 +243,9 @@ export function buildXlsx(sheet: XlsxSheet): Buffer {
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
         '<Default Extension="xml" ContentType="application/xml"/>' +
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
-        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        book.sheets
+          .map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+          .join("") +
         '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
         "</Types>",
     },
@@ -224,7 +262,20 @@ export function buildXlsx(sheet: XlsxSheet): Buffer {
       data:
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-        `<sheets><sheet name="${name}" sheetId="1" r:id="rId1"/></sheets>` +
+        '<bookViews><workbookView activeTab="0"/></bookViews>' +
+        `<sheets>${names.map((n, i) => `<sheet name="${esc(n)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets>` +
+        (book.sheets.some((s) => s.autoFilter)
+          ? `<definedNames>${book.sheets
+              .map((s, i) =>
+                s.autoFilter
+                  ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${esc(names[i].replace(/'/g, "''"))}'!${s.autoFilter
+                      .split(":")
+                      .map((c) => c.replace(/^([A-Z]+)(\d+)$/, "$$$1$$$2"))
+                      .join(":")}</definedName>`
+                  : "",
+              )
+              .join("")}</definedNames>`
+          : "") +
         "</workbook>",
     },
     {
@@ -232,12 +283,14 @@ export function buildXlsx(sheet: XlsxSheet): Buffer {
       data:
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
-        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+        book.sheets
+          .map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`)
+          .join("") +
+        `<Relationship Id="rId${book.sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
         "</Relationships>",
     },
-    { name: "xl/styles.xml", data: stylesXml(sheet.styles) },
-    { name: "xl/worksheets/sheet1.xml", data: sheetXml(sheet) },
+    { name: "xl/styles.xml", data: stylesXml(book.styles) },
+    ...book.sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: sheetXml(sh, i === 0) })),
   ];
   return zip(files.map((f) => ({ name: f.name, data: Buffer.from(f.data, "utf8") })));
 }

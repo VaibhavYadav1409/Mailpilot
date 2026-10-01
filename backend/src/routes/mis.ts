@@ -32,9 +32,10 @@ import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../s
  *   POST   /check                   { employeeId? } re-read now                  (Admin+)
  *   POST   /me/check                re-read the caller's own MIS now             (any employee)
  *   GET    /circle?month=YYYY-MM    monthly Circle Report (red circles, salary deduction)  (Admin+)
- *   GET    /circle/export?month=    the same as an Excel file                    (Admin+)
+ *   GET    /circle/export?month=&employeeId=  Excel file (everyone, or one person) (Admin+)
  *   PUT    /circle/mark             { employeeId, date, code|null, note? } override one cell (Admin+)
  *   GET    /me/circle?month=        the caller's own row                          (any employee)
+ *   GET    /me/circle/export?month= the caller's own Excel file                   (any employee)
  */
 export const misRouter = Router();
 
@@ -205,16 +206,27 @@ misRouter.get("/circle", requireAuth, requireMinRole("ADMIN"), async (req, res) 
   }
 });
 
+/** Sends the month (everyone, or one person) as an .xlsx download. */
+async function sendCircleExcel(req: Request, res: Response, employeeId?: string) {
+  const data = await getCircleMonth(req.user!.companyId, monthParam(req), { employeeId });
+  if (employeeId && data.rows.length === 0) throw new CircleError(404, "This person isn't on the Circle Report.");
+  const person = employeeId ? data.rows[0].name : undefined;
+  const file = circleWorkbook(data, { person });
+  const safe = (t: string) => t.replace(/[^\w .-]+/g, " ").replace(/\s+/g, " ").trim();
+  const name = `MIS CIRCLE REPORT ${data.month}${person ? ` - ${safe(person.toUpperCase())}` : ""}.xlsx`;
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Length", String(file.length));
+  res.setHeader("Content-Disposition", `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(name)}`);
+  res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+  res.setHeader("Cache-Control", "private, no-store");
+  return res.end(file);
+}
+
 misRouter.get("/circle/export", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
   try {
-    const data = await getCircleMonth(req.user!.companyId, monthParam(req));
-    const file = circleWorkbook(data);
-    const name = `MIS CIRCLE REPORT ${data.month}.xlsx`;
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Length", String(file.length));
-    res.setHeader("Content-Disposition", `attachment; filename="${name}"; filename*=UTF-8''${encodeURIComponent(name)}`);
-    res.setHeader("Cache-Control", "private, no-store");
-    return res.end(file);
+    const employeeId = typeof req.query.employeeId === "string" && req.query.employeeId ? req.query.employeeId : undefined;
+    if (employeeId && !z.string().uuid().safeParse(employeeId).success) return res.status(400).json({ error: "Invalid person." });
+    return await sendCircleExcel(req, res, employeeId);
   } catch (e) {
     return handle(res, e);
   }
@@ -242,6 +254,14 @@ misRouter.get("/me/circle", requireAuth, async (req, res) => {
   try {
     const data = await getCircleMonth(req.user!.companyId, monthParam(req), { employeeId: req.user!.employeeId });
     return res.json({ ...data, row: data.rows[0] ?? null });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.get("/me/circle/export", requireAuth, async (req, res) => {
+  try {
+    return await sendCircleExcel(req, res, req.user!.employeeId);
   } catch (e) {
     return handle(res, e);
   }

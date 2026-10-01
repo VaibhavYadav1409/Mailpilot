@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, CircleAlert, Download, IndianRupee, Loader2, Search, Users, X } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Clock, Download, FileSpreadsheet, IndianRupee, Loader2, Search, Users, X } from 'lucide-react';
 import api from '@/services/api';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { StatCard } from '@/components/dashboard/StatCard';
@@ -11,7 +11,11 @@ import { useAuthStore } from '@/store/authStore';
 import {
   CIRCLES_PER_DEDUCTION,
   TONE_CELL,
+  deductionCalculation,
+  dmy,
   downloadCircleExcel,
+  ordinal,
+  redCircleEntries,
   monthLabel,
   shiftMonth,
   useCircleMonth,
@@ -25,7 +29,8 @@ export default function MisCirclePage() {
   const [search, setSearch] = useState('');
   const [onlyRed, setOnlyRed] = useState(false);
   const [editing, setEditing] = useState<{ row: CircleRow; date: string } | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [person, setPerson] = useState<CircleRow | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
   const [error, setError] = useState('');
   const { data, isLoading, isError, refetch } = useCircleMonth(month);
   const role = useAuthStore((s) => s.user?.role);
@@ -37,16 +42,17 @@ export default function MisCirclePage() {
     .filter((r) => !search.trim() || r.name.toLowerCase().includes(search.trim().toLowerCase()))
     .filter((r) => !onlyRed || r.summary.circles + r.summary.pendingCircles > 0);
 
-  const download = async () => {
+  /** Whole sheet, or one person's when `row` is given. */
+  const download = async (row?: CircleRow) => {
     if (!current) return;
-    setDownloading(true);
+    setDownloading(row?.employeeId ?? 'all');
     setError('');
     try {
-      await downloadCircleExcel(current);
+      await downloadCircleExcel(current, row ? { id: row.employeeId, name: row.name } : undefined);
     } catch {
       setError('Could not download the Excel file. Please try again.');
     } finally {
-      setDownloading(false);
+      setDownloading(null);
     }
   };
 
@@ -67,14 +73,29 @@ export default function MisCirclePage() {
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
-            <button onClick={download} disabled={!data || downloading} className="btn-primary flex items-center gap-2">
-              {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Download Excel
+            <button onClick={() => download()} disabled={!data || !!downloading} className="btn-primary flex items-center gap-2" title="Excel with 5 tabs: Salary Deduction, Circle Sheet, Red Circles (why each is red), Day by Day, Rules & Codes">
+              {downloading === 'all' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Download Excel (all staff)
             </button>
           </div>
         }
       />
 
       {error && <div className="glass-card px-5 py-3 text-sm text-red-600">{error}</div>}
+
+      {data && (
+        <div
+          className={cn(
+            'glass-card px-5 py-3 flex items-center gap-3 text-sm',
+            data.status.final ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300',
+          )}
+        >
+          {data.status.final ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <Clock className="w-4 h-4 shrink-0" />}
+          <span className="font-medium">{data.status.text}</span>
+          <span className="ml-auto text-xs text-gray-500 hidden md:inline">
+            Excel tabs: Salary Deduction · Circle Sheet · Red Circles (why each is red) · Day by Day · Rules &amp; Codes
+          </span>
+        </div>
+      )}
 
       {data && <RulesCard data={data} />}
 
@@ -160,7 +181,24 @@ export default function MisCirclePage() {
                   <tr key={r.employeeId} className="group">
                     <td className="sticky left-0 z-10 bg-white dark:bg-gray-950 px-2 py-1.5 border-b border-gray-100 dark:border-gray-900 text-gray-400">{i + 1}</td>
                     <td className="sticky left-8 z-10 bg-white dark:bg-gray-950 px-2 py-1.5 border-b border-gray-100 dark:border-gray-900">
-                      <div className="font-medium text-[12.5px] whitespace-nowrap">{r.name}</div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => setPerson(r)}
+                          className="font-medium text-[12.5px] whitespace-nowrap hover:text-primary hover:underline text-left"
+                          title="See every red circle, the reason and how the salary deduction is worked out"
+                        >
+                          {r.name}
+                        </button>
+                        <button
+                          onClick={() => download(r)}
+                          disabled={!!downloading}
+                          className="text-gray-400 hover:text-primary opacity-60 group-hover:opacity-100"
+                          title={`Download ${r.name}'s Excel for ${current ? monthLabel(current) : 'this month'}`}
+                          aria-label={`Download ${r.name}'s Excel`}
+                        >
+                          {downloading === r.employeeId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileSpreadsheet className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
                       {!r.hasMis && <div className="text-[10px] text-amber-600">No MIS file linked</div>}
                     </td>
                     {data.days.map((d) => {
@@ -214,6 +252,15 @@ export default function MisCirclePage() {
       )}
 
       {editing && data && <CellEditor data={data} row={editing.row} date={editing.date} onClose={() => setEditing(null)} />}
+      {person && data && (
+        <PersonPanel
+          data={data}
+          row={data.rows.find((r) => r.employeeId === person.employeeId) ?? person}
+          downloading={downloading === person.employeeId}
+          onDownload={() => download(person)}
+          onClose={() => setPerson(null)}
+        />
+      )}
     </div>
   );
 }
@@ -223,9 +270,9 @@ function cellTitle(r: CircleRow, date: string, data: CircleMonth, def?: CircleCo
   if (!c?.code) return date === data.today ? 'Today — checked tomorrow' : date > data.today ? '' : 'No result (MIS not linked or not read that day)';
   const parts = [`${date.split('-').reverse().join('-')}: ${c.code} — ${def?.label ?? ''}`, def?.meaning ?? ''];
   if (c.pending) parts.push('Pending: yesterday — still changes if the MIS is filled today.');
-  if (c.source === 'MANUAL') parts.push(`Set by an admin${c.autoCode ? ` (the check said ${c.autoCode})` : ''}.`);
-  if (c.source === 'CALENDAR') parts.push('From the calendar.');
-  if (c.note) parts.push(`Note: ${c.note}`);
+  if (c.reason && c.source !== 'CALENDAR') parts.push(`Why: ${c.reason}`);
+  if (c.markedBy) parts.push(`Marked by: ${c.markedBy}`);
+  if (c.note && c.source !== 'MANUAL') parts.push(`Note: ${c.note}`);
   return parts.filter(Boolean).join('\n');
 }
 
@@ -282,7 +329,13 @@ function RulesCard({ data }: { data: CircleMonth }) {
               </li>
             </ul>
             <p className="text-xs text-gray-500 mt-3">
-              Example: CM on 3rd, 9th and 21st = 3 red circles = 1 day's salary deducted. 5 circles = still 1 day; the 6th makes it 2 days.
+              Example: CM on 3rd, 9th and 21st = 3 red circles = 1 day's salary deducted. 1 or 2 circles = no deduction yet. 5 circles = still 1 day; the 6th makes it
+              2 days.
+            </p>
+            <p className="text-xs text-gray-500 mt-2">
+              Click a name to see each of their red circles with the reason. The Excel download (all staff, or one person via the
+              <FileSpreadsheet className="inline w-3 h-3 mx-1" />
+              icon) has the same details on 5 tabs.
             </p>
           </div>
         </div>
@@ -318,6 +371,12 @@ function CellEditor({ data, row, date, onClose }: { data: CircleMonth; row: Circ
               {cell?.source === 'AUTO' && ' (from the MIS check)'}
               {cell?.source === 'CALENDAR' && ' (from the calendar)'}
             </p>
+            {cell?.reason && cell.source !== 'CALENDAR' && (
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-2 rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-2">
+                <b>Why:</b> {cell.reason}
+                {cell.markedBy && <span className="block text-gray-400 mt-0.5">Marked by: {cell.markedBy}</span>}
+              </p>
+            )}
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700" aria-label="Close">
             <X className="w-5 h-5" />
@@ -356,6 +415,115 @@ function CellEditor({ data, row, date, onClose }: { data: CircleMonth; row: Circ
           {save.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
         </div>
         {save.isError && <p className="text-xs text-red-600">{(save.error as any)?.response?.data?.error ?? 'Could not save.'}</p>}
+      </div>
+    </div>
+  );
+}
+
+/** One person's month: every red circle, why it is red, and the salary maths. */
+function PersonPanel({
+  data,
+  row,
+  downloading,
+  onDownload,
+  onClose,
+}: {
+  data: CircleMonth;
+  row: CircleRow;
+  downloading: boolean;
+  onDownload: () => void;
+  onClose: () => void;
+}) {
+  const entries = redCircleEntries(row, data);
+  const triggers = entries.filter((e) => e.triggersDeduction);
+  const s = row.summary;
+  const counts: Record<string, number> = {};
+  for (const d of data.days) {
+    const c = row.cells[d.date]?.code;
+    if (c) counts[c] = (counts[c] ?? 0) + 1;
+  }
+  const label = (code: string) => data.codes.find((c) => c.code === code)?.label ?? code;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="glass-card w-full max-w-2xl max-h-[88vh] overflow-auto p-6 space-y-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-gray-400">{monthLabel(data.month)} · {data.status.final ? 'final' : 'in progress'}</p>
+            <h3 className="text-lg font-semibold">{row.name}</h3>
+            <p className="text-xs text-gray-500">Login: {row.username}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={onDownload} disabled={downloading} className="btn-secondary text-sm flex items-center gap-2">
+              {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />} Download Excel
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-700" aria-label="Close">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <div className={cn('rounded-xl p-3 text-center', s.circles ? 'bg-red-50 dark:bg-red-500/10' : 'bg-emerald-50 dark:bg-emerald-500/10')}>
+            <div className={cn('text-2xl font-bold', s.circles ? 'text-red-600' : 'text-emerald-600')}>{s.circles}</div>
+            <div className="text-xs text-gray-500">red circles{s.pendingCircles ? ` (+${s.pendingCircles} pending)` : ''}</div>
+          </div>
+          <div className={cn('rounded-xl p-3 text-center', s.deductionDays ? 'bg-red-600 text-white' : 'bg-gray-50 dark:bg-gray-900')}>
+            <div className="text-2xl font-bold">{s.deductionDays}</div>
+            <div className={cn('text-xs', s.deductionDays ? 'text-red-100' : 'text-gray-500')}>salary day{s.deductionDays === 1 ? '' : 's'} deducted</div>
+          </div>
+          <div className="rounded-xl p-3 text-center bg-gray-50 dark:bg-gray-900">
+            <div className="text-2xl font-bold text-gray-700 dark:text-gray-200">{s.untilNextDeduction}</div>
+            <div className="text-xs text-gray-500">more circle{s.untilNextDeduction === 1 ? '' : 's'} = {s.deductionDays + 1} day{s.deductionDays + 1 === 1 ? '' : 's'}</div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-4 text-sm space-y-1.5">
+          <p>
+            <b>Calculation:</b> {deductionCalculation(s.circles)}
+          </p>
+          {triggers.length > 0 && (
+            <p>
+              <b>Which circle cost which day:</b>{' '}
+              {triggers.map((e, i) => `Day ${i + 1} — ${ordinal(e.number!)} circle on ${dmy(e.date)}`).join(' · ')}
+            </p>
+          )}
+          <p className="text-gray-600 dark:text-gray-400">{s.message}</p>
+          <p className="text-xs text-gray-500">
+            Month so far: {counts.NC ?? 0} submitted · {counts.IN ?? 0} incomplete (no circle)
+            {['OL', 'A', 'ON', 'SO', 'H'].filter((c) => counts[c]).map((c) => ` · ${counts[c]} ${label(c).toLowerCase()}`).join('')}
+          </p>
+        </div>
+
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Every red circle and why</p>
+          {entries.length === 0 ? (
+            <p className="text-sm text-emerald-600">No red circles this month.</p>
+          ) : (
+            <ol className="space-y-2">
+              {entries.map((e) => (
+                <li
+                  key={e.date}
+                  className={cn(
+                    'rounded-lg border px-3 py-2 text-sm',
+                    e.triggersDeduction ? 'border-red-400 bg-red-50 dark:bg-red-500/10' : e.pending ? 'border-dashed border-red-300' : 'border-gray-200 dark:border-gray-800',
+                  )}
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={cn('inline-flex min-w-7 h-6 px-1.5 items-center justify-center rounded-full text-xs font-bold', e.pending ? 'border border-dashed border-red-400 text-red-500' : 'bg-red-600 text-white')}>
+                      {e.pending ? '?' : e.number}
+                    </span>
+                    <b>{new Date(`${e.date}T00:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</b>
+                    <span className={cn('text-xs', e.triggersDeduction ? 'text-red-700 dark:text-red-300 font-semibold' : 'text-gray-500')}>{e.effect}</span>
+                  </div>
+                  <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                    <b>Why:</b> {e.reason}
+                  </p>
+                  <p className="text-[11px] text-gray-400">Marked by: {e.markedBy}{e.note ? ` · Note: ${e.note}` : ''}</p>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
       </div>
     </div>
   );

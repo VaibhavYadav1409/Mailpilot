@@ -42,6 +42,7 @@ const STATEMENTS: { migration: string; sql: string }[] = [
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$`,
   },
+  { migration: "20261003120000_mis_circle_reason", sql: `ALTER TABLE "MisCircleMark" ADD COLUMN IF NOT EXISTS "reason" TEXT` },
 ];
 
 export async function ensureSchema(): Promise<void> {

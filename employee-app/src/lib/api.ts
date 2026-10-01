@@ -425,8 +425,13 @@ export interface MyCircle {
   days: { date: string; day: number; dow: string; isOff: boolean }[];
   codes: { code: string; label: string; meaning: string; isCircle: boolean; tone: string }[];
   rules: string[];
+  status?: { final: boolean; text: string };
   row: {
-    cells: Record<string, { code: string | null; source: string | null; note: string | null; pending: boolean }>;
+    name?: string;
+    cells: Record<
+      string,
+      { code: string | null; source: string | null; note: string | null; pending: boolean; reason?: string | null; markedBy?: string | null }
+    >;
     summary: { circles: number; pendingCircles: number; deductionDays: number; untilNextDeduction: number; message: string };
   } | null;
 }
@@ -509,6 +514,27 @@ export const msiApi = {
   checkMis: () => request<{ misDays: MisDayResult[] }>("/api/mis/me/check", { method: "POST" }),
   /** My row of the monthly MIS Circle Report. */
   myCircle: (month?: string) => get<MyCircle>(`/api/mis/me/circle${month ? `?month=${month}` : ""}`),
+  /** Saves my month of the Circle Report as an Excel file (circles, reasons, salary deduction). */
+  async downloadMyCircle(month: string) {
+    const doFetch = () => {
+      const headers = new Headers();
+      if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+      return fetch(`${API_URL}/api/mis/me/circle/export?month=${encodeURIComponent(month)}`, { headers, credentials: "include" });
+    };
+    let res = await doFetch();
+    if (res.status === 401 && (await tryRefresh())) res = await doFetch();
+    if (!res.ok) throw new ApiError("Couldn't download the Circle Report. Please try again.", res.status);
+    const cd = res.headers.get("Content-Disposition") ?? "";
+    const name = /filename\*=UTF-8''([^;]+)/.exec(cd)?.[1];
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name ? decodeURIComponent(name) : `MIS CIRCLE REPORT ${month}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   recent: () => get<MsiRecent>("/api/msi/reports/my-reports"),
   submit: (body: MsiUploadBody, onProgress?: (pct: number) => void) =>
     sendWithProgress<{ report: MsiReport }>("POST", "/api/msi/reports", body, onProgress).then((d) => d.report),

@@ -210,10 +210,34 @@ const CELL_TONE: Record<string, string> = {
 
 /** This month's red circles (MIS not submitted) and what they cost. */
 function CircleCard({ data }: { data: MyCircle }) {
+  const [downloading, setDownloading] = useState(false);
   const row = data.row;
   if (!row) return null;
   const s = row.summary;
   const tone = data.codes.reduce<Record<string, string>>((m, c) => ((m[c.code] = c.tone), m), {});
+  const isCircle = new Set(data.codes.filter((c) => c.isCircle).map((c) => c.code));
+  const dmy = (d: string) => d.split("-").reverse().join("-");
+  const ord = (n: number) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th"}`;
+  // Every red circle in date order, numbered like the Excel sheet.
+  let n = 0;
+  const circles = data.days
+    .filter((d) => isCircle.has(row.cells[d.date]?.code ?? ""))
+    .map((d) => {
+      const c = row.cells[d.date];
+      if (c.pending) return { date: d.date, number: null as number | null, triggers: false, reason: c.reason, note: c.note };
+      n++;
+      return { date: d.date, number: n, triggers: n % 3 === 0, reason: c.reason, note: c.note };
+    });
+  const download = async () => {
+    setDownloading(true);
+    try {
+      await msiApi.downloadMyCircle(data.month);
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Couldn't download the Circle Report.");
+    } finally {
+      setDownloading(false);
+    }
+  };
   return (
     <Card className={`p-5 space-y-3 ${s.deductionDays ? "border-red-200 bg-red-50/60" : ""}`}>
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
@@ -225,13 +249,22 @@ function CircleCard({ data }: { data: MyCircle }) {
         <p className={`text-sm font-medium ${s.deductionDays ? "text-red-700" : "text-muted-foreground"}`}>
           Salary deduction: {s.deductionDays} day{s.deductionDays === 1 ? "" : "s"}
         </p>
+        <Button size="sm" variant="outline" className="ml-auto" onClick={download} disabled={downloading}>
+          {downloading ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <FileSpreadsheet className="w-4 h-4 mr-1.5" />}
+          Download my Excel
+        </Button>
       </div>
       <p className="text-sm text-muted-foreground">{s.message}</p>
+      {data.status && <p className={`text-xs ${data.status.final ? "text-green-700" : "text-amber-700"}`}>{data.status.text}</p>}
       <div className="flex flex-wrap gap-1">
         {data.days.map((d) => {
           const c = row.cells[d.date];
           return (
-            <div key={d.date} className="text-center" title={c?.code ? `${d.date.split("-").reverse().join("-")}: ${c.code}${c.pending ? " (pending)" : ""}${c.note ? ` — ${c.note}` : ""}` : d.date}>
+            <div
+              key={d.date}
+              className="text-center"
+              title={c?.code ? `${dmy(d.date)}: ${c.code}${c.pending ? " (pending)" : ""}${c.reason && c.source !== "CALENDAR" ? `\nWhy: ${c.reason}` : ""}${c.note ? `\nNote: ${c.note}` : ""}` : dmy(d.date)}
+            >
               <div className="text-[9px] text-muted-foreground">{d.day}</div>
               <div className={`w-7 h-6 rounded text-[9px] flex items-center justify-center ${c?.code ? CELL_TONE[tone[c.code]] ?? "" : "bg-muted/40"} ${c?.pending ? "outline-dashed outline-1 outline-red-400" : ""}`}>
                 {c?.code ?? ""}
@@ -240,9 +273,25 @@ function CircleCard({ data }: { data: MyCircle }) {
           );
         })}
       </div>
+      {circles.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Your red circles and why</p>
+          <ol className="space-y-1">
+            {circles.map((c) => (
+              <li key={c.date} className={`text-xs rounded-md border px-2.5 py-1.5 ${c.triggers ? "border-red-300 bg-red-100/60" : c.number === null ? "border-dashed border-red-300" : ""}`}>
+                <b>{c.number === null ? "Pending" : `${ord(c.number)} circle`}</b> · {dmy(c.date)}
+                {c.triggers && <span className="text-red-700 font-semibold"> → {ord(c.number! / 3)} day's salary deducted</span>}
+                {c.number === null && <span className="text-red-600"> — fill this day's MIS today and it won't count</span>}
+                {c.reason && <span className="block text-muted-foreground mt-0.5">Why: {c.reason}</span>}
+                {c.note && <span className="block text-muted-foreground">Note: {c.note}</span>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       <p className="text-xs text-muted-foreground">
-        CM = red circle (MIS not submitted). Every 3 red circles in a month = 1 day's salary deducted — they don't need to be in a row. The count
-        restarts on the 1st. Leave, on duty, Sundays and 2nd/4th Saturdays never count.
+        CM = red circle (MIS not submitted). Every 3 red circles in a month = 1 day's salary deducted — they don't need to be in a row; 1 or 2 circles
+        means no deduction yet. The count restarts on the 1st. Leave, on duty, Sundays and 2nd/4th Saturdays never count.
       </p>
     </Card>
   );
