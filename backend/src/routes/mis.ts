@@ -19,6 +19,20 @@ import { getMisDaysForEmployee } from "../services/msiService";
 import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../services/misCircle";
 import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, listHolidays, setHoliday } from "../services/workCalendar";
 import { emitToCompany } from "../sockets";
+import {
+  MisEmailError,
+  bulkSetEmails,
+  getEmailSettings,
+  listRecipients,
+  previewEmail,
+  recentEmailLog,
+  rotateCronToken,
+  runMisEmails,
+  senderStatus,
+  setRecipientEmail,
+  triggerFromCron,
+  updateEmailSettings,
+} from "../services/misEmail";
 
 /**
  * MIS auto-check — /api/mis
@@ -41,13 +55,23 @@ import { emitToCompany } from "../sockets";
  *   GET    /holidays?year=          NSE trading holidays + company holidays      (any employee)
  *   PUT    /holidays                { date, name?, isOff } add / switch a holiday  (Admin+)
  *   DELETE /holidays/:date          back to the default for that date            (Admin+)
+ *   GET    /email                   nightly email: settings, sender, recipients, cron URL (Admin+)
+ *   PUT    /email/settings          { enabled, sendTime, audience, skipOffDays, hrSummary, hrEmails, subject, intro, footer }
+ *   PUT    /email/recipients/:id    { email|null } one person's email address     (Admin+)
+ *   POST   /email/recipients/bulk   { rows: [{ name, email }] }                   (Admin+)
+ *   GET    /email/preview?employeeId=  the email that person would get now     (Admin+)
+ *   POST   /email/test              { to } one sample email                      (Admin+)
+ *   POST   /email/send-now          send to everyone now                         (Admin+)
+ *   POST   /email/cron-token        new secret link (old one stops working)      (Admin+)
+ *   GET    /email/log               what was sent                                (Admin+)
+ *   GET|POST /email/cron/:token     for cron-job.org — no login; the token is the secret
  */
 export const misRouter = Router();
 
 const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET as string;
 
 function handle(res: Response, e: unknown) {
-  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError || e instanceof HolidayError)
+  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError || e instanceof HolidayError || e instanceof MisEmailError)
     return res.status(e.status).json({ error: e.message });
   console.error("[MIS] request failed:", e);
   return res.status(500).json({ error: "Something went wrong. Please try again." });
@@ -77,6 +101,7 @@ misRouter.post("/connection/start", requireAuth, requireMinRole("ADMIN"), (req, 
         employeeId: req.user!.employeeId,
         companyId: req.user!.companyId,
         returnTo: allowedReturnOrigin(req),
+        page: req.body?.page === "mis-email" ? "mis-email" : "employees",
       },
       OAUTH_STATE_SECRET,
       { expiresIn: "10m" },
@@ -285,7 +310,7 @@ misRouter.get("/holidays", requireAuth, async (req, res) => {
       year: y,
       holidays: await listHolidays(req.user!.companyId, y),
       source: MARKET_HOLIDAY_SOURCE,
-      weeklyOff: "Every Sunday, and the 2nd and 4th Saturday of every month.",
+      weeklyOff: "Every Sunday, and the 2nd Saturday of every month.",
     });
   } catch (e) {
     return handle(res, e);
@@ -318,6 +343,137 @@ misRouter.delete("/holidays/:date", requireAuth, requireMinRole("ADMIN"), async 
     await setHoliday(req.user!.companyId, req.user!.employeeId, MARKET_HOLIDAYS[date] ? { date, isOff: true, name: null } : { date, isOff: false });
     emitToCompany(req.user!.companyId, "msi:updated", { source: "mis-holidays" });
     return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Nightly MIS email
+// ---------------------------------------------------------------------------
+
+/** Public URL of this backend (behind Render's proxy). */
+function apiBase(req: Request): string {
+  const env = process.env.PUBLIC_API_URL ?? process.env.RENDER_EXTERNAL_URL;
+  if (env) return env.replace(/\/$/, "");
+  return `${req.protocol}://${req.get("host")}`;
+}
+
+misRouter.get("/email", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    const companyId = req.user!.companyId;
+    const [settings, sender, recipients] = await Promise.all([getEmailSettings(companyId), senderStatus(companyId), listRecipients(companyId)]);
+    const { cronToken, ...rest } = settings;
+    return res.json({
+      settings: rest,
+      sender,
+      recipients,
+      cronUrl: `${apiBase(req)}/api/mis/email/cron/${cronToken}`,
+      timezone: "Asia/Kolkata",
+    });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+const emailSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  sendTime: z.string().max(5).optional(),
+  audience: z.enum(["ALL", "ISSUES"]).optional(),
+  skipOffDays: z.boolean().optional(),
+  hrSummary: z.boolean().optional(),
+  hrEmails: z.string().max(2000).nullish(),
+  subject: z.string().max(150).nullish(),
+  intro: z.string().max(2000).nullish(),
+  footer: z.string().max(1000).nullish(),
+});
+
+misRouter.put("/email/settings", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = emailSettingsSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid settings." });
+  try {
+    const s = await updateEmailSettings(req.user!.companyId, req.user!.employeeId, body.data);
+    const { cronToken: _t, ...rest } = s;
+    return res.json({ settings: rest });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.put("/email/recipients/:employeeId", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z.object({ email: z.string().max(200).nullable() }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid request." });
+  try {
+    await setRecipientEmail(req.user!.companyId, String(req.params.employeeId), body.data.email);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/email/recipients/bulk", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z.object({ rows: z.array(z.object({ name: z.string().max(200), email: z.string().max(200) })).max(500) }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid request." });
+  try {
+    return res.json(await bulkSetEmails(req.user!.companyId, body.data.rows));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.get("/email/preview", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    const employeeId = typeof req.query.employeeId === "string" && req.query.employeeId ? req.query.employeeId : undefined;
+    return res.json(await previewEmail(req.user!.companyId, employeeId));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/email/test", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z.object({ to: z.string().max(200), employeeId: z.string().uuid().optional() }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Enter the email address to send the test to." });
+  try {
+    return res.json(await runMisEmails(req.user!.companyId, { trigger: "TEST", testTo: body.data.to, employeeId: body.data.employeeId }));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/email/send-now", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    const companyId = req.user!.companyId;
+    const sender = await senderStatus(companyId);
+    if (!sender.canSend) return res.status(409).json({ error: sender.problem ?? "Email sending isn't set up." });
+    void runMisEmails(companyId, { trigger: "MANUAL" }).catch((e) => console.error("[MIS email] manual run failed:", e instanceof Error ? e.message : e));
+    return res.status(202).json({ accepted: true, note: "Sending now — this takes about 3 seconds per person. Refresh the log below to see progress." });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/email/cron-token", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    const s = await rotateCronToken(req.user!.companyId);
+    return res.json({ cronUrl: `${apiBase(req)}/api/mis/email/cron/${s.cronToken}` });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.get("/email/log", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    return res.json({ log: await recentEmailLog(req.user!.companyId) });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// cron-job.org (or any outside scheduler) — no login, the token in the URL is the secret.
+misRouter.all("/email/cron/:token", async (req, res) => {
+  try {
+    const r = await triggerFromCron(String(req.params.token), { force: req.query.force === "1" });
+    return res.status(r.accepted ? 202 : 200).json(r);
   } catch (e) {
     return handle(res, e);
   }

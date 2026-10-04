@@ -89,17 +89,63 @@ const STATEMENTS: { migration: string; sql: string }[] = [
     migration: "20261005130000_mis_evidence",
     sql: `CREATE INDEX IF NOT EXISTS "MisCheckEvent_companyId_at_idx" ON "MisCheckEvent"("companyId", "at")`,
   },
+  { migration: "20261006120000_mis_email", sql: `ALTER TABLE "Employee" ADD COLUMN IF NOT EXISTS "contactEmail" TEXT` },
+  { migration: "20261006120000_mis_email", sql: `ALTER TABLE "MisConnection" ADD COLUMN IF NOT EXISTS "scopes" TEXT` },
+  {
+    migration: "20261006120000_mis_email",
+    sql: `CREATE TABLE IF NOT EXISTS "MisEmailSettings" (
+      "id" TEXT NOT NULL,
+      "companyId" TEXT NOT NULL,
+      "enabled" BOOLEAN NOT NULL DEFAULT false,
+      "sendTime" TEXT NOT NULL DEFAULT '23:30',
+      "audience" TEXT NOT NULL DEFAULT 'ALL',
+      "skipOffDays" BOOLEAN NOT NULL DEFAULT true,
+      "hrSummary" BOOLEAN NOT NULL DEFAULT true,
+      "hrEmails" TEXT,
+      "subject" TEXT,
+      "intro" TEXT,
+      "footer" TEXT,
+      "cronToken" TEXT NOT NULL,
+      "lastRunDate" TEXT,
+      "lastRunAt" TIMESTAMP(3),
+      "lastRunSummary" JSONB,
+      "updatedById" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL,
+      CONSTRAINT "MisEmailSettings_pkey" PRIMARY KEY ("id"))`,
+  },
+  { migration: "20261006120000_mis_email", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisEmailSettings_companyId_key" ON "MisEmailSettings"("companyId")` },
+  { migration: "20261006120000_mis_email", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisEmailSettings_cronToken_key" ON "MisEmailSettings"("cronToken")` },
+  {
+    migration: "20261006120000_mis_email",
+    sql: `CREATE TABLE IF NOT EXISTS "MisEmailLog" (
+      "id" TEXT NOT NULL,
+      "companyId" TEXT NOT NULL,
+      "runId" TEXT NOT NULL,
+      "runDate" TEXT NOT NULL,
+      "trigger" TEXT NOT NULL,
+      "employeeId" TEXT,
+      "toEmail" TEXT NOT NULL,
+      "subject" TEXT NOT NULL,
+      "status" TEXT NOT NULL,
+      "error" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "MisEmailLog_pkey" PRIMARY KEY ("id"))`,
+  },
+  { migration: "20261006120000_mis_email", sql: `CREATE INDEX IF NOT EXISTS "MisEmailLog_companyId_createdAt_idx" ON "MisEmailLog"("companyId", "createdAt")` },
 ];
 
 export async function ensureSchema(): Promise<void> {
+  let failed = 0;
   for (const s of STATEMENTS) {
     try {
       await prisma.$executeRawUnsafe(s.sql);
     } catch (e) {
-      // Never block startup: log and carry on (the feature using it will report the error).
+      // Never block startup: log and carry on with the rest (each step is
+      // independent and idempotent; the feature using a failed one reports it).
+      failed++;
       console.error(`[boot] schema step for ${s.migration} failed:`, e instanceof Error ? e.message : e);
-      return;
     }
   }
-  console.log(`[boot] schema check ok (${STATEMENTS.length} statements)`);
+  console.log(`[boot] schema check ${failed ? `finished with ${failed} failed step(s)` : "ok"} (${STATEMENTS.length} statements)`);
 }

@@ -7,7 +7,7 @@
  *   They don't need to be consecutive. The count starts again each month.
  *
  * Cells fill themselves from the MIS check (CM / NC / IN) and the working
- * calendar (Sundays, 2nd and 4th Saturdays, NSE trading holidays and company
+ * calendar (Sundays, the 2nd Saturday, NSE trading holidays and company
  * holidays — see workCalendar.ts). An admin can override any cell (leave,
  * absent, on duty, …); a manual mark always wins and is never overwritten by
  * the check. Every automatic mark keeps its evidence (misEvidence.ts): the
@@ -57,7 +57,6 @@ export const CIRCLE_CODES: CircleCode[] = [
   { code: "ON", label: "On duty", meaning: "On official duty outside — no MIS expected, no circle.", isCircle: false, tone: "blue", manual: true },
   { code: "SO", label: "Saturday off", meaning: "Saturday off for this person — no circle.", isCircle: false, tone: "grey", manual: true },
   { code: "SSO", label: "Second Saturday off", meaning: "Second Saturday of the month — off for everyone, no circle.", isCircle: false, tone: "grey", manual: true },
-  { code: "FSO", label: "Fourth Saturday off", meaning: "Fourth Saturday of the month — off for everyone, no circle.", isCircle: false, tone: "grey", manual: true },
   { code: "SU", label: "Sunday", meaning: "Sunday — off, no circle.", isCircle: false, tone: "grey", manual: false },
   { code: "H", label: "Holiday", meaning: "Stock market (NSE) trading holiday or company holiday — no MIS needed, no circle.", isCircle: false, tone: "grey", manual: true },
 ];
@@ -81,7 +80,7 @@ export function saturdayNumber(date: string): number {
   return Math.floor((Number(date.slice(8, 10)) - 1) / 7) + 1;
 }
 
-/** The code the calendar alone gives a day (Sunday, 2nd/4th Saturday, holiday), or null for a working day. */
+/** The code the calendar alone gives a day (Sunday, 2nd Saturday, holiday), or null for a working day. */
 export function calendarCode(date: string, cal: WorkCalendar = DEFAULT_CALENDAR): string | null {
   return offDay(date, cal)?.code ?? null;
 }
@@ -329,7 +328,7 @@ export function circleRules(): string[] {
     `A red circle (CM) means the MIS for that day was not submitted: no column for the day, nothing filled, or 20 or more of the person's usual entries left blank.`,
     `Every ${CIRCLES_PER_DEDUCTION} red circles in a calendar month = 1 day's salary deducted. They do not need to be on consecutive days. ${CIRCLES_PER_DEDUCTION * 2} circles = 2 days, ${CIRCLES_PER_DEDUCTION * 3} = 3 days, and so on.`,
     `The count starts again from zero on the 1st of every month.`,
-    `MIS is needed only on working days. Sundays, the 2nd and 4th Saturday, stock market (NSE) trading holidays and company holidays are off: no MIS is needed and they are never red circles.`,
+    `MIS is needed only on working days. Sundays, the 2nd Saturday, stock market (NSE) trading holidays and company holidays are off: no MIS is needed and they are never red circles.`,
     `Staff get until the end of the next working day to fill a day's MIS (the deadline). Until then the last working day is shown as "pending" and can still turn green. At the deadline the result is locked: filling it later is recorded as "filled late" but the red circle stays.`,
     `For every red circle MailPilot keeps the evidence: the deadline, what the file showed at the deadline, when MailPilot read it, and when the employee last saved the Excel file (time and name, from OneDrive/SharePoint).`,
     `Leave (OL), on duty (ON), Saturday off (SO), holidays (H) and absent (A) never count as red circles.`,
@@ -1143,7 +1142,6 @@ export function circleWorkbook(data: CircleMonth, opts: { generatedAt?: Date; pe
 function calendarCodeOfDay(d: { offName: string | null; date: string }): string {
   if (weekday(d.date) === 0) return "SU";
   if (d.offName?.startsWith("Second Saturday")) return "SSO";
-  if (d.offName?.startsWith("Fourth Saturday")) return "FSO";
   return "H";
 }
 

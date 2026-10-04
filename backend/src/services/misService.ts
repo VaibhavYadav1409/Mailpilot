@@ -24,6 +24,7 @@ import {
   getMisAccessToken,
   readWorkbook,
   resolveShareLink,
+  scopesAllowMail,
 } from "./misMicrosoft";
 import { addDays, availableDates, businessDateString, dateColumnValue } from "./msiService";
 import { DEFAULT_CALENDAR, focusLabels, getWorkCalendar, isWorkingDay, lastWorkingDays, type WorkCalendar } from "./workCalendar";
@@ -35,7 +36,7 @@ export type MisSourceStatus = "COMPLETE" | "INCOMPLETE" | "MISSING" | "ERROR" | 
  * MIS is reviewed for the previous WORKING days: the company gives staff one
  * day to fill a day's MIS, so everything focuses on the last working day
  * (`yesterday`) and the working day before it (`dayBefore`). Sundays, the
- * 2nd/4th Saturday and holidays are skipped (see workCalendar.ts), so on a
+ * 2nd Saturday and holidays are skipped (see workCalendar.ts), so on a
  * Monday after a 2nd-Saturday weekend these are Friday and Thursday. Today is
  * not checked.
  */
@@ -71,7 +72,15 @@ const ON_DEMAND_MAX_AGE_MS = 3 * 60 * 1000;
 export async function getMisConnection(companyId: string) {
   const c = await prisma.misConnection.findUnique({ where: { companyId } });
   return c
-    ? { connected: true, accountEmail: c.accountEmail, status: c.status, lastError: c.lastError, connectedAt: c.createdAt.toISOString() }
+    ? {
+        connected: true,
+        accountEmail: c.accountEmail,
+        status: c.status,
+        lastError: c.lastError,
+        connectedAt: c.createdAt.toISOString(),
+        /** Mail.Send granted — the nightly MIS email can be sent from this account. */
+        canSendMail: scopesAllowMail(c.scopes),
+      }
     : { connected: false as const };
 }
 
@@ -79,10 +88,11 @@ export async function completeMisConnect(companyId: string, employeeId: string, 
   const t = await exchangeMisCode(code);
   await prisma.misConnection.upsert({
     where: { companyId },
-    create: { companyId, accountEmail: t.email, refreshTokenEnc: encryptToken(t.refreshToken), connectedById: employeeId },
+    create: { companyId, accountEmail: t.email, refreshTokenEnc: encryptToken(t.refreshToken), connectedById: employeeId, scopes: t.scopes },
     update: {
       accountEmail: t.email,
       refreshTokenEnc: encryptToken(t.refreshToken),
+      scopes: t.scopes,
       connectedById: employeeId,
       status: "CONNECTED",
       lastError: null,

@@ -32,7 +32,7 @@ outlookRouter.get("/connect", requireAuth, (req, res) => {
 
 const EMPLOYEE_APP_URL = process.env.EMPLOYEE_APP_URL || "http://localhost:3002";
 
-type MisState = { purpose: "mis"; employeeId: string; companyId: string; returnTo: string | null };
+type MisState = { purpose: "mis"; employeeId: string; companyId: string; returnTo: string | null; page?: string };
 
 /**
  * The MIS auto-check connects a Microsoft account through this same redirect
@@ -40,7 +40,9 @@ type MisState = { purpose: "mis"; employeeId: string; companyId: string; returnT
  * carries purpose: "mis" plus the admin site to return to.
  */
 async function handleMisCallback(req: import("express").Request, res: import("express").Response, st: MisState) {
-  const back = (qs: string) => res.redirect(`${st.returnTo ?? EMPLOYEE_APP_URL}/employees?${qs}`);
+  // Back to the admin page that started it (only known pages — never an arbitrary path).
+  const page = st.page === "mis-email" ? "mis-email" : "employees";
+  const back = (qs: string) => res.redirect(`${st.returnTo ?? EMPLOYEE_APP_URL}/${page}?${qs}`);
   if (req.query.error) {
     const description = typeof req.query.error_description === "string" ? req.query.error_description : String(req.query.error);
     console.error("[mis] OAuth callback returned an error:", description);

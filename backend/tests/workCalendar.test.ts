@@ -10,10 +10,10 @@ const mis = await import("../src/services/misService");
 const circle = await import("../src/services/misCircle");
 
 describe("working calendar", () => {
-  it("knows Sundays, 2nd/4th Saturdays and NSE holidays", () => {
+  it("knows Sundays, 2nd Saturdays and NSE holidays", () => {
     expect(w.offDay("2026-10-04")?.code).toBe("SU");
     expect(w.offDay("2026-10-10")?.code).toBe("SSO");
-    expect(w.offDay("2026-10-24")?.code).toBe("FSO");
+    expect(w.offDay("2026-10-24")).toBeNull(); // 4th Saturday works
     expect(w.offDay("2026-10-03")).toBeNull(); // 1st Saturday works
     expect(w.offDay("2026-10-17")).toBeNull(); // 3rd Saturday works
     expect(w.offDay("2026-10-02")).toEqual({ code: "H", name: "Mahatma Gandhi Jayanti" });

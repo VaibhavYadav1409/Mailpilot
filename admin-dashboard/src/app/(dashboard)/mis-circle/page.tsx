@@ -600,7 +600,7 @@ function EvidenceBox({ evidence, className, compact }: { evidence: CircleEvidenc
 const fmtIst = (iso: string) =>
   new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
 
-/** NSE trading holidays + company holidays; weekly offs are fixed (Sundays, 2nd/4th Saturday). */
+/** NSE trading holidays + company holidays; weekly offs are fixed (Sundays, 2nd Saturday). */
 function HolidaysCard({ year, canEdit }: { year: number; canEdit: boolean }) {
   const [open, setOpen] = useState(false);
   const [date, setDate] = useState('');
@@ -630,7 +630,7 @@ function HolidaysCard({ year, canEdit }: { year: number; canEdit: boolean }) {
         <CalendarOff className="w-4 h-4 text-gray-500" />
         <span className="text-sm font-semibold">Days off {year} — no MIS needed</span>
         <span className="text-xs text-gray-500">
-          Sundays · 2nd &amp; 4th Saturday · {isLoading ? '…' : `${off} holidays`}
+          Sundays · 2nd Saturday · {isLoading ? '…' : `${off} holidays`}
         </span>
         <span className="ml-auto text-xs text-gray-400">{open ? 'Hide' : 'Show'}</span>
       </button>

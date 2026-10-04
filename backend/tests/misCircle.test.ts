@@ -6,12 +6,12 @@ vi.mock("../src/sockets", () => ({ emitToCompany: vi.fn() }));
 const c = await import("../src/services/misCircle");
 
 describe("calendar", () => {
-  it("knows Sundays and the 2nd / 4th Saturday", () => {
+  it("knows Sundays and the 2nd Saturday", () => {
     expect(c.calendarCode("2026-10-04")).toBe("SU"); // Sunday
     expect(c.calendarCode("2026-10-03")).toBeNull(); // 1st Saturday is a working day
     expect(c.calendarCode("2026-10-10")).toBe("SSO");
     expect(c.calendarCode("2026-10-17")).toBeNull(); // 3rd Saturday
-    expect(c.calendarCode("2026-10-24")).toBe("FSO");
+    expect(c.calendarCode("2026-10-24")).toBeNull(); // 4th Saturday works
     expect(c.calendarCode("2026-10-05")).toBeNull(); // Monday
   });
   it("lists every day of the month", () => {

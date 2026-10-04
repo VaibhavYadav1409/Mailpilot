@@ -17,12 +17,22 @@ import { sheetsWorthReading, type MisSheetInput } from "./misSheet";
 const REDIRECT_URI = process.env.MS_REDIRECT_URI ?? "http://localhost:4000/api/outlook/callback";
 const AUTHORITY = "https://login.microsoftonline.com/common/oauth2/v2.0";
 const GRAPH = "https://graph.microsoft.com/v1.0";
-const SCOPES = [
-  "https://graph.microsoft.com/Files.Read.All",
-  "https://graph.microsoft.com/User.Read",
-  "offline_access",
-  "openid",
-].join(" ");
+/** Reading the MIS spreadsheets. */
+const BASE_SCOPES = ["https://graph.microsoft.com/Files.Read.All", "https://graph.microsoft.com/User.Read", "offline_access", "openid"];
+/** Sending the nightly MIS emails from the same account. */
+const MAIL_SCOPE = "https://graph.microsoft.com/Mail.Send";
+/** Asked for on (re)connect: read the files + send the MIS emails. */
+const CONNECT_SCOPES = [...BASE_SCOPES, MAIL_SCOPE].join(" ");
+
+/** Whether the scopes Microsoft granted include sending mail. */
+export const scopesAllowMail = (granted: string | null | undefined) => !!granted && /(^|[\s/])Mail\.Send(\s|$)/i.test(granted);
+
+/**
+ * Scopes to ask for when refreshing: never more than were granted, or
+ * Microsoft rejects the refresh — a connection made before email existed
+ * keeps working read-only until someone reconnects.
+ */
+const refreshScopes = (granted: string | null | undefined) => (scopesAllowMail(granted) ? CONNECT_SCOPES : BASE_SCOPES.join(" "));
 
 export class MisGraphError extends Error {
   constructor(
@@ -48,38 +58,38 @@ export function buildMisAuthUrl(state: string): string {
     response_type: "code",
     redirect_uri: REDIRECT_URI,
     response_mode: "query",
-    scope: SCOPES,
+    scope: CONNECT_SCOPES,
     state,
     prompt: "select_account",
   });
   return `${AUTHORITY}/authorize?${params}`;
 }
 
-async function tokenRequest(body: Record<string, string>) {
+async function tokenRequest(body: Record<string, string>, scope: string) {
   const { clientId, clientSecret } = credentials();
   const res = await fetch(`${AUTHORITY}/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, scope: SCOPES, ...body }),
+    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, scope, ...body }),
   });
   const text = await res.text();
   if (!res.ok) {
     const invalid = res.status === 400 && /invalid_grant|AADSTS/.test(text);
     throw new MisGraphError(res.status, `Microsoft sign-in failed: ${text.slice(0, 300)}`, invalid);
   }
-  return JSON.parse(text) as { access_token: string; refresh_token?: string; expires_in: number };
+  return JSON.parse(text) as { access_token: string; refresh_token?: string; expires_in: number; scope?: string };
 }
 
 /** Code -> tokens + the signed-in account's email. */
 export async function exchangeMisCode(code: string) {
-  const t = await tokenRequest({ code, redirect_uri: REDIRECT_URI, grant_type: "authorization_code" });
+  const t = await tokenRequest({ code, redirect_uri: REDIRECT_URI, grant_type: "authorization_code" }, CONNECT_SCOPES);
   if (!t.refresh_token) throw new MisGraphError(400, "Microsoft did not return a refresh token. Please try connecting again.");
   const me = await graphJson<{ mail?: string | null; userPrincipalName?: string | null }>(
     t.access_token,
     "/me?$select=mail,userPrincipalName",
   ).catch(() => null);
   const email = (me?.mail || me?.userPrincipalName || "").toLowerCase() || "unknown";
-  return { refreshToken: t.refresh_token, accessToken: t.access_token, expiresIn: t.expires_in, email };
+  return { refreshToken: t.refresh_token, accessToken: t.access_token, expiresIn: t.expires_in, email, scopes: t.scope ?? null };
 }
 
 // Access tokens live ~1h; cache per company so a check round does one refresh.
@@ -103,11 +113,11 @@ export async function getMisAccessToken(companyId: string): Promise<string> {
   if (conn.status === "NEEDS_RECONNECT") throw new MisGraphError(409, "The Microsoft account needs to be connected again.", true);
 
   try {
-    const t = await tokenRequest({ refresh_token: decryptToken(conn.refreshTokenEnc), grant_type: "refresh_token" });
-    if (t.refresh_token) {
+    const t = await tokenRequest({ refresh_token: decryptToken(conn.refreshTokenEnc), grant_type: "refresh_token" }, refreshScopes(conn.scopes));
+    if (t.refresh_token || (t.scope && t.scope !== conn.scopes)) {
       await prisma.misConnection.update({
         where: { companyId },
-        data: { refreshTokenEnc: encryptToken(t.refresh_token), lastError: null },
+        data: { ...(t.refresh_token ? { refreshTokenEnc: encryptToken(t.refresh_token) } : {}), ...(t.scope ? { scopes: t.scope } : {}), lastError: null },
       });
     }
     cacheMisToken(companyId, t.access_token, t.expires_in);
@@ -285,4 +295,45 @@ export async function readWorkbook(
     sheets.push({ name: p.name, values: range.values ?? [], ...topLeftOf(range.address) });
   }
   return sheets;
+}
+
+/**
+ * Sends one email from the connected account (needs Mail.Send). A copy is kept
+ * in that mailbox's Sent Items — a record of every MIS email that went out.
+ */
+export async function sendGraphMail(
+  token: string,
+  msg: { to: string[]; cc?: string[]; subject: string; html: string; replyTo?: string | null },
+  attempt = 0,
+): Promise<void> {
+  const addr = (a: string) => ({ emailAddress: { address: a } });
+  const res = await fetch(`${GRAPH}/me/sendMail`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: {
+        subject: msg.subject,
+        body: { contentType: "HTML", content: msg.html },
+        toRecipients: msg.to.map(addr),
+        ...(msg.cc?.length ? { ccRecipients: msg.cc.map(addr) } : {}),
+        ...(msg.replyTo ? { replyTo: [addr(msg.replyTo)] } : {}),
+      },
+      saveToSentItems: true,
+    }),
+  });
+  if ((res.status === 429 || res.status === 503 || res.status === 504) && attempt < 3) {
+    const wait = Math.min(Number(res.headers.get("retry-after")) || 5 * (attempt + 1), 60);
+    await new Promise((r) => setTimeout(r, wait * 1000));
+    return sendGraphMail(token, msg, attempt + 1);
+  }
+  if (!res.ok) {
+    const body = await res.text();
+    let detail = body.slice(0, 300);
+    try {
+      detail = (JSON.parse(body) as { error?: { message?: string } }).error?.message ?? detail;
+    } catch {
+      /* keep raw */
+    }
+    throw new MisGraphError(res.status, `Microsoft couldn't send the email: ${detail}`, res.status === 401);
+  }
 }

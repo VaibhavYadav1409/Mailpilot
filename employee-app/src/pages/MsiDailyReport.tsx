@@ -129,7 +129,7 @@ function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string
           {NOT_FILLED_BLANKS}+ blanks or no column for the day = <span className="text-red-700 font-medium">not submitted</span>.
         </p>
         <p>
-          You get until the end of the next working day to fill each day, so you are checked for the last two working days. Sundays, the 2nd and 4th
+          You get until the end of the next working day to fill each day, so you are checked for the last two working days. Sundays, the 2nd
           Saturday and stock market holidays need no MIS. MailPilot also records when you last saved the Excel file.
         </p>
       </Card>
@@ -315,7 +315,7 @@ function CircleCard({ data }: { data: MyCircle }) {
       <p className="text-xs text-muted-foreground">
         CM = red circle (MIS not filled by the deadline — the end of the next working day). Every 3 red circles in a month = 1 day's salary
         deducted — they don't need to be in a row; 1 or 2 circles means no deduction yet. The count restarts on the 1st. Leave, on duty, Sundays,
-        2nd/4th Saturdays and holidays never count. Filling after the deadline is recorded as "filled late" and the circle stays.
+        2nd Saturdays and holidays never count. Filling after the deadline is recorded as "filled late" and the circle stays.
       </p>
     </Card>
   );

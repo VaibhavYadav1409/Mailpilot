@@ -10,6 +10,8 @@ export interface MisConnection {
   accountEmail?: string;
   status?: 'CONNECTED' | 'NEEDS_RECONNECT';
   lastError?: string | null;
+  /** Mail.Send granted — the nightly MIS emails can be sent from this account. */
+  canSendMail?: boolean;
 }
 
 export interface MisCheck {
@@ -39,7 +41,7 @@ export interface MisSource {
   /** When the Excel file was last saved, and by whom (from OneDrive / SharePoint). */
   fileSavedAt?: string | null;
   fileSavedBy?: string | null;
-  /** [last working day, the working day before] — Sundays, 2nd/4th Saturdays and holidays are skipped. */
+  /** [last working day, the working day before] — Sundays, 2nd Saturdays and holidays are skipped. */
   days: { date: string; label: string; check: MisCheck | null }[];
 }
 

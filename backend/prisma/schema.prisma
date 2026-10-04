@@ -78,6 +78,7 @@ model Employee {
   id              String         @id @default(uuid())
   employeeCode    String         // company-assigned ID, e.g. "EMP-0042"
   email           String         @unique // login email, distinct from the Gmail account they work from
+  contactEmail    String?        // where MIS emails go (MIS staff log in with a username, not an email)
   password        String
   firstName       String
   lastName        String
@@ -491,6 +492,7 @@ model MisConnection {
   accountEmail    String
   refreshTokenEnc String   @db.Text
   status          String   @default("CONNECTED") // CONNECTED | NEEDS_RECONNECT
+  scopes          String?  @db.Text // permissions Microsoft granted (Mail.Send = can send the MIS emails)
   lastError       String?  @db.Text
   connectedById   String?
   createdAt       DateTime @default(now())
@@ -551,7 +553,7 @@ model MisDailyCheck {
 
 /// One cell of the monthly MIS Circle Report: a person's mark for one day.
 /// AUTO marks come from the MIS check (CM = red circle / not submitted,
-/// NC = submitted, IN = incomplete, SU = Sunday, SSO/FSO = 2nd/4th Saturday off).
+/// NC = submitted, IN = incomplete, SU = Sunday, SSO = 2nd Saturday off, H = holiday).
 /// MANUAL marks are set by an admin (OL leave, A absent, ON on duty, SO …) and
 /// always win over AUTO. Every 3 CM in a month = 1 day's salary deducted.
 model MisCircleMark {
@@ -594,6 +596,44 @@ model MisCheckEvent {
 
   @@index([employeeId, checkDate])
   @@index([companyId, at])
+}
+
+// Nightly MIS email (src/services/misEmail.ts): one row per company.
+model MisEmailSettings {
+  id             String    @id @default(uuid())
+  companyId      String    @unique
+  enabled        Boolean   @default(false)
+  sendTime       String    @default("23:30") // HH:mm, business time zone (IST)
+  audience       String    @default("ALL") // ALL | ISSUES (only people with something pending / red)
+  skipOffDays    Boolean   @default(true)
+  hrSummary      Boolean   @default(true)
+  hrEmails       String?   @db.Text // comma separated
+  subject        String?
+  intro          String?   @db.Text
+  footer         String?   @db.Text
+  cronToken      String    @unique // secret for the outside scheduler URL (cron-job.org)
+  lastRunDate    String?   // YYYY-MM-DD the last scheduled run was for
+  lastRunAt      DateTime?
+  lastRunSummary Json?
+  updatedById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model MisEmailLog {
+  id         String   @id @default(uuid())
+  companyId  String
+  runId      String
+  runDate    String   // YYYY-MM-DD
+  trigger    String   // SCHEDULE | CRON | MANUAL | TEST
+  employeeId String?
+  toEmail    String
+  subject    String
+  status     String   // SENT | FAILED | SKIPPED
+  error      String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([companyId, createdAt])
 }
 
 // Holidays on top of the built-in NSE trading holidays (src/services/workCalendar.ts):

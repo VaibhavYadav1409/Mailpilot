@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, Users, Building2, BarChart3, Trophy, FileText, Settings, LogOut, Loader2, Plane, ClipboardList, CircleAlert } from 'lucide-react';
+import { LayoutDashboard, Users, Building2, BarChart3, Trophy, FileText, Settings, LogOut, Loader2, Plane, ClipboardList, CircleAlert, MailCheck } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
 import { useLogout } from '@/hooks/useAuthInit';
@@ -22,6 +22,8 @@ const menuItems = [
   { icon: ClipboardList, label: 'MIS Reports', href: '/msi-reports', minRole: 'ADMIN' },
   // Monthly red-circle sheet: every 3 missed MIS = 1 day's salary deducted.
   { icon: CircleAlert, label: 'MIS Circle Report', href: '/mis-circle', minRole: 'ADMIN' },
+  // Nightly email to every MIS staff member (+ HR summary).
+  { icon: MailCheck, label: 'MIS Emails', href: '/mis-email', minRole: 'ADMIN' },
   { icon: Settings, label: 'Settings', href: '/settings', minRole: 'ADMIN' },
 ];
 

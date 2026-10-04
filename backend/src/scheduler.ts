@@ -13,6 +13,7 @@ import {
 } from "./services/retentionEngine";
 import { purgeExpiredMsiReports } from "./services/msiService";
 import { purgeOldMisChecks, runAllMisChecks } from "./services/misService";
+import { runDueMisEmails } from "./services/misEmail";
 
 /**
  * Registers all scheduled jobs. Called once from server.ts at startup.
@@ -277,6 +278,10 @@ export function startScheduler() {
       misRunning = false;
     }
   });
+  // Nightly MIS email: sends within 30 minutes after the time set in MailPilot
+  // (cron-job.org calling /api/mis/email/cron/<token> is the backup — a day is only sent once).
+  cron.schedule("*/5 * * * *", () => void runDueMisEmails().catch((e) => console.error("[Scheduler] MIS email failed:", e)), { timezone: "UTC" });
+
   cron.schedule("35 * * * *", () => void purgeOldMisChecks().catch((e) => console.error("[Scheduler] MIS prune failed:", e)), { timezone: "UTC" });
 
   console.log(

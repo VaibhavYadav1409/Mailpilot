@@ -72,7 +72,7 @@ interface Overview {
   today: string;
   timezone: string;
   availableDates: string[]; // [last working day, the one before]
-  /** e.g. { label: "Last working day", short: "Sat 3 Oct" } — Sundays, 2nd/4th Saturdays and holidays are skipped. */
+  /** e.g. { label: "Last working day", short: "Sat 3 Oct" } — Sundays, 2nd Saturdays and holidays are skipped. */
   dateLabels?: { date: string; label: string; short: string }[];
   /** Today is a Sunday / weekly-off Saturday / holiday. */
   todayOff?: { name: string } | null;
@@ -210,7 +210,7 @@ export default function MisReportsPage() {
         title="MIS Reports"
         subtitle={
           data
-            ? `${formatLongDate(data.date)} · staff get until the end of the next working day to fill their MIS, so this shows the last two working days (Sundays, 2nd/4th Saturdays and holidays are skipped)`
+            ? `${formatLongDate(data.date)} · staff get until the end of the next working day to fill their MIS, so this shows the last two working days (Sundays, 2nd Saturdays and holidays are skipped)`
             : 'Who filled their MIS, and what is missing'
         }
         actions={
@@ -298,7 +298,7 @@ export default function MisReportsPage() {
 
           {data.dayOffDate && (
             <div className="glass-card px-5 py-3 text-sm text-gray-600 dark:text-gray-400">
-              {formatLongDate(data.date)} is a day off (Sunday, 2nd/4th Saturday or holiday) — no MIS is needed and nobody is counted.
+              {formatLongDate(data.date)} is a day off (Sunday, 2nd Saturday or holiday) — no MIS is needed and nobody is counted.
             </div>
           )}
 

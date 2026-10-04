@@ -56,7 +56,7 @@ export function MisConnectionCard({ canManage }: { canManage: boolean }) {
             ? 'Connect the Microsoft 365 account that has the MIS spreadsheets (e.g. contactus@). Read-only — no password is stored.'
             : needsReconnect
             ? `Microsoft access for ${conn.accountEmail} expired — connect again.`
-            : `Reading MIS spreadsheets as ${conn.accountEmail}. Checked every 10 minutes.`}
+            : `Reading MIS spreadsheets as ${conn.accountEmail}. Checked every 10 minutes.${conn.canSendMail ? ' Can send the nightly MIS emails.' : ''}`}
         </div>
         {flash && (
           <div className={cn('text-xs mt-1', flash.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>

@@ -3,7 +3,8 @@
  *
  * Off days (no MIS required, never a red circle, never shown as a day to fill):
  *   - every Sunday                         (SU)
- *   - the 2nd and 4th Saturday of a month  (SSO / FSO) — company weekly offs
+ *   - the 2nd Saturday of a month          (SSO) — company weekly off
+ *     (1st, 3rd, 4th and 5th Saturdays are working days)
  *   - Indian stock market trading holidays (H) — NSE circulars, built in below
  *   - extra company holidays an admin adds (H)
  * An admin can also turn a built-in holiday into a working day.
@@ -45,7 +46,7 @@ export const MARKET_HOLIDAYS: Record<string, string> = {
 };
 export const MARKET_HOLIDAY_SOURCE = "NSE trading holiday circular (Ref. 212/2025, 12 Dec 2025)";
 
-export type OffCode = "SU" | "SSO" | "FSO" | "H";
+export type OffCode = "SU" | "SSO" | "H";
 
 export interface HolidayOverride {
   date: string;
@@ -86,11 +87,7 @@ export function offDay(date: string, cal: WorkCalendar = DEFAULT_CALENDAR): { co
   if (d === 0) return { code: "SU", name: "Sunday" };
   const h = cal.holidays.get(date);
   if (h) return { code: "H", name: h };
-  if (d === 6) {
-    const n = saturdayNumber(date);
-    if (n === 2) return { code: "SSO", name: "Second Saturday (weekly off)" };
-    if (n === 4) return { code: "FSO", name: "Fourth Saturday (weekly off)" };
-  }
+  if (d === 6 && saturdayNumber(date) === 2) return { code: "SSO", name: "Second Saturday (weekly off)" };
   return null;
 }
 

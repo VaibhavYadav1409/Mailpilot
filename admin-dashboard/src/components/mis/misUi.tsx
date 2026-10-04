@@ -293,7 +293,7 @@ export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
       title: 'Not submitted',
       text: `There is no column for that date, or ${NOT_FILLED_BLANKS} or more of their usual entries are blank.`,
     },
-    { tone: 'gray', title: 'Grey', text: 'Day off (Sunday, 2nd/4th Saturday or holiday — not counted), or the file couldn’t be opened — the reason is shown.' },
+    { tone: 'gray', title: 'Grey', text: 'Day off (Sunday, 2nd Saturday or holiday — not counted), or the file couldn’t be opened — the reason is shown.' },
   ];
   return (
     <div className="glass-card overflow-hidden">
@@ -326,7 +326,7 @@ export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
               this page shows the <b>last working day</b> and the <b>one before it</b> — never today.
             </li>
             <li>
-              <b>Days off</b> — Sundays, the 2nd and 4th Saturday, stock market (NSE) trading holidays and company holidays — need
+              <b>Days off</b> — Sundays, the 2nd Saturday, stock market (NSE) trading holidays and company holidays — need
               no MIS and are skipped (Monday after a 2nd-Saturday weekend shows Friday and Thursday).
             </li>
             <li>
