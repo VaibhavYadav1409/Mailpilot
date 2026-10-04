@@ -161,3 +161,26 @@ describe("sheetsWorthReading", () => {
     expect(picked).toEqual(["Sep", "Aug"]);
   });
 });
+
+describe("checkMisWorkbook — off days don't count when learning usual entries", () => {
+  // Fri 11, (Sat 12 = 2nd Saturday, Sun 13, Mon 14 = Ganesh Chaturthi), Tue 15; checking Wed 16 Sep 2026.
+  const days = ["2026-09-11", "2026-09-12", "2026-09-13", "2026-09-14", "2026-09-15", "2026-09-16"];
+  const sheet = {
+    name: "Sep-2026",
+    values: [
+      ["Particulars", ...days.map((d) => d.split("-").reverse().join("."))],
+      ["Calls made", 5, "", "", "", 7, ""],
+      ["Accounts opened", 1, 1, "", 1, 2, 3],
+    ],
+  };
+  const off = new Set(["2026-09-12", "2026-09-13", "2026-09-14"]);
+  it("a row filled on every working day is required even if holidays are blank", () => {
+    const r = checkMisWorkbook([sheet], { date: "2026-09-16", isOffDay: (d) => off.has(d) });
+    expect(r.status).toBe("INCOMPLETE");
+    expect(r.missingFields).toEqual(["Calls made"]);
+  });
+  it("without the calendar the blank holiday columns hide it", () => {
+    const r = checkMisWorkbook([sheet], { date: "2026-09-16" });
+    expect(r.status).toBe("COMPLETE");
+  });
+});

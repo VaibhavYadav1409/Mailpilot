@@ -13,7 +13,7 @@ interface Summary {
   summary: { totalEmployees: number; submitted: number; incomplete: number; notFilled: number; submissionRate: number };
 }
 
-/** Yesterday's MIS at a glance on the dashboard (Admin+ only; hidden for others). */
+/** The last working day's MIS at a glance on the dashboard (Admin+ only; hidden for others). */
 export function MisSnapshot() {
   const { data, isError } = useQuery({
     queryKey: ['msi-admin-summary'],
@@ -29,7 +29,7 @@ export function MisSnapshot() {
       <div className="flex items-center gap-3">
         <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
         <div>
-          <p className="text-sm font-semibold">Yesterday’s MIS</p>
+          <p className="text-sm font-semibold">MIS · last working day</p>
           <p className="text-xs text-gray-500">{shortDay(data.date)} · {s.submissionRate}% submitted</p>
         </div>
       </div>

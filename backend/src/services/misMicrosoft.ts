@@ -206,12 +206,33 @@ export async function resolveShareLink(token: string, shareUrl: string) {
 }
 
 /** Current version of a file — changes whenever someone edits it. */
+export interface MisItemInfo {
+  /** Changes whenever the file changes. */
+  version: string | null;
+  /** When the Excel file was last saved. */
+  modifiedAt: Date | null;
+  /** Who saved it last (display name, else email). */
+  modifiedBy: string | null;
+}
+
+/** Version + last save (time and person) of the file — one small request. */
+export async function getItemInfo(token: string, driveId: string, itemId: string): Promise<MisItemInfo> {
+  const item = await graphJson<{
+    eTag?: string;
+    lastModifiedDateTime?: string;
+    lastModifiedBy?: { user?: { displayName?: string; email?: string } };
+  }>(token, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}?$select=eTag,lastModifiedDateTime,lastModifiedBy`);
+  const at = item.lastModifiedDateTime ? new Date(item.lastModifiedDateTime) : null;
+  const who = item.lastModifiedBy?.user;
+  return {
+    version: item.eTag ?? item.lastModifiedDateTime ?? null,
+    modifiedAt: at && !Number.isNaN(at.getTime()) ? at : null,
+    modifiedBy: who?.displayName?.trim() || who?.email?.trim() || null,
+  };
+}
+
 export async function getItemVersion(token: string, driveId: string, itemId: string): Promise<string | null> {
-  const item = await graphJson<{ eTag?: string; lastModifiedDateTime?: string }>(
-    token,
-    `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}?$select=eTag,lastModifiedDateTime`,
-  );
-  return item.eTag ?? item.lastModifiedDateTime ?? null;
+  return (await getItemInfo(token, driveId, itemId)).version;
 }
 
 /** Top-left cell of an A1 address like "'Sep 26'!B3:K40" -> { firstRow: 3, firstCol: 2 }. */

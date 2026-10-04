@@ -43,6 +43,52 @@ const STATEMENTS: { migration: string; sql: string }[] = [
     END $$`,
   },
   { migration: "20261003120000_mis_circle_reason", sql: `ALTER TABLE "MisCircleMark" ADD COLUMN IF NOT EXISTS "reason" TEXT` },
+  {
+    migration: "20261005120000_mis_holidays",
+    sql: `CREATE TABLE IF NOT EXISTS "MisHoliday" (
+      "id" TEXT NOT NULL,
+      "companyId" TEXT NOT NULL,
+      "date" DATE NOT NULL,
+      "name" TEXT NOT NULL,
+      "isOff" BOOLEAN NOT NULL DEFAULT true,
+      "createdById" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL,
+      CONSTRAINT "MisHoliday_pkey" PRIMARY KEY ("id"))`,
+  },
+  {
+    migration: "20261005120000_mis_holidays",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisHoliday_companyId_date_key" ON "MisHoliday"("companyId", "date")`,
+  },
+  { migration: "20261005130000_mis_evidence", sql: `ALTER TABLE "MisSource" ADD COLUMN IF NOT EXISTS "fileModifiedAt" TIMESTAMP(3)` },
+  { migration: "20261005130000_mis_evidence", sql: `ALTER TABLE "MisSource" ADD COLUMN IF NOT EXISTS "fileModifiedBy" TEXT` },
+  { migration: "20261005130000_mis_evidence", sql: `ALTER TABLE "MisCircleMark" ADD COLUMN IF NOT EXISTS "evidence" JSONB` },
+  { migration: "20261005130000_mis_evidence", sql: `ALTER TABLE "MisCircleMark" ADD COLUMN IF NOT EXISTS "finalAt" TIMESTAMP(3)` },
+  {
+    migration: "20261005130000_mis_evidence",
+    sql: `CREATE TABLE IF NOT EXISTS "MisCheckEvent" (
+      "id" TEXT NOT NULL,
+      "companyId" TEXT NOT NULL,
+      "sourceId" TEXT NOT NULL,
+      "employeeId" TEXT NOT NULL,
+      "checkDate" DATE NOT NULL,
+      "at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "status" TEXT NOT NULL,
+      "filledCount" INTEGER NOT NULL DEFAULT 0,
+      "blankCount" INTEGER NOT NULL DEFAULT 0,
+      "fileModifiedAt" TIMESTAMP(3),
+      "fileModifiedBy" TEXT,
+      "note" TEXT,
+      CONSTRAINT "MisCheckEvent_pkey" PRIMARY KEY ("id"))`,
+  },
+  {
+    migration: "20261005130000_mis_evidence",
+    sql: `CREATE INDEX IF NOT EXISTS "MisCheckEvent_employeeId_checkDate_idx" ON "MisCheckEvent"("employeeId", "checkDate")`,
+  },
+  {
+    migration: "20261005130000_mis_evidence",
+    sql: `CREATE INDEX IF NOT EXISTS "MisCheckEvent_companyId_at_idx" ON "MisCheckEvent"("companyId", "at")`,
+  },
 ];
 
 export async function ensureSchema(): Promise<void> {

@@ -17,6 +17,8 @@ import {
 import { MisGraphError, buildMisAuthUrl } from "../services/misMicrosoft";
 import { getMisDaysForEmployee } from "../services/msiService";
 import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../services/misCircle";
+import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, listHolidays, setHoliday } from "../services/workCalendar";
+import { emitToCompany } from "../sockets";
 
 /**
  * MIS auto-check — /api/mis
@@ -36,13 +38,17 @@ import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../s
  *   PUT    /circle/mark             { employeeId, date, code|null, note? } override one cell (Admin+)
  *   GET    /me/circle?month=        the caller's own row                          (any employee)
  *   GET    /me/circle/export?month= the caller's own Excel file                   (any employee)
+ *   GET    /holidays?year=          NSE trading holidays + company holidays      (any employee)
+ *   PUT    /holidays                { date, name?, isOff } add / switch a holiday  (Admin+)
+ *   DELETE /holidays/:date          back to the default for that date            (Admin+)
  */
 export const misRouter = Router();
 
 const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET as string;
 
 function handle(res: Response, e: unknown) {
-  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError) return res.status(e.status).json({ error: e.message });
+  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError || e instanceof HolidayError)
+    return res.status(e.status).json({ error: e.message });
   console.error("[MIS] request failed:", e);
   return res.status(500).json({ error: "Something went wrong. Please try again." });
 }
@@ -262,6 +268,56 @@ misRouter.get("/me/circle", requireAuth, async (req, res) => {
 misRouter.get("/me/circle/export", requireAuth, async (req, res) => {
   try {
     return await sendCircleExcel(req, res, req.user!.employeeId);
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Holidays (working calendar)
+// ---------------------------------------------------------------------------
+
+misRouter.get("/holidays", requireAuth, async (req, res) => {
+  try {
+    const y = Number(typeof req.query.year === "string" ? req.query.year : new Date().getFullYear());
+    if (!Number.isInteger(y) || y < 2020 || y > 2100) return res.status(400).json({ error: "Invalid year." });
+    return res.json({
+      year: y,
+      holidays: await listHolidays(req.user!.companyId, y),
+      source: MARKET_HOLIDAY_SOURCE,
+      weeklyOff: "Every Sunday, and the 2nd and 4th Saturday of every month.",
+    });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+const holidaySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  name: z.string().max(120).nullish(),
+  isOff: z.boolean(),
+});
+
+misRouter.put("/holidays", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = holidaySchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid request." });
+  try {
+    await setHoliday(req.user!.companyId, req.user!.employeeId, body.data);
+    emitToCompany(req.user!.companyId, "msi:updated", { source: "mis-holidays" });
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.delete("/holidays/:date", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const date = String(req.params.date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Invalid date." });
+  try {
+    // Built-in holiday: switched back on; company holiday: removed.
+    await setHoliday(req.user!.companyId, req.user!.employeeId, MARKET_HOLIDAYS[date] ? { date, isOff: true, name: null } : { date, isOff: false });
+    emitToCompany(req.user!.companyId, "msi:updated", { source: "mis-holidays" });
+    return res.json({ success: true });
   } catch (e) {
     return handle(res, e);
   }

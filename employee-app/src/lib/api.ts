@@ -414,6 +414,10 @@ export interface MsiMis {
     blanks: { sheet: string; cell: string; field: string }[];
     note: string | null;
     checkedAt: string | null;
+    completedAt?: string | null;
+    /** When the Excel file was last saved, and by whom (OneDrive / SharePoint). */
+    fileSavedAt?: string | null;
+    fileSavedBy?: string | null;
   }[];
 }
 
@@ -430,7 +434,16 @@ export interface MyCircle {
     name?: string;
     cells: Record<
       string,
-      { code: string | null; source: string | null; note: string | null; pending: boolean; reason?: string | null; markedBy?: string | null }
+      {
+        code: string | null;
+        source: string | null;
+        note: string | null;
+        pending: boolean;
+        reason?: string | null;
+        markedBy?: string | null;
+        /** Deadline, what the file showed then, when the Excel was saved. */
+        evidence?: { lines: string[]; filledLateAt: string | null; deadline: string } | null;
+      }
     >;
     summary: { circles: number; pendingCircles: number; deductionDays: number; untilNextDeduction: number; message: string };
   } | null;
@@ -448,7 +461,7 @@ export interface MsiToday {
   serverTime: string;
   submitted: boolean;
   report: MsiReport | null;
-  /** MIS checks for yesterday and the day before (empty when no MIS spreadsheet is linked). */
+  /** MIS checks for the last working day and the one before (empty when no MIS spreadsheet is linked). */
   misDays?: MisDayResult[];
   rules: { maxFileBytes: number; allowedExtensions: string[]; retentionDays: number; maxMessageChars: number };
 }

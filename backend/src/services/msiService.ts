@@ -5,6 +5,7 @@ import { deleteMsiFiles, getMsiFile, makeMsiStorageKey, putMsiFile, sweepOrphanM
 import { getMailDayTimezone } from "./retentionEngine";
 import { emitToCompany } from "../sockets";
 import { ensureMisFresh, getMisStatusForDate, misCheckDates, misFocusDates, type MisEmployeeDay } from "./misService";
+import { getWorkCalendar, offDay, shortDate } from "./workCalendar";
 
 /**
  * MSI Daily Work Report — business logic.
@@ -325,13 +326,13 @@ export async function getTodayForEmployee(actor: MsiActor, now = new Date()) {
   };
 }
 
-/** The staff member's own MIS results for yesterday and the day before (re-read if stale). */
+/** The staff member's own MIS results for the last working day and the one before (re-read if stale). */
 export async function getMisDaysForEmployee(actor: MsiActor, now = new Date()) {
   await ensureMisFresh(actor.companyId, { employeeId: actor.employeeId, timeoutMs: 6000 }).catch(() => undefined);
-  const f = misFocusDates(now);
+  const f = misFocusDates(now, await getWorkCalendar(actor.companyId));
   const days = [
-    { date: f.yesterday, label: "Yesterday" },
-    { date: f.dayBefore, label: "Day before yesterday" },
+    { date: f.yesterday, label: f.labels.last },
+    { date: f.dayBefore, label: f.labels.previous },
   ];
   const out = [];
   for (const d of days) {
@@ -543,16 +544,33 @@ export interface MsiEmployeeStatus {
  */
 export async function getAdminOverview(companyId: string, dateParam: string | undefined, now = new Date()) {
   const today = businessDateString(now);
-  // MIS is reviewed a day late (staff get one day to fill it): the dashboard
-  // shows yesterday (default) and the day before — never today.
-  const dates = misCheckDates(now);
+  // MIS is reviewed a day late (staff get one working day to fill it): the
+  // dashboard shows the last working day (default) and the one before — never
+  // today, and never a Sunday / weekly-off Saturday / holiday.
+  const cal = await getWorkCalendar(companyId);
+  const focus = misFocusDates(now, cal);
+  const dates = misCheckDates(now, cal);
   const date = dateParam ?? dates[0];
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
     throw new MsiError(400, "BAD_DATE", "Invalid date.");
   }
   if (date > today) throw new MsiError(400, "FUTURE_DATE", "That date hasn't happened yet.");
 
-  const base = { date, today, timezone: getMsiTimezone(), availableDates: dates, retentionDays: RETENTION_DAYS };
+  const todayOff = offDay(today, cal);
+  const base = {
+    date,
+    today,
+    timezone: getMsiTimezone(),
+    availableDates: dates,
+    /** Names for the two days, e.g. "Last working day" — "Fri 2 Oct". */
+    dateLabels: [
+      { date: focus.yesterday, label: focus.labels.last, short: shortDate(focus.yesterday) },
+      { date: focus.dayBefore, label: focus.labels.previous, short: shortDate(focus.dayBefore) },
+    ],
+    /** Today is a Sunday / weekly-off Saturday / holiday. */
+    todayOff: todayOff ? { name: todayOff.name } : null,
+    retentionDays: RETENTION_DAYS,
+  };
 
   // Older than the retention window: everything for that day has been deleted
   // by policy, so there is nothing to look up (and "not submitted" would be a lie).
@@ -634,7 +652,7 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
   return {
     ...base,
     expired: false,
-    dayOffDate: new Date(`${date}T00:00:00Z`).getUTCDay() === 0,
+    dayOffDate: offDay(date, cal) !== null,
     summary: {
       totalEmployees: total,
       submitted: submitted.length,

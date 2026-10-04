@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  CalendarOff,
   CheckCircle2,
   ClipboardList,
   Download,
@@ -25,6 +26,7 @@ import Link from 'next/link';
 import { CIRCLES_PER_DEDUCTION, useCircleMonth, type CircleSummary } from '@/components/mis/circleApi';
 import {
   BlankList,
+  FileSaved,
   MisLegend,
   OpenLinks,
   Reviewers,
@@ -69,7 +71,11 @@ interface Overview {
   date: string;
   today: string;
   timezone: string;
-  availableDates: string[]; // [yesterday, day before]
+  availableDates: string[]; // [last working day, the one before]
+  /** e.g. { label: "Last working day", short: "Sat 3 Oct" } — Sundays, 2nd/4th Saturdays and holidays are skipped. */
+  dateLabels?: { date: string; label: string; short: string }[];
+  /** Today is a Sunday / weekly-off Saturday / holiday. */
+  todayOff?: { name: string } | null;
   retentionDays: number;
   expired: boolean;
   dayOffDate: boolean;
@@ -204,7 +210,7 @@ export default function MisReportsPage() {
         title="MIS Reports"
         subtitle={
           data
-            ? `${formatLongDate(data.date)} · staff get one day to fill their MIS, so this shows yesterday and the day before`
+            ? `${formatLongDate(data.date)} · staff get until the end of the next working day to fill their MIS, so this shows the last two working days (Sundays, 2nd/4th Saturdays and holidays are skipped)`
             : 'Who filled their MIS, and what is missing'
         }
         actions={
@@ -220,7 +226,7 @@ export default function MisReportsPage() {
                     : 'border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-900',
                 )}
               >
-                {i === 0 ? 'Yesterday' : 'Day before'}
+                {data.dateLabels?.[i]?.label ?? (i === 0 ? 'Last working day' : 'Previous working day')}
                 <span className={cn('block text-[11px] font-normal', selected === d ? 'text-white/80' : 'text-gray-500')}>{shortDay(d)}</span>
               </button>
             ))}
@@ -239,6 +245,16 @@ export default function MisReportsPage() {
           </div>
         }
       />
+
+      {data?.todayOff && (
+        <div className="glass-card px-5 py-3 text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
+          <CalendarOff className="w-4 h-4 text-gray-400" />
+          Today is a day off (<b>{data.todayOff.name}</b>) — no MIS is needed for it.
+          <Link href="/mis-circle#holidays" className="ml-auto text-primary text-xs hover:underline">
+            Holidays
+          </Link>
+        </div>
+      )}
 
       <MisLegend />
 
@@ -262,9 +278,9 @@ export default function MisReportsPage() {
       {data && data.expired && (
         <div className="glass-card p-10 text-center">
           <ClipboardList className="w-10 h-10 mx-auto text-gray-300 dark:text-gray-700 mb-3" />
-          <h2 className="text-lg font-semibold">Only yesterday and the day before can be viewed</h2>
+          <h2 className="text-lg font-semibold">Only the last two working days can be viewed</h2>
           <button onClick={() => setDate(null)} className="btn-primary mt-5">
-            Go to yesterday
+            Go to the last working day
           </button>
         </div>
       )}
@@ -282,7 +298,7 @@ export default function MisReportsPage() {
 
           {data.dayOffDate && (
             <div className="glass-card px-5 py-3 text-sm text-gray-600 dark:text-gray-400">
-              {formatLongDate(data.date)} is a Sunday — people who didn’t fill anything are listed under “Day off” and not counted.
+              {formatLongDate(data.date)} is a day off (Sunday, 2nd/4th Saturday or holiday) — no MIS is needed and nobody is counted.
             </div>
           )}
 
@@ -392,7 +408,7 @@ export default function MisReportsPage() {
           )}
 
           {filter === 'all' && data.dayOff.length > 0 && (
-            <PeopleSection tone="gray" title="Day off" hint="Sunday, nothing filled — not counted." rows={data.dayOff} date={data.date} empty="" tz={data.timezone} circleOf={circleOf} />
+            <PeopleSection tone="gray" title="Day off" hint="Day off, nothing filled — not counted." rows={data.dayOff} date={data.date} empty="" tz={data.timezone} circleOf={circleOf} />
           )}
 
           {show('important') && important.length > 0 && (
@@ -576,6 +592,7 @@ function PersonRow({
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
               <OpenLinks sources={mis.sources} />
               <Reviewers sources={mis.sources} />
+              <FileSaved sources={mis.sources} />
             </div>
           )}
         </div>

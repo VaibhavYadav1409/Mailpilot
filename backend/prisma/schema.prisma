@@ -515,6 +515,8 @@ model MisSource {
   checkedBy       String?               // who checks this MIS (shown to the CEO)
   approvedBy      String?               // who approves it
   lastETag        String?               // file version at the last full read — unchanged files aren't re-read
+  fileModifiedAt  DateTime?             // when the Excel file was last saved (from OneDrive/SharePoint)
+  fileModifiedBy  String?               // who saved it last
   detectedColumns Json?                 // string[] seen on the last successful read (for the admin UI)
   lastCheckedAt   DateTime?
   lastError       String?   @db.Text
@@ -563,10 +565,48 @@ model MisCircleMark {
   autoCode    String?  // what the MIS check said, kept when an admin overrides it
   note        String?  @db.Text
   reason      String?  @db.Text // why the MIS check gave this code (e.g. "24 of 30 usual entries blank")
+  evidence    Json?    // deadline, state at the deadline, Excel save times, timeline — for HR
+  finalAt     DateTime? // when the automatic code was locked after the deadline
   updatedById String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@unique([employeeId, date])
   @@index([companyId, date])
+}
+
+// Every change MailPilot saw in a person's MIS for a day (status / filled
+// count), with when the Excel file had been saved and by whom. The evidence
+// behind each red circle; kept ~70 days.
+model MisCheckEvent {
+  id             String    @id @default(uuid())
+  companyId      String
+  sourceId       String
+  employeeId     String
+  checkDate      DateTime  @db.Date
+  at             DateTime  @default(now()) // when MailPilot read it
+  status         String
+  filledCount    Int       @default(0)
+  blankCount     Int       @default(0)
+  fileModifiedAt DateTime? // the Excel file's last save at that moment
+  fileModifiedBy String?
+  note           String?   @db.Text
+
+  @@index([employeeId, checkDate])
+  @@index([companyId, at])
+}
+
+// Holidays on top of the built-in NSE trading holidays (src/services/workCalendar.ts):
+// isOff = true adds a company holiday; isOff = false turns a built-in one into a working day.
+model MisHoliday {
+  id          String   @id @default(uuid())
+  companyId   String
+  date        DateTime @db.Date
+  name        String
+  isOff       Boolean  @default(true)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([companyId, date])
 }

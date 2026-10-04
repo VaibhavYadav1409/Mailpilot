@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Clock, Download, FileSpreadsheet, IndianRupee, Loader2, Search, Users, X } from 'lucide-react';
+import { CalendarOff, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Clock, Download, FileSpreadsheet, IndianRupee, Loader2, Plus, RotateCcw, Search, ShieldCheck, Users, X } from 'lucide-react';
 import api from '@/services/api';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { StatCard } from '@/components/dashboard/StatCard';
@@ -19,6 +19,8 @@ import {
   monthLabel,
   shiftMonth,
   useCircleMonth,
+  useHolidays,
+  type CircleEvidence,
   type CircleCode,
   type CircleMonth,
   type CircleRow,
@@ -98,6 +100,7 @@ export default function MisCirclePage() {
       )}
 
       {data && <RulesCard data={data} />}
+      {data && <HolidaysCard year={Number(data.month.slice(0, 4))} canEdit={canEdit} />}
 
       {isLoading && <div className="glass-card h-64 animate-pulse" />}
       {isError && (
@@ -131,7 +134,11 @@ export default function MisCirclePage() {
             <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
               <input type="checkbox" checked={onlyRed} onChange={(e) => setOnlyRed(e.target.checked)} /> Only people with red circles
             </label>
-            {canEdit && <span className="text-xs text-gray-500 ml-auto">Click any past cell to mark leave, absent, on duty, holiday… or to correct it.</span>}
+            {canEdit && (
+              <span className="text-xs text-gray-500 ml-auto">
+                Click a name for the evidence behind each red circle · click any past cell to mark leave, absent, on duty, holiday… or to correct it.
+              </span>
+            )}
           </div>
 
           <div className="glass-card overflow-auto max-h-[70vh]">
@@ -143,6 +150,7 @@ export default function MisCirclePage() {
                   {data.days.map((d) => (
                     <th
                       key={d.date}
+                      title={d.offName ?? undefined}
                       className={cn(
                         'px-0.5 py-1 font-semibold text-[10px] border-b border-gray-200 dark:border-gray-800 w-9',
                         d.isOff ? 'bg-gray-100 text-gray-400 dark:bg-gray-900' : 'bg-white dark:bg-gray-950 text-gray-500',
@@ -166,7 +174,15 @@ export default function MisCirclePage() {
                         d.date === data.yesterday && 'text-primary underline',
                         d.date === data.today && 'text-gray-400',
                       )}
-                      title={d.date === data.yesterday ? 'Yesterday — can still change today' : d.date === data.today ? 'Today — checked tomorrow' : undefined}
+                      title={
+                        d.offName
+                          ? `${d.offName} — no MIS needed`
+                          : d.date === data.yesterday
+                            ? 'Last working day — can still change until the end of the next working day'
+                            : d.date === data.today
+                              ? 'Today — checked after it ends'
+                              : undefined
+                      }
                     >
                       {d.day}
                     </th>
@@ -269,11 +285,12 @@ function cellTitle(r: CircleRow, date: string, data: CircleMonth, def?: CircleCo
   const c = r.cells[date];
   if (!c?.code) return date === data.today ? 'Today — checked tomorrow' : date > data.today ? '' : 'No result (MIS not linked or not read that day)';
   const parts = [`${date.split('-').reverse().join('-')}: ${c.code} — ${def?.label ?? ''}`, def?.meaning ?? ''];
-  if (c.pending) parts.push('Pending: yesterday — still changes if the MIS is filled today.');
+  if (c.pending) parts.push('Pending: the last working day — still changes if the MIS is filled before the deadline.');
   if (c.reason && c.source !== 'CALENDAR') parts.push(`Why: ${c.reason}`);
   if (c.markedBy) parts.push(`Marked by: ${c.markedBy}`);
   if (c.note && c.source !== 'MANUAL') parts.push(`Note: ${c.note}`);
-  return parts.filter(Boolean).join('\n');
+  if (c.evidence?.lines.length) parts.push('', ...c.evidence.lines);
+  return parts.filter((p, i) => p || i > 0).join('\n');
 }
 
 /** ●●○ — red circles so far in the current block of 3. */
@@ -324,7 +341,8 @@ function RulesCard({ data }: { data: CircleMonth }) {
               <li className="flex items-start gap-2">
                 <span className="inline-flex w-9 h-6 shrink-0 items-center justify-center rounded text-[10px] bg-red-100 text-red-800 outline-dashed outline-2 outline-red-400">CM?</span>
                 <span className="text-gray-600 dark:text-gray-400">
-                  <b className="text-gray-800 dark:text-gray-200">Pending</b> — yesterday's MIS is missing; it turns green if filled today.
+                  <b className="text-gray-800 dark:text-gray-200">Pending</b> — the last working day's MIS is missing; it turns green if filled before the
+                  deadline (end of the next working day).
                 </span>
               </li>
             </ul>
@@ -371,12 +389,13 @@ function CellEditor({ data, row, date, onClose }: { data: CircleMonth; row: Circ
               {cell?.source === 'AUTO' && ' (from the MIS check)'}
               {cell?.source === 'CALENDAR' && ' (from the calendar)'}
             </p>
-            {cell?.reason && cell.source !== 'CALENDAR' && (
+            {cell?.reason && (
               <p className="text-xs text-gray-600 dark:text-gray-400 mt-2 rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-2">
                 <b>Why:</b> {cell.reason}
                 {cell.markedBy && <span className="block text-gray-400 mt-0.5">Marked by: {cell.markedBy}</span>}
               </p>
             )}
+            {cell?.evidence && <EvidenceBox evidence={cell.evidence} className="mt-2" />}
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700" aria-label="Close">
             <X className="w-5 h-5" />
@@ -519,12 +538,177 @@ function PersonPanel({
                     <b>Why:</b> {e.reason}
                   </p>
                   <p className="text-[11px] text-gray-400">Marked by: {e.markedBy}{e.note ? ` · Note: ${e.note}` : ''}</p>
+                  {e.evidence && <EvidenceBox evidence={e.evidence} className="mt-1.5" compact />}
                 </li>
               ))}
             </ol>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Deadline, what the file showed then, and when the employee saved the Excel — HR's evidence. */
+function EvidenceBox({ evidence, className, compact }: { evidence: CircleEvidence; className?: string; compact?: boolean }) {
+  const [open, setOpen] = useState(!compact);
+  return (
+    <div className={cn('rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2 text-[11.5px]', className)}>
+      <button onClick={() => setOpen(!open)} className="flex items-center gap-1.5 font-semibold text-gray-700 dark:text-gray-300">
+        <ShieldCheck className="w-3.5 h-3.5 text-primary" /> Evidence {open ? '' : `(${evidence.timeline.length} change${evidence.timeline.length === 1 ? '' : 's'} logged)`}
+      </button>
+      {open && (
+        <>
+          <ul className="mt-1 space-y-0.5 text-gray-600 dark:text-gray-400 list-disc pl-4">
+            {evidence.lines.map((l, i) => (
+              <li key={i}>{l}</li>
+            ))}
+          </ul>
+          {evidence.timeline.length > 0 && (
+            <table className="mt-2 w-full text-[10.5px]">
+              <thead className="text-gray-400">
+                <tr>
+                  <th className="text-left font-medium">MailPilot read</th>
+                  <th className="text-left font-medium">Excel saved (by)</th>
+                  <th className="text-left font-medium">Showed</th>
+                  <th className="text-left font-medium" />
+                </tr>
+              </thead>
+              <tbody>
+                {evidence.timeline.map((t, i) => (
+                  <tr key={i} className="border-t border-gray-100 dark:border-gray-900">
+                    <td className="py-0.5 pr-2 whitespace-nowrap">{fmtIst(t.at)}</td>
+                    <td className="py-0.5 pr-2">
+                      {t.savedAt ? fmtIst(t.savedAt) : '—'}
+                      {t.savedBy ? ` (${t.savedBy})` : ''}
+                    </td>
+                    <td className="py-0.5 pr-2">
+                      {t.status === 'COMPLETE' ? 'Submitted' : t.status === 'INCOMPLETE' ? `${t.blanks} blank` : t.status === 'MISSING' ? `Not filled (${t.blanks} blank)` : t.status}
+                    </td>
+                    <td className={cn('py-0.5', t.afterDeadline ? 'text-red-600' : 'text-emerald-600')}>{t.afterDeadline ? 'after deadline' : 'before'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+const fmtIst = (iso: string) =>
+  new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
+
+/** NSE trading holidays + company holidays; weekly offs are fixed (Sundays, 2nd/4th Saturday). */
+function HolidaysCard({ year, canEdit }: { year: number; canEdit: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [date, setDate] = useState('');
+  const [name, setName] = useState('');
+  const qc = useQueryClient();
+  const { data, isLoading } = useHolidays(year);
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['mis-holidays'] });
+    qc.invalidateQueries({ queryKey: ['mis-circle'] });
+    qc.invalidateQueries({ queryKey: ['msi-admin'] });
+    qc.invalidateQueries({ queryKey: ['mis-sources'] });
+  };
+  const set = useMutation({
+    mutationFn: (b: { date: string; name?: string | null; isOff: boolean }) => api.put('/mis/holidays', b),
+    onSuccess: () => {
+      setDate('');
+      setName('');
+      refresh();
+    },
+  });
+  const reset = useMutation({ mutationFn: (d: string) => api.delete(`/mis/holidays/${d}`), onSuccess: refresh });
+  const list = data?.holidays ?? [];
+  const off = list.filter((h) => h.isOff).length;
+  return (
+    <div id="holidays" className="glass-card overflow-hidden">
+      <button onClick={() => setOpen(!open)} className="w-full px-5 py-3 flex items-center gap-2 text-left">
+        <CalendarOff className="w-4 h-4 text-gray-500" />
+        <span className="text-sm font-semibold">Days off {year} — no MIS needed</span>
+        <span className="text-xs text-gray-500">
+          Sundays · 2nd &amp; 4th Saturday · {isLoading ? '…' : `${off} holidays`}
+        </span>
+        <span className="ml-auto text-xs text-gray-400">{open ? 'Hide' : 'Show'}</span>
+      </button>
+      {open && (
+        <div className="px-5 pb-5 space-y-3">
+          <p className="text-xs text-gray-500">
+            On these days no MIS is needed: they are never red circles and the MIS pages skip them (they show the last working days instead). Stock market
+            holidays come from the {data?.source ?? 'NSE circular'}. Add your company's own holidays below, or switch off a market holiday the office works on.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-gray-400 text-left">
+                <tr>
+                  <th className="py-1.5 font-medium">Date</th>
+                  <th className="py-1.5 font-medium">Day</th>
+                  <th className="py-1.5 font-medium">Holiday</th>
+                  <th className="py-1.5 font-medium">From</th>
+                  <th className="py-1.5 font-medium">Status</th>
+                  {canEdit && <th />}
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((h) => (
+                  <tr key={h.date} className={cn('border-t border-gray-100 dark:border-gray-900', !h.isOff && 'text-gray-400 line-through')}>
+                    <td className="py-1.5 whitespace-nowrap">{dmy(h.date)}</td>
+                    <td className="py-1.5">{h.weekday}</td>
+                    <td className="py-1.5">{h.name}</td>
+                    <td className="py-1.5">{h.source === 'NSE' ? 'Stock market (NSE)' : 'Company'}</td>
+                    <td className="py-1.5 no-underline">{h.isOff ? 'Off — no MIS' : 'Working day'}</td>
+                    {canEdit && (
+                      <td className="py-1.5 text-right">
+                        {h.source === 'NSE' && h.isOff && (
+                          <button onClick={() => set.mutate({ date: h.date, isOff: false })} className="text-gray-500 hover:text-red-600" title="The office works on this day — MIS needed">
+                            Make working day
+                          </button>
+                        )}
+                        {(h.source === 'COMPANY' || !h.isOff) && (
+                          <button onClick={() => reset.mutate(h.date)} className="inline-flex items-center gap-1 text-gray-500 hover:text-primary" title={h.source === 'NSE' ? 'Back to holiday' : 'Remove'}>
+                            <RotateCcw className="w-3 h-3" /> {h.source === 'NSE' ? 'Undo' : 'Remove'}
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+                {!isLoading && list.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="py-3 text-gray-500">
+                      No holidays listed for {year} yet — NSE publishes them around mid-December. Add them below.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {canEdit && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (date) set.mutate({ date, name: name.trim() || null, isOff: true });
+              }}
+              className="flex flex-wrap items-center gap-2"
+            >
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="px-3 py-1.5 border border-gray-200 dark:border-gray-800 rounded-lg text-sm bg-transparent" />
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Holiday name, e.g. Office Diwali puja"
+                className="px-3 py-1.5 border border-gray-200 dark:border-gray-800 rounded-lg text-sm bg-transparent w-64"
+              />
+              <button type="submit" disabled={!date || set.isPending} className="btn-secondary text-sm flex items-center gap-1.5">
+                {set.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Add holiday
+              </button>
+              {(set.isError || reset.isError) && <span className="text-xs text-red-600">Could not save.</span>}
+            </form>
+          )}
+        </div>
+      )}
     </div>
   );
 }

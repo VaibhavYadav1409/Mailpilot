@@ -51,6 +51,12 @@ export interface MisCheckOptions {
   dateColumn?: string | null;
   /** Fields (particulars / column headers) that must be filled. Null = learned automatically. */
   requiredColumns?: string[] | null;
+  /**
+   * Days nobody fills an MIS (Sundays, weekly-off Saturdays, holidays). They
+   * are left out when learning which rows a person usually fills, so a
+   * holiday's empty column doesn't make every row look optional.
+   */
+  isOffDay?: (date: string) => boolean;
 }
 
 export interface MisField {
@@ -76,6 +82,8 @@ export interface MisCheckResult {
   missingFields: string[];
   /** Exactly which cells are blank (first 50). */
   blanks: MisBlank[];
+  /** How many usual entries are blank in total (blanks is capped / empty when not filled). */
+  blankCount?: number;
   /** Fields seen on the sheet, with whether each was required. */
   fields: MisField[];
   /** Human-readable reason when something looks off. */
@@ -289,9 +297,9 @@ function sheetForDate(layouts: ColumnLayout[], date: string): { layout: ColumnLa
 }
 
 /** How often each particular was filled on the most recent working days before `date`, across all sheets. */
-function learnRequired(layouts: ColumnLayout[], date: string): Map<string, boolean> {
+function learnRequired(layouts: ColumnLayout[], date: string, isOffDay?: (date: string) => boolean): Map<string, boolean> {
   const allDates = new Set<string>();
-  for (const l of layouts) for (const d of l.dates) if (d.date < date) allDates.add(d.date);
+  for (const l of layouts) for (const d of l.dates) if (d.date < date && !isOffDay?.(d.date)) allDates.add(d.date);
   const recent = [...allDates].sort().reverse().slice(0, HISTORY_DAYS);
   const cols = recent.map((d) => sheetForDate(layouts, d)).filter((x): x is { layout: ColumnLayout; cols: number[] } => x !== null);
 
@@ -329,7 +337,7 @@ function checkColumns(layouts: ColumnLayout[], opts: MisCheckOptions): MisCheckR
   const todays = [owner.layout];
 
   const configured = opts.requiredColumns?.length ? opts.requiredColumns : null;
-  const learned = configured ? null : learnRequired(layouts, opts.date);
+  const learned = configured ? null : learnRequired(layouts, opts.date, opts.isOffDay);
   const hasHistory = !!learned && learned.size > 0;
 
   const blanks: MisBlank[] = [];
@@ -368,6 +376,7 @@ function checkColumns(layouts: ColumnLayout[], opts: MisCheckOptions): MisCheckR
       filledCount: filled,
       missingFields: [],
       blanks: [],
+      blankCount: blanks.length,
       fields,
       note:
         filled === 0 && missing.size === 0
@@ -382,6 +391,7 @@ function checkColumns(layouts: ColumnLayout[], opts: MisCheckOptions): MisCheckR
     filledCount: filled,
     missingFields: [...missing],
     blanks: blanks.slice(0, 50),
+    blankCount: blanks.length,
     fields,
     note: !configured && !hasHistory ? "No earlier days to learn from — every particular is required." : null,
   };
@@ -521,7 +531,7 @@ export function checkMisWorkbook(sheets: MisSheetInput[], opts: MisCheckOptions)
   }
   // Show the fields of the newest sheet so admins can still pick required ones.
   const newest = colLayouts.slice().sort((a, b) => (a.dates.at(-1)!.date < b.dates.at(-1)!.date ? 1 : -1))[0];
-  const learned = newest ? learnRequired(colLayouts, opts.date) : null;
+  const learned = newest ? learnRequired(colLayouts, opts.date, opts.isOffDay) : null;
   const fields = newest ? newest.rows.map((r) => ({ name: r.label, required: learned?.get(r.key) === true })) : [];
   return empty(`No entry dated ${fmt(opts.date)} yet.`, fields);
 }

@@ -57,13 +57,14 @@ const cell = (code: string | null, extra: Partial<import("../src/services/misCir
   autoCode: null,
   reason: code === "CM" ? "Not filled for the day — 24 of 30 usual entries are blank." : null,
   markedBy: "MIS check (automatic)",
+  evidence: null as import("../src/services/misEvidence").CircleEvidence | null,
   ...extra,
 });
 
 /** A person with red circles on the given October dates. */
 function personWith(circleDates: string[], pending?: string) {
   const cells: Record<string, ReturnType<typeof cell>> = {};
-  for (const d of c.monthDates("2026-10")) cells[d] = cell(c.calendarCode(d) ?? "NC");
+  for (const d of c.monthDates("2026-10")) cells[d] = c.calendarCode(d) ? cell(c.calendarCode(d), { source: "CALENDAR" as never }) : cell("NC");
   for (const d of circleDates) cells[d] = cell("CM");
   if (pending) cells[pending] = cell("CM", { pending: true });
   return cells;
@@ -131,21 +132,33 @@ describe("reasons", () => {
 });
 
 describe("circleWorkbook", () => {
-  it("builds a valid xlsx with the five tabs and every reason", async () => {
+  it("builds a valid xlsx with the six tabs, every reason and the evidence", async () => {
     const dates = c.monthDates("2026-10");
+    const ev = await import("../src/services/misEvidence");
+    const w = await import("../src/services/workCalendar");
+    const anjali = personWith(["2026-10-01", "2026-10-05", "2026-10-07", "2026-10-12", "2026-10-14", "2026-10-21"], "2026-10-23");
+    anjali["2026-10-07"].evidence = ev.buildEvidence(
+      [
+        { sourceId: "s", sourceLabel: "ANJALI MIS", at: new Date("2026-10-08T05:00:00Z"), status: "MISSING", filledCount: 2, blankCount: 27, fileModifiedAt: new Date("2026-10-07T12:00:00Z"), fileModifiedBy: "Anjali Jha", note: "Not filled for 07-10-2026 — 27 of 29 usual entries are blank." },
+        { sourceId: "s", sourceLabel: "ANJALI MIS", at: new Date("2026-10-09T05:00:00Z"), status: "COMPLETE", filledCount: 29, blankCount: 0, fileModifiedAt: new Date("2026-10-09T04:00:00Z"), fileModifiedBy: "Anjali Jha", note: null },
+      ],
+      ev.deadlineFor("2026-10-07", w.DEFAULT_CALENDAR, "Asia/Kolkata"),
+      "Asia/Kolkata",
+      new Date("2026-10-25T05:00:00Z"),
+    );
     const data = {
       month: "2026-10",
       title: "MIS CIRCLE REPORT — OCTOBER 2026",
       today: "2026-10-25",
       yesterday: "2026-10-24",
-      days: dates.map((d) => ({ date: d, day: Number(d.slice(8)), dow: "MO", isOff: !!c.calendarCode(d) })),
+      days: dates.map((d) => ({ date: d, day: Number(d.slice(8)), dow: "MO", isOff: !!c.calendarCode(d), offName: w.offDay(d)?.name ?? null })),
       rows: [
         {
           employeeId: "e1",
           name: "Anjali Jha",
           username: "ANJALI",
           hasMis: true,
-          cells: personWith(["2026-10-01", "2026-10-05", "2026-10-07", "2026-10-12", "2026-10-14", "2026-10-21"], "2026-10-23"),
+          cells: anjali,
           summary: c.summarize(6, 1),
         },
         { employeeId: "e2", name: "Mamta", username: "MAMTA", hasMis: true, cells: personWith(["2026-10-06", "2026-10-08"]), summary: c.summarize(2) },
@@ -157,8 +170,23 @@ describe("circleWorkbook", () => {
     };
     const buf = c.circleWorkbook(data, { generatedAt: new Date("2026-10-25T05:00:00Z") });
     expect(buf.subarray(0, 2).toString()).toBe("PK");
-    for (let i = 1; i <= 5; i++) expect(buf.includes(Buffer.from(`xl/worksheets/sheet${i}.xml`))).toBe(true);
-    for (const t of ["Salary Deduction", "Circle Sheet", "Red Circles", "Day by Day", "Rules &amp; Codes", "Anjali Jha", "6th red circle → 2nd day", "24 of 30 usual entries", "2 red circles ÷ 3 = 0 days"])
+    for (let i = 1; i <= 6; i++) expect(buf.includes(Buffer.from(`xl/worksheets/sheet${i}.xml`))).toBe(true);
+    for (const t of [
+      "Salary Deduction",
+      "Circle Sheet",
+      "Red Circles",
+      "Evidence Log",
+      "Day by Day",
+      "Rules &amp; Codes",
+      "Anjali Jha",
+      "6th red circle → 2nd day",
+      "24 of 30 usual entries",
+      "2 red circles ÷ 3 = 0 days",
+      "08-10-2026 11:59 PM", // deadline for 7 Oct = end of Thu 8 Oct
+      "07-10-2026 05:30 PM", // Excel saved before the deadline
+      "09-10-2026 09:30 AM", // filled late
+      "Mahatma Gandhi Jayanti",
+    ])
       expect(buf.includes(Buffer.from(t)), t).toBe(true);
     if (process.env.CIRCLE_XLSX_OUT) (await import("node:fs")).writeFileSync(process.env.CIRCLE_XLSX_OUT, buf);
   });

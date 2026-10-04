@@ -78,7 +78,7 @@ function explain(mis: MsiMis, date: string): { tone: "green" | "amber" | "red" |
     case "ERROR":
       return { tone: "gray", title: "Couldn't read your MIS", text: "MailPilot couldn't open your MIS file. Your admin can see why and fix the link." };
     case "OFF":
-      return { tone: "gray", title: "Sunday", text: "Nothing filled on a Sunday — not counted." };
+      return { tone: "gray", title: "Day off", text: "Sunday, weekly-off Saturday or holiday — no MIS needed, not counted." };
     default:
       return { tone: "gray", title: "Not checked yet", text: "Your MIS will be read within 10 minutes." };
   }
@@ -98,8 +98,8 @@ const TITLE_TONES = {
 };
 
 /**
- * Yesterday's and the day before's MIS. Staff get one day to fill a day, so
- * these are the days the CEO sees. Each file shows exactly which cells are blank.
+ * The last two working days' MIS. Staff get until the end of the next working
+ * day to fill a day, so these are the days the CEO sees. Each file shows exactly which cells are blank.
  */
 function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string; onUpdate: (d: MisDayResult[]) => void }) {
   const [checking, setChecking] = useState(false);
@@ -128,7 +128,10 @@ function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string
           something in it (nil / NA / done all count). A few blanks = <span className="text-amber-700 font-medium">incomplete</span>;{" "}
           {NOT_FILLED_BLANKS}+ blanks or no column for the day = <span className="text-red-700 font-medium">not submitted</span>.
         </p>
-        <p>You get one day to fill each day, so you are checked for yesterday and the day before.</p>
+        <p>
+          You get until the end of the next working day to fill each day, so you are checked for the last two working days. Sundays, the 2nd and 4th
+          Saturday and stock market holidays need no MIS. MailPilot also records when you last saved the Excel file.
+        </p>
       </Card>
 
       {days.map((d) => {
@@ -149,9 +152,24 @@ function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string
               d.mis.sources.map((s) => (
                 <p key={s.id} className="text-xs text-muted-foreground">
                   <span className="font-medium text-foreground">{s.label}:</span>{" "}
-                  {s.status === "COMPLETE" ? "complete" : s.status === "INCOMPLETE" ? `${s.missingColumns.length} blank` : s.status === "MISSING" ? "not filled" : s.status === "ERROR" ? "couldn't read" : s.status === "OFF" ? "Sunday" : "not checked yet"}
+                  {s.status === "COMPLETE" ? "complete" : s.status === "INCOMPLETE" ? `${s.missingColumns.length} blank` : s.status === "MISSING" ? "not filled" : s.status === "ERROR" ? "couldn't read" : s.status === "OFF" ? "day off" : "not checked yet"}
                 </p>
               ))}
+            {d.mis.sources.some((s) => s.fileSavedAt || s.completedAt) && (
+              <p className="text-xs text-muted-foreground">
+                {d.mis.sources
+                  .map((s) =>
+                    [
+                      d.mis.sources.length > 1 ? `${s.label}:` : "",
+                      s.fileSavedAt ? `Excel last saved ${formatWhen(s.fileSavedAt, tz)}${s.fileSavedBy ? ` by ${s.fileSavedBy}` : ""}` : "",
+                      s.completedAt ? `· fully filled ${formatWhen(s.completedAt, tz)}` : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" "),
+                  )
+                  .join("  |  ")}
+              </p>
+            )}
             {d.mis.sources.some((s) => s.blanks.length > 0) && (
               <div className="rounded-lg border bg-background/70 p-3 space-y-2">
                 {d.mis.sources
@@ -224,9 +242,9 @@ function CircleCard({ data }: { data: MyCircle }) {
     .filter((d) => isCircle.has(row.cells[d.date]?.code ?? ""))
     .map((d) => {
       const c = row.cells[d.date];
-      if (c.pending) return { date: d.date, number: null as number | null, triggers: false, reason: c.reason, note: c.note };
+      if (c.pending) return { date: d.date, number: null as number | null, triggers: false, reason: c.reason, note: c.note, evidence: c.evidence ?? null };
       n++;
-      return { date: d.date, number: n, triggers: n % 3 === 0, reason: c.reason, note: c.note };
+      return { date: d.date, number: n, triggers: n % 3 === 0, reason: c.reason, note: c.note, evidence: c.evidence ?? null };
     });
   const download = async () => {
     setDownloading(true);
@@ -281,20 +299,30 @@ function CircleCard({ data }: { data: MyCircle }) {
               <li key={c.date} className={`text-xs rounded-md border px-2.5 py-1.5 ${c.triggers ? "border-red-300 bg-red-100/60" : c.number === null ? "border-dashed border-red-300" : ""}`}>
                 <b>{c.number === null ? "Pending" : `${ord(c.number)} circle`}</b> · {dmy(c.date)}
                 {c.triggers && <span className="text-red-700 font-semibold"> → {ord(c.number! / 3)} day's salary deducted</span>}
-                {c.number === null && <span className="text-red-600"> — fill this day's MIS today and it won't count</span>}
+                {c.number === null && <span className="text-red-600"> — fill this day's MIS before the deadline and it won't count</span>}
                 {c.reason && <span className="block text-muted-foreground mt-0.5">Why: {c.reason}</span>}
                 {c.note && <span className="block text-muted-foreground">Note: {c.note}</span>}
+                {c.evidence?.lines.map((l, i) => (
+                  <span key={i} className="block text-muted-foreground">
+                    {l}
+                  </span>
+                ))}
               </li>
             ))}
           </ol>
         </div>
       )}
       <p className="text-xs text-muted-foreground">
-        CM = red circle (MIS not submitted). Every 3 red circles in a month = 1 day's salary deducted — they don't need to be in a row; 1 or 2 circles
-        means no deduction yet. The count restarts on the 1st. Leave, on duty, Sundays and 2nd/4th Saturdays never count.
+        CM = red circle (MIS not filled by the deadline — the end of the next working day). Every 3 red circles in a month = 1 day's salary
+        deducted — they don't need to be in a row; 1 or 2 circles means no deduction yet. The count restarts on the 1st. Leave, on duty, Sundays,
+        2nd/4th Saturdays and holidays never count. Filling after the deadline is recorded as "filled late" and the circle stays.
       </p>
     </Card>
   );
+}
+
+function formatWhen(iso: string, tz: string) {
+  return new Date(iso).toLocaleString("en-GB", { timeZone: tz, day: "2-digit", month: "short", hour: "numeric", minute: "2-digit", hour12: true });
 }
 
 function formatTime(iso: string, tz: string) {

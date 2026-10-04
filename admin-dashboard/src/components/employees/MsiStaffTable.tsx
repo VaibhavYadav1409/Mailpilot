@@ -38,7 +38,7 @@ const colourOf = (s: MisStatus | undefined): DayFilter =>
 /**
  * People who fill an MIS spreadsheet (no mailbox, no email). They sign in on
  * the Employee Portal with their name as username and their name in CAPITALS
- * as password; MailPilot reads their MIS and shows yesterday's and the day
+ * as password; MailPilot reads their MIS and shows the last working day's and the day
  * before's result.
  */
 export function MsiStaffTable() {
@@ -55,6 +55,7 @@ export function MsiStaffTable() {
   const { data: misSources } = useMisSources();
   const sourcesOf = (id: string): MisSource[] => (misSources ?? []).filter((m) => m.employeeId === id);
   const days = misSources?.[0]?.days.map((d) => d.date) ?? [];
+  const dayLabels = misSources?.[0]?.days.map((d) => d.label) ?? ['Last working day', 'Previous working day'];
   const { data: circle } = useCircleMonth(null);
   const circleOf = new Map((circle?.rows ?? []).map((r) => [r.employeeId, r.summary]));
 
@@ -159,7 +160,10 @@ export function MsiStaffTable() {
         </div>
 
         <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-gray-500 mr-1">Yesterday{days[0] ? ` (${shortDay(days[0])})` : ''}:</span>
+          <span className="text-gray-500 mr-1">
+            {dayLabels[0]}
+            {days[0] ? ` (${shortDay(days[0])})` : ''}:
+          </span>
           {chip('green', 'Submitted', counts.green, 'text-emerald-700 dark:text-emerald-400')}
           {chip('amber', 'Incomplete', counts.amber, 'text-amber-700 dark:text-amber-400')}
           {chip('red', 'Not submitted', counts.red, 'text-red-600 dark:text-red-400')}
@@ -194,11 +198,11 @@ export function MsiStaffTable() {
                 <tr className="text-[11px] font-semibold tracking-wider uppercase text-gray-400 font-mono border-b border-gray-100 dark:border-gray-800">
                   <th className="px-5 py-3.5">Name / login</th>
                   <th className="px-5 py-3.5">
-                    MIS · Yesterday
+                    MIS · {dayLabels[0]}
                     {days[0] && <span className="block normal-case font-normal tracking-normal">{shortDay(days[0])}</span>}
                   </th>
                   <th className="px-5 py-3.5">
-                    MIS · Day before
+                    MIS · {dayLabels[1] ?? 'Previous working day'}
                     {days[1] && <span className="block normal-case font-normal tracking-normal">{shortDay(days[1])}</span>}
                   </th>
                   <th className="px-5 py-3.5" title={`Every ${CIRCLES_PER_DEDUCTION} red circles in a month = 1 day's salary deducted`}>

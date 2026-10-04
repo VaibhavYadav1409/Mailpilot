@@ -31,6 +31,38 @@ export interface MisSourceDay {
   blanks: MisBlank[];
   note: string | null;
   checkedAt: string | null;
+  /** When the day became fully filled. */
+  completedAt?: string | null;
+  /** When the Excel file was last saved, and by whom (OneDrive / SharePoint). */
+  fileSavedAt?: string | null;
+  fileSavedBy?: string | null;
+}
+
+/** "05 Oct, 6:02 pm" in India time. */
+export function whenIst(iso: string) {
+  return new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+/** "Excel last saved 05 Oct, 6:02 pm by Mamta · filled completely 05 Oct, 5:40 pm" — when the employee actually worked on it. */
+export function FileSaved({ sources, className }: { sources: Pick<MisSourceDay, 'id' | 'label' | 'fileSavedAt' | 'fileSavedBy' | 'completedAt'>[]; className?: string }) {
+  const shown = sources.filter((s) => s.fileSavedAt || s.completedAt);
+  if (!shown.length) return null;
+  return (
+    <span className={cn('inline-flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500', className)}>
+      {shown.map((s) => (
+        <span key={s.id} title="From OneDrive / SharePoint: when the Excel file was last saved, and by whom">
+          {sources.length > 1 && <b className="font-medium">{s.label}: </b>}
+          {s.fileSavedAt && (
+            <>
+              Excel last saved {whenIst(s.fileSavedAt)}
+              {s.fileSavedBy ? ` by ${s.fileSavedBy}` : ''}
+            </>
+          )}
+          {s.completedAt && <>{s.fileSavedAt ? ' · ' : ''}fully filled {whenIst(s.completedAt)}</>}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 /** A person's MIS for one day, across all their files. */
@@ -99,7 +131,7 @@ export function statusLabel(status: MisStatus | undefined | null, blanks = 0): s
     case 'ERROR':
       return "Can't read file";
     case 'OFF':
-      return 'Sunday · off';
+      return 'Day off';
     default:
       return 'Not checked yet';
   }
@@ -168,7 +200,7 @@ export function explainSource(s: MisSourceDay, date: string): string {
     case 'ERROR':
       return `MailPilot couldn't open this file: ${s.note ?? 'unknown error'}`;
     case 'OFF':
-      return `Sunday — nothing filled, not counted.`;
+      return `Day off (Sunday, weekly-off Saturday or holiday) — no MIS needed, not counted.`;
     default:
       return 'Not read yet — the first check runs within 10 minutes of linking.';
   }
@@ -261,7 +293,7 @@ export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
       title: 'Not submitted',
       text: `There is no column for that date, or ${NOT_FILLED_BLANKS} or more of their usual entries are blank.`,
     },
-    { tone: 'gray', title: 'Grey', text: 'Sunday with nothing filled (not counted), or the file couldn’t be opened — the reason is shown.' },
+    { tone: 'gray', title: 'Grey', text: 'Day off (Sunday, 2nd/4th Saturday or holiday — not counted), or the file couldn’t be opened — the reason is shown.' },
   ];
   return (
     <div className="glass-card overflow-hidden">
@@ -290,8 +322,12 @@ export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
           </ul>
           <ul className="space-y-2 text-gray-600 dark:text-gray-400 list-disc pl-5">
             <li>
-              MIS is checked <b>one day late</b>: staff have until the next day to fill a day, so this page shows{' '}
-              <b>yesterday</b> and the <b>day before</b> — never today.
+              MIS is checked <b>one working day late</b>: staff have until the end of the next working day to fill a day, so
+              this page shows the <b>last working day</b> and the <b>one before it</b> — never today.
+            </li>
+            <li>
+              <b>Days off</b> — Sundays, the 2nd and 4th Saturday, stock market (NSE) trading holidays and company holidays — need
+              no MIS and are skipped (Monday after a 2nd-Saturday weekend shows Friday and Thursday).
             </li>
             <li>
               <b>Usual entries</b> are the rows a person filled on at least half of their last 10 working days. Rows they normally

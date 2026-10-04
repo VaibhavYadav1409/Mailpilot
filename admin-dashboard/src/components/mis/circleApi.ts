@@ -23,6 +23,40 @@ export interface CircleCell {
   reason: string | null;
   /** "MIS check (automatic)", the admin's name, or "Calendar". */
   markedBy: string | null;
+  /** Deadline, what the file showed then, Excel save times, timeline (automatic marks). */
+  evidence: CircleEvidence | null;
+}
+
+export interface CircleEvidence {
+  deadlineDay: string;
+  deadline: string;
+  atDeadline: {
+    status: string;
+    filled: number;
+    blanks: number;
+    checkedAt: string;
+    savedAt: string | null;
+    savedBy: string | null;
+    note: string | null;
+  } | null;
+  firstFilledAt: string | null;
+  completedAt: string | null;
+  filledLateAt: string | null;
+  lastSavedAt: string | null;
+  lastSavedBy: string | null;
+  timeline: {
+    at: string;
+    savedAt: string | null;
+    savedBy: string | null;
+    status: string;
+    filled: number;
+    blanks: number;
+    file: string;
+    note: string | null;
+    afterDeadline: boolean;
+  }[];
+  /** Ready-to-show sentences (India time). */
+  lines: string[];
 }
 
 export interface CircleSummary {
@@ -47,7 +81,7 @@ export interface CircleMonth {
   title: string;
   today: string;
   yesterday: string;
-  days: { date: string; day: number; dow: string; isOff: boolean }[];
+  days: { date: string; day: number; dow: string; isOff: boolean; offName: string | null }[];
   rows: CircleRow[];
   codes: CircleCode[];
   rules: string[];
@@ -103,6 +137,7 @@ export interface RedCircleEntry {
   reason: string;
   markedBy: string;
   note: string | null;
+  evidence: CircleEvidence | null;
 }
 
 /** Same as the backend's redCircleEntries: every red circle in date order and what it did. */
@@ -113,7 +148,7 @@ export function redCircleEntries(row: CircleRow, data: CircleMonth): RedCircleEn
   for (const d of data.days) {
     const c = row.cells[d.date];
     if (!c?.code || !isCircle.has(c.code)) continue;
-    const base = { date: d.date, reason: c.reason ?? 'The MIS check found the MIS not submitted.', markedBy: c.markedBy ?? '', note: c.note };
+    const base = { date: d.date, reason: c.reason ?? 'The MIS check found the MIS not submitted.', markedBy: c.markedBy ?? '', note: c.note, evidence: c.evidence ?? null };
     if (c.pending) {
       const k = n + 1;
       out.push({
@@ -123,8 +158,8 @@ export function redCircleEntries(row: CircleRow, data: CircleMonth): RedCircleEn
         triggersDeduction: false,
         effect:
           k % CIRCLES_PER_DEDUCTION === 0
-            ? `Pending — if not filled today it becomes the ${ordinal(k)} red circle and the ${ordinal(k / CIRCLES_PER_DEDUCTION)} day's salary is deducted.`
-            : `Pending — if not filled today it becomes the ${ordinal(k)} red circle.`,
+            ? `Pending — if not filled by the deadline it becomes the ${ordinal(k)} red circle and the ${ordinal(k / CIRCLES_PER_DEDUCTION)} day's salary is deducted.`
+            : `Pending — if not filled by the deadline it becomes the ${ordinal(k)} red circle.`,
       });
       continue;
     }
@@ -167,4 +202,25 @@ export async function downloadCircleExcel(month: string, employee?: { id: string
   a.click();
   a.remove();
   window.URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
+// Holidays (working calendar)
+// ---------------------------------------------------------------------------
+
+export interface HolidayItem {
+  date: string;
+  name: string;
+  /** NSE = built-in stock market holiday, COMPANY = added by an admin. */
+  source: 'NSE' | 'COMPANY';
+  /** false = built-in holiday the company works on. */
+  isOff: boolean;
+  weekday: string;
+}
+
+export function useHolidays(year: number) {
+  return useQuery({
+    queryKey: ['mis-holidays', year],
+    queryFn: async () => (await api.get<{ year: number; holidays: HolidayItem[]; source: string; weeklyOff: string }>('/mis/holidays', { params: { year } })).data,
+  });
 }

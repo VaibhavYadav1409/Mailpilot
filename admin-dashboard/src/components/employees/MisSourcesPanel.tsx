@@ -5,12 +5,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, Loader2, Pencil, Plus, RefreshCw, SlidersHorizontal, Trash2 } from 'lucide-react';
 import api from '@/services/api';
 import { cn } from '@/utils/cn';
-import { BlankList, StatusBadge, TONE, dmy, explainSource, shortDay, toneOf } from '@/components/mis/misUi';
+import { BlankList, StatusBadge, TONE, dmy, explainSource, shortDay, toneOf, whenIst } from '@/components/mis/misUi';
 import { sourceStatus, type MisSource } from './misApi';
 
 /**
- * One MIS staff member's spreadsheets: link a file, see yesterday's and the
- * day before's result with the reason, fix who checks/approves it, and
+ * One MIS staff member's spreadsheets: link a file, see the last two working
+ * days' results with the reason, fix who checks/approves it, and
  * (optionally) pin which rows must be filled.
  */
 export function MisSourcesPanel({
@@ -169,7 +169,14 @@ function SourceCard({ source: s, canManage, onChanged }: { source: MisSource; ca
         )}
       </div>
 
-      {/* Yesterday + day before */}
+      {s.fileSavedAt && (
+        <p className="text-[11px] text-gray-500" title="From OneDrive / SharePoint">
+          Excel last saved {whenIst(s.fileSavedAt)}
+          {s.fileSavedBy ? ` by ${s.fileSavedBy}` : ''}
+        </p>
+      )}
+
+      {/* Last working day + the one before */}
       <div className="grid gap-3 md:grid-cols-2">
         {s.days.map((d, i) => {
           const st = sourceStatus(s, i);
@@ -203,6 +210,7 @@ function SourceCard({ source: s, canManage, onChanged }: { source: MisSource; ca
                 )}
               </p>
               {st === 'INCOMPLETE' && check && check.blanks.length > 0 && <BlankList blanks={check.blanks} max={6} />}
+              {check?.completedAt && st === 'COMPLETE' && <p className="text-[11px] text-gray-500">Fully filled {whenIst(check.completedAt)}</p>}
               {st === 'ERROR' && (
                 <p className="text-[11px] text-gray-500">
                   Fix: open the file in Excel online → Share → Copy link, then unlink this file and link it again with that link.

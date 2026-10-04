@@ -20,32 +20,35 @@ import {
   cacheMisToken,
   exchangeMisCode,
   forgetMisToken,
-  getItemVersion,
+  getItemInfo,
   getMisAccessToken,
   readWorkbook,
   resolveShareLink,
 } from "./misMicrosoft";
 import { addDays, availableDates, businessDateString, dateColumnValue } from "./msiService";
+import { DEFAULT_CALENDAR, focusLabels, getWorkCalendar, isWorkingDay, lastWorkingDays, type WorkCalendar } from "./workCalendar";
 
-/** OFF = a Sunday with nothing filled — not counted against anyone. */
+/** OFF = an off day (Sunday, weekly-off Saturday, holiday) with nothing filled — not counted against anyone. */
 export type MisSourceStatus = "COMPLETE" | "INCOMPLETE" | "MISSING" | "ERROR" | "NOT_CHECKED" | "OFF";
 
 /**
- * MIS is reviewed for the previous days: the company gives staff one day to
- * fill a day's MIS, so everything focuses on yesterday and the day before.
- * Today is not checked.
+ * MIS is reviewed for the previous WORKING days: the company gives staff one
+ * day to fill a day's MIS, so everything focuses on the last working day
+ * (`yesterday`) and the working day before it (`dayBefore`). Sundays, the
+ * 2nd/4th Saturday and holidays are skipped (see workCalendar.ts), so on a
+ * Monday after a 2nd-Saturday weekend these are Friday and Thursday. Today is
+ * not checked.
  */
-export function misFocusDates(now = new Date()) {
+export function misFocusDates(now = new Date(), cal: WorkCalendar = DEFAULT_CALENDAR) {
   const today = businessDateString(now);
-  return { today, yesterday: addDays(today, -1), dayBefore: addDays(today, -2) };
+  const [yesterday, dayBefore] = lastWorkingDays(today, 2, cal);
+  return { today, yesterday, dayBefore, labels: focusLabels(today, yesterday, dayBefore) };
 }
 
-export function misCheckDates(now = new Date()): string[] {
-  const f = misFocusDates(now);
+export function misCheckDates(now = new Date(), cal: WorkCalendar = DEFAULT_CALENDAR): string[] {
+  const f = misFocusDates(now, cal);
   return [f.yesterday, f.dayBefore];
 }
-
-const isSunday = (date: string) => new Date(`${date}T00:00:00Z`).getUTCDay() === 0;
 
 export class MisError extends Error {
   constructor(public status: number, message: string) {
@@ -53,7 +56,10 @@ export class MisError extends Error {
   }
 }
 
-const CHECK_RETENTION_DAYS = 7;
+// Long enough to cover a holiday stretch (e.g. Diwali) between two working days.
+const CHECK_RETENTION_DAYS = 14;
+/** MisCheckEvent rows (evidence behind red circles). */
+const EVIDENCE_RETENTION_DAYS = 70;
 /** Background job interval and the "fresh enough" window for on-demand checks. */
 export const MIS_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 const ON_DEMAND_MAX_AGE_MS = 3 * 60 * 1000;
@@ -212,7 +218,7 @@ function publicCheck(c: {
 
 /** Admin list: every source with today's result. */
 export async function listMisSources(companyId: string, now = new Date()) {
-  const f = misFocusDates(now);
+  const f = misFocusDates(now, await getWorkCalendar(companyId));
   const sources = await prisma.misSource.findMany({
     where: { companyId },
     orderBy: [{ employeeId: "asc" }, { createdAt: "asc" }],
@@ -234,10 +240,12 @@ export async function listMisSources(companyId: string, now = new Date()) {
     fields: (Array.isArray(s.detectedColumns) ? s.detectedColumns : []) as unknown as MisField[],
     lastCheckedAt: s.lastCheckedAt?.toISOString() ?? null,
     lastError: s.lastError,
-    /** Yesterday first, then the day before — what the dashboard reviews. */
+    fileSavedAt: s.fileModifiedAt?.toISOString() ?? null,
+    fileSavedBy: s.fileModifiedBy ?? null,
+    /** Last working day first, then the working day before — what the dashboard reviews. */
     days: [
-      { date: f.yesterday, label: "Yesterday", check: publicCheck(on(s.checks, f.yesterday)) },
-      { date: f.dayBefore, label: "Day before", check: publicCheck(on(s.checks, f.dayBefore)) },
+      { date: f.yesterday, label: f.labels.last, check: publicCheck(on(s.checks, f.yesterday)) },
+      { date: f.dayBefore, label: f.labels.previous, check: publicCheck(on(s.checks, f.dayBefore)) },
     ],
   }));
 }
@@ -421,7 +429,8 @@ export function runMisChecks(
 
 async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: string; force?: boolean }) {
   const now = new Date();
-  const dates = misCheckDates(now); // [yesterday, day before]
+  const cal = await getWorkCalendar(companyId);
+  const dates = misCheckDates(now, cal); // [last working day, the one before]
   const sources = await prisma.misSource.findMany({
     where: {
       companyId,
@@ -453,7 +462,12 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
       }
       // Unchanged file + results already saved for every day = nothing to do.
       // One tiny request instead of reading the whole workbook again.
-      const version = await getItemVersion(token, driveId!, itemId!).catch(() => null);
+      const info = await getItemInfo(token, driveId!, itemId!).catch(() => null);
+      const version = info?.version ?? null;
+      if (info?.modifiedAt) {
+        patch.fileModifiedAt = info.modifiedAt;
+        patch.fileModifiedBy = info.modifiedBy;
+      }
       if (!opts.force && version && version === s.lastETag) {
         const have = await prisma.misDailyCheck.count({
           where: { sourceId: s.id, checkDate: { in: dates.map(dateColumnValue) }, status: { notIn: ["ERROR", "NOT_CHECKED"] } },
@@ -472,6 +486,7 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
           sheetName: s.sheetName,
           dateColumn: s.dateColumn,
           requiredColumns: asStringArray(s.requiredColumns),
+          isOffDay: (d) => !isWorkingDay(d, cal),
         }),
       }));
       const detected: MisField[] = results[0].result.fields;
@@ -480,7 +495,7 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
         data: { ...patch, detectedColumns: detected as unknown as Prisma.InputJsonValue, lastCheckedAt: now, lastError: null },
       });
       for (const { date, result } of results) {
-        changed = (await saveCheck(s, date, result, now)) || changed;
+        changed = (await saveCheck(s, date, result, now, cal, info)) || changed;
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -525,12 +540,14 @@ async function saveCheck(
   date: string,
   r: MisCheckResult,
   now: Date,
+  cal: WorkCalendar = DEFAULT_CALENDAR,
+  file: { modifiedAt: Date | null; modifiedBy: string | null } | null = null,
 ): Promise<boolean> {
   const where = { sourceId_checkDate: { sourceId: s.id, checkDate: dateColumnValue(date) } };
   const prev = await prisma.misDailyCheck.findUnique({ where });
   const completedAt = r.status === "COMPLETE" ? prev?.completedAt ?? now : null;
-  // A Sunday with nothing filled is a day off, not a missed MIS.
-  const status: MisSourceStatus = r.status === "MISSING" && r.filledCount === 0 && isSunday(date) ? "OFF" : r.status;
+  // An off day (Sunday, weekly-off Saturday, holiday) with nothing filled is not a missed MIS.
+  const status: MisSourceStatus = r.status === "MISSING" && r.filledCount === 0 && !isWorkingDay(date, cal) ? "OFF" : r.status;
   const data = {
     status,
     rowCount: r.filledCount,
@@ -545,6 +562,28 @@ async function saveCheck(
     create: { sourceId: s.id, companyId: s.companyId, employeeId: s.employeeId, checkDate: dateColumnValue(date), ...data },
     update: data,
   });
+  // Evidence log: every change seen for the day, with the file's last save.
+  const blankCount = r.blankCount ?? r.blanks.length;
+  const prevBlanks = prev ? (Array.isArray(prev.incompleteRows) ? prev.incompleteRows.length : 0) : -1;
+  if (!prev || prev.status !== status || prev.rowCount !== r.filledCount || (status === "INCOMPLETE" && prevBlanks !== Math.min(blankCount, 50))) {
+    await prisma.misCheckEvent
+      .create({
+        data: {
+          companyId: s.companyId,
+          sourceId: s.id,
+          employeeId: s.employeeId,
+          checkDate: dateColumnValue(date),
+          at: now,
+          status,
+          filledCount: r.filledCount,
+          blankCount,
+          fileModifiedAt: file?.modifiedAt ?? null,
+          fileModifiedBy: file?.modifiedBy ?? null,
+          note: data.note,
+        },
+      })
+      .catch((e) => console.error("[MIS] evidence log write failed:", e instanceof Error ? e.message : e));
+  }
   return (
     !prev ||
     prev.status !== status ||
@@ -576,6 +615,8 @@ export async function purgeOldMisChecks(now = new Date()) {
   const cutoff = dateColumnValue(availableDates(now).at(-1)!);
   const oldest = new Date(cutoff.getTime() - (CHECK_RETENTION_DAYS - 2) * 86400000);
   const { count } = await prisma.misDailyCheck.deleteMany({ where: { checkDate: { lt: oldest } } });
+  // The evidence log is kept longer: the current and the previous month's Circle Report use it.
+  await prisma.misCheckEvent.deleteMany({ where: { at: { lt: new Date(now.getTime() - EVIDENCE_RETENTION_DAYS * 86400000) } } }).catch(() => undefined);
   return count;
 }
 
@@ -601,6 +642,11 @@ export interface MisEmployeeDay {
     blanks: MisBlank[];
     note: string | null;
     checkedAt: string | null;
+    /** When the day became complete (first seen fully filled). */
+    completedAt: string | null;
+    /** When the Excel file was last saved, and by whom (latest MailPilot knows). */
+    fileSavedAt: string | null;
+    fileSavedBy: string | null;
   }[];
 }
 
@@ -638,6 +684,9 @@ export async function getMisStatusForDate(companyId: string, date: string, emplo
         rowCount: c?.rowCount ?? 0,
         missingColumns: c?.missingColumns ?? [],
         blanks: c?.blanks ?? [],
+        completedAt: c?.completedAt ?? null,
+        fileSavedAt: s.fileModifiedAt?.toISOString() ?? null,
+        fileSavedBy: s.fileModifiedBy ?? null,
         note: c?.note ?? s.lastError ?? null,
         checkedAt: c?.checkedAt ?? s.lastCheckedAt?.toISOString() ?? null,
       },
