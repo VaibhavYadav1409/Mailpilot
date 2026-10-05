@@ -83,3 +83,29 @@ describe("buildPersonEmail", () => {
     expect(hr.html).toContain("Mamta Sharma");
   });
 });
+
+describe("matching pasted names and addresses", () => {
+  const staff = [
+    { name: "Anjali Jha", email: "anjali" },
+    { name: "Deepshikha", email: "deepshikha" },
+    { name: "Diya", email: "diya" },
+    { name: "Aman Nair", email: "aman nair" },
+    { name: "Sohan", email: "sohan" },
+  ];
+  it.each([
+    ["Anjali Jha", "Anjali Jha"],
+    ["Deepskhikha", "Deepshikha"], // typo
+    ["Diya", "Diya"],
+    ["Aman Nair", "Aman Nair"],
+    ["sohan", "Sohan"],
+  ])("%s -> %s", (input, want) => {
+    expect(m.matchPersonByName(staff, input)?.name).toBe(want);
+  });
+  it("doesn't guess when unsure", () => {
+    expect(m.matchPersonByName(staff, "Rajiv")).toBeNull();
+  });
+  it("keeps several addresses for one person", () => {
+    expect(m.cleanAddressList("farsightkunjee@gmail.com,  INFO@trryitt.com")).toEqual({ value: "farsightkunjee@gmail.com, info@trryitt.com", bad: [] });
+    expect(m.cleanAddressList("x@y.com amd").bad).toEqual(["amd"]);
+  });
+});

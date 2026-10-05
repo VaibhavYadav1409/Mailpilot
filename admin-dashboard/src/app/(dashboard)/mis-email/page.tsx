@@ -331,11 +331,7 @@ function RecipientsCard({ recipients }: { recipients: Recipient[] }) {
   });
   const bulk = useMutation({
     mutationFn: async () => {
-      const rows = paste
-        .split(/\r?\n/)
-        .map((l) => l.split(/\t|,(?=[^,]*@)|\s{2,}/).map((x) => x.trim()))
-        .filter((c) => c.length >= 2 && c[0] && c[c.length - 1].includes('@'))
-        .map((c) => ({ name: c[0], email: c[c.length - 1] }));
+      const rows = parsePastedEmails(paste);
       if (!rows.length) throw new Error('Paste rows like: Mamta [tab] mamta@company.com');
       return (await api.post<{ updated: { name: string; matched: string }[]; notFound: string[]; invalid: string[] }>('/mis/email/recipients/bulk', { rows })).data;
     },
@@ -365,7 +361,10 @@ function RecipientsCard({ recipients }: { recipients: Recipient[] }) {
       </div>
       {showPaste && (
         <div className="px-5 py-4 space-y-2 border-b border-gray-100 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-900/30">
-          <p className="text-xs text-gray-500">Copy two columns from Excel — Name and Email — and paste them here. Names are matched to the MIS logins (e.g. “Anjali Jha” → ANJALI).</p>
+          <p className="text-xs text-gray-500">
+            One person per line: the name, then their email(s) — copied from Excel or typed like “Diya - farsightkunjee@gmail.com and info@trryitt.com”. Names are matched to the MIS
+            logins (e.g. “Anjali Jha” → ANJALI); someone with two addresses gets the email at both.
+          </p>
           <textarea
             value={paste}
             onChange={(e) => setPaste(e.target.value)}
@@ -402,6 +401,26 @@ function RecipientsCard({ recipients }: { recipients: Recipient[] }) {
   );
 }
 
+/**
+ * One person per line: the name, then one or more email addresses in any
+ * format — "01) Diya - Email - a@x.com and b@y.com", "Mamta<tab>m@x.com", …
+ */
+function parsePastedEmails(text: string): { name: string; email: string }[] {
+  const EMAIL = /[^\s,;<>()"']+@[^\s,;<>()"']+\.[^\s,;<>()"']+/g;
+  const out: { name: string; email: string }[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const emails = line.match(EMAIL)?.map((e) => e.replace(/[.,;:]+$/, '').toLowerCase()) ?? [];
+    if (!emails.length) continue;
+    const name = line
+      .slice(0, line.search(EMAIL))
+      .replace(/^\s*\d+\s*[).:-]?\s*/, '') // "01)"
+      .replace(/[-–:\s]*(e-?mail|mail)?[-–:\s]*$/i, '') // "- Email -"
+      .trim();
+    if (name) out.push({ name, email: [...new Set(emails)].join(', ') });
+  }
+  return out;
+}
+
 function RecipientRow({ r, onSave, saving }: { r: Recipient; onSave: (email: string | null) => void; saving: boolean }) {
   const [value, setValue] = useState(r.emailSource === 'CONTACT' ? r.email ?? '' : '');
   useEffect(() => setValue(r.emailSource === 'CONTACT' ? r.email ?? '' : ''), [r.email, r.emailSource]);
@@ -424,7 +443,7 @@ function RecipientRow({ r, onSave, saving }: { r: Recipient; onSave: (email: str
           <input
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder={r.emailSource === 'LOGIN' ? `${r.email} (login email)` : 'name@farsightshares.com'}
+            placeholder={r.emailSource === 'LOGIN' ? `${r.email} (login email)` : 'name@farsightshares.com (comma for more)'}
             className={cn('w-72 px-2.5 py-1.5 border rounded-lg bg-transparent text-sm', r.email ? 'border-gray-200 dark:border-gray-800' : 'border-amber-300 dark:border-amber-700')}
           />
           {changed && (

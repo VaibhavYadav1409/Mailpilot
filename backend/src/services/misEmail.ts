@@ -239,11 +239,48 @@ export async function listRecipients(companyId: string): Promise<Recipient[]> {
   });
 }
 
+/** "a@x.com, b@y.com" -> the cleaned list to store (one person can have several addresses). */
+export function cleanAddressList(raw: string | null | undefined): { value: string | null; bad: string[] } {
+  const list = parseEmailList(raw);
+  const bad = list.filter((e) => !isEmail(e));
+  return { value: list.length ? list.join(", ") : null, bad };
+}
+
 export async function setRecipientEmail(companyId: string, employeeId: string, email: string | null) {
-  const value = email?.trim().toLowerCase() || null;
-  if (value && !isEmail(value)) throw new MisEmailError(400, "That doesn't look like an email address.");
+  const { value, bad } = cleanAddressList(email);
+  if (bad.length) throw new MisEmailError(400, `Not an email address: ${bad.join(", ")}`);
   const { count } = await prisma.employee.updateMany({ where: { id: employeeId, companyId }, data: { contactEmail: value } });
   if (!count) throw new MisEmailError(404, "Person not found.");
+}
+
+/** Edit distance, for names typed slightly differently ("Deepskhikha" ~ "Deepshikha"). */
+export function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)] as number[]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
+
+/** The one person a pasted name means: login, full name, first name, or a first name with a small typo. Null when unsure. */
+export function matchPersonByName<T extends { name: string; email: string }>(staff: T[], raw: string): T | null {
+  const name = raw.trim();
+  const lower = name.toLowerCase();
+  const word = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  const firstOf = (s: string) => word(s.trim().split(/\s+/)[0] ?? "");
+  const one = (list: T[]) => (list.length === 1 ? list[0] : null);
+  return (
+    matchExistingStaff(staff, name) ??
+    staff.find((p) => p.name.toLowerCase() === lower) ??
+    one(staff.filter((p) => firstOf(p.name) === firstOf(name) || word(p.email) === firstOf(name))) ??
+    one(
+      staff.filter((p) => {
+        const a = firstOf(name);
+        const b = firstOf(p.name);
+        return a.length >= 5 && b.length >= 5 && editDistance(a, b) <= 2;
+      }),
+    )
+  );
 }
 
 /** Pasted "Name <tab> email" rows -> contact emails, matched by login or name. */
@@ -255,20 +292,13 @@ export async function bulkSetEmails(companyId: string, rows: { name: string; ema
   const invalid: string[] = [];
   for (const r of rows) {
     const name = r.name.trim();
-    const email = r.email.trim().toLowerCase();
+    const { value: email, bad } = cleanAddressList(r.email);
     if (!name) continue;
-    if (!isEmail(email)) {
-      invalid.push(`${name}: ${r.email}`);
+    if (!email || bad.length) {
+      invalid.push(`${name}: ${bad.join(", ") || r.email}`);
       continue;
     }
-    const lower = name.toLowerCase();
-    const hit =
-      matchExistingStaff(staff, name) ??
-      staff.find((p) => p.name.toLowerCase() === lower) ??
-      (() => {
-        const first = staff.filter((p) => p.name.toLowerCase().split(/\s+/)[0] === lower.split(/\s+/)[0]);
-        return first.length === 1 ? first[0] : null;
-      })();
+    const hit = matchPersonByName(staff, name);
     if (!hit) {
       notFound.push(name);
       continue;
@@ -671,7 +701,7 @@ export async function runMisEmails(
       if (!first) await new Promise((r) => setTimeout(r, SEND_GAP_MS));
       first = false;
       try {
-        await deliver(companyId, { to: [p.email], subject: mail.subject, html: mail.html, text: mail.text });
+        await deliver(companyId, { to: parseEmailList(p.email), subject: mail.subject, html: mail.html, text: mail.text });
         summary.sent++;
         await log(p.employeeId, p.email, mail.subject, "SENT");
       } catch (e) {

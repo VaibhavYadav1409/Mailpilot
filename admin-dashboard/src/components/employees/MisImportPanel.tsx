@@ -28,13 +28,28 @@ interface Result {
 export function parsePastedRows(text: string): Row[] {
   const rows: Row[] = [];
   for (const line of text.split(/\r?\n/)) {
-    const cells = line.split('\t').map((c) => c.trim());
-    const urlIdx = cells.findIndex((c) => /^https?:\/\//i.test(c));
-    if (urlIdx < 0) continue;
-    const name = cells.slice(0, urlIdx).filter(Boolean).join(' ').trim();
+    if (line.includes('\t')) {
+      // Copied from Excel: Name | Link | Checked by | Approved by
+      const cells = line.split('\t').map((c) => c.trim());
+      const urlIdx = cells.findIndex((c) => /^https?:\/\//i.test(c));
+      if (urlIdx < 0) continue;
+      const name = cells.slice(0, urlIdx).filter(Boolean).join(' ').trim();
+      if (!name) continue;
+      const rest = cells.slice(urlIdx + 1).filter(Boolean);
+      rows.push({ name, url: cells[urlIdx], checkedBy: rest[0], approvedBy: rest[1] });
+      continue;
+    }
+    // Typed / copied from a chat: "Name  https://…  [Checked by | Approved by]"
+    const m = /https?:\/\/\S+/i.exec(line);
+    if (!m) continue;
+    const name = line.slice(0, m.index).replace(/[\s|,:-]+$/, '').trim();
     if (!name) continue;
-    const rest = cells.slice(urlIdx + 1).filter(Boolean);
-    rows.push({ name, url: cells[urlIdx], checkedBy: rest[0], approvedBy: rest[1] });
+    const rest = line
+      .slice(m.index + m[0].length)
+      .split(/\s*\|\s*|\s{2,}/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+    rows.push({ name, url: m[0], checkedBy: rest[0], approvedBy: rest[1] });
   }
   return rows;
 }
