@@ -2,7 +2,7 @@
  * Evidence behind every Circle Report cell — so HR can show WHEN and WHY a red
  * circle was marked:
  *
- *   - the deadline (end of the next working day after the MIS day),
+ *   - the deadline (11:00 AM on the next working day after the MIS day),
  *   - what MailPilot saw at the deadline (status, filled / blank entries),
  *   - when MailPilot read the file, and when the employee last SAVED the
  *     Excel file before that (time + who, from OneDrive / SharePoint),
@@ -18,8 +18,8 @@
  * file later, a file saved before the deadline counts as on time.
  */
 import { prisma } from "../lib/db";
-import { addDays, getMsiTimezone, startOfBusinessDay } from "./msiService";
-import { nextWorkingDay, shortDate, type WorkCalendar } from "./workCalendar";
+import { getMsiTimezone, startOfBusinessDay } from "./msiService";
+import { MIS_DEADLINE_TIME, nextWorkingDay, shortDate, type WorkCalendar } from "./workCalendar";
 
 export interface RawEvent {
   sourceId: string;
@@ -82,10 +82,11 @@ export interface CircleEvidence {
   lines: string[];
 }
 
-/** The exact moment a day's MIS stops being "pending": end of the next working day. */
-export function deadlineFor(date: string, cal: WorkCalendar, tz: string = getMsiTimezone()): { day: string; at: Date } {
+/** The exact moment a day's MIS stops being "pending": 11:00 AM (MIS_DEADLINE_TIME) on the next working day. */
+export function deadlineFor(date: string, cal: WorkCalendar, tz: string = getMsiTimezone(), time: string = MIS_DEADLINE_TIME): { day: string; at: Date } {
   const day = nextWorkingDay(date, cal);
-  return { day, at: startOfBusinessDay(addDays(day, 1), tz) };
+  const [h, m] = time.split(":").map(Number);
+  return { day, at: new Date(startOfBusinessDay(day, tz).getTime() + (h * 60 + m) * 60_000) };
 }
 
 /** "05-10-2026 06:02 PM" in the business time zone. */
@@ -207,7 +208,7 @@ export function buildEvidence(
 export function evidenceLines(ev: CircleEvidence, tz: string = getMsiTimezone(), now: Date = new Date()): string[] {
   const f = (d: string | null) => fmtWhen(d, tz);
   const passed = now >= new Date(ev.deadline);
-  const lines = [`Deadline: end of ${shortDate(ev.deadlineDay)} (${f(new Date(new Date(ev.deadline).getTime() - 60_000).toISOString())}).`];
+  const lines = [`Deadline: ${shortDate(ev.deadlineDay)}, ${f(ev.deadline).slice(11)} (${f(ev.deadline)}).`];
   const d = ev.atDeadline;
   if (d) {
     const counts = d.status === "COMPLETE" ? `${d.filled} entries filled` : `${d.filled} filled, ${d.blanks} usual entr${d.blanks === 1 ? "y" : "ies"} blank`;

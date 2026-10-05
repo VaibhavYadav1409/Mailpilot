@@ -598,12 +598,19 @@ model MisCheckEvent {
   @@index([companyId, at])
 }
 
-// Nightly MIS email (src/services/misEmail.ts): one row per company.
+// MIS emails (src/services/misEmail.ts): one row per company. Two emails on
+// every working day: a WARNING at warnTime to people whose last working day's
+// MIS isn't submitted, and the RESULT at the deadline (11:00 AM) to everyone.
 model MisEmailSettings {
   id             String    @id @default(uuid())
   companyId      String    @unique
-  enabled        Boolean   @default(false)
-  sendTime       String    @default("23:30") // HH:mm, business time zone (IST)
+  enabled        Boolean   @default(false) // master switch
+  warnEnabled    Boolean   @default(true)
+  warnTime       String    @default("09:30") // HH:mm IST
+  resultEnabled  Boolean   @default(true) // sent at the deadline (MIS_DEADLINE_TIME, 11:00)
+  lastWarnDate   String?
+  lastResultDate String?
+  sendTime       String    @default("23:30") // unused since the two-email schedule
   audience       String    @default("ALL") // ALL | ISSUES (only people with something pending / red)
   skipOffDays    Boolean   @default(true)
   hrSummary      Boolean   @default(true)
@@ -626,6 +633,7 @@ model MisEmailLog {
   runId      String
   runDate    String   // YYYY-MM-DD
   trigger    String   // SCHEDULE | CRON | MANUAL | TEST
+  kind       String   @default("RESULT") // WARN | RESULT | SUMMARY
   employeeId String?
   toEmail    String
   subject    String

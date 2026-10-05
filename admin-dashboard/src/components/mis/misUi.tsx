@@ -322,7 +322,7 @@ export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
           </ul>
           <ul className="space-y-2 text-gray-600 dark:text-gray-400 list-disc pl-5">
             <li>
-              MIS is checked <b>one working day late</b>: staff have until the end of the next working day to fill a day, so
+              MIS is checked <b>one working day late</b>: staff have until <b>11:00 AM on the next working day</b> to fill a day, so
               this page shows the <b>last working day</b> and the <b>one before it</b> — never today.
             </li>
             <li>

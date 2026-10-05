@@ -55,10 +55,11 @@ describe("working calendar", () => {
 describe("evidence", () => {
   const cal = w.DEFAULT_CALENDAR;
   const base = { sourceId: "s1", sourceLabel: "MIS", blankCount: 0, note: null, fileModifiedBy: "Mamta Sharma" };
-  it("deadline = end of the next working day (IST)", () => {
-    const d = ev.deadlineFor("2026-10-01", cal, "Asia/Kolkata"); // next working day: Sat 3 Oct
+  it("deadline = 11:00 AM on the next working day (IST)", () => {
+    const d = ev.deadlineFor("2026-10-01", cal, "Asia/Kolkata"); // next working day: Sat 3 Oct (2 Oct is a holiday)
     expect(d.day).toBe("2026-10-03");
-    expect(d.at.toISOString()).toBe("2026-10-03T18:30:00.000Z");
+    expect(d.at.toISOString()).toBe("2026-10-03T05:30:00.000Z");
+    expect(ev.deadlineFor("2026-10-09", cal, "Asia/Kolkata").day).toBe("2026-10-12"); // Fri -> Mon after the 2nd-Saturday weekend
   });
   it("records not filled at the deadline, then filled late", () => {
     const d = ev.deadlineFor("2026-10-05", cal, "Asia/Kolkata"); // until end of Tue 6 Oct
@@ -81,12 +82,12 @@ describe("evidence", () => {
   it("counts a file saved before the deadline as on time even if read later", () => {
     const d = ev.deadlineFor("2026-10-05", cal, "Asia/Kolkata");
     const e = ev.buildEvidence(
-      [{ ...base, at: new Date("2026-10-07T03:00:00Z"), status: "COMPLETE", filledCount: 28, fileModifiedAt: new Date("2026-10-06T15:00:00Z") }],
+      [{ ...base, at: new Date("2026-10-07T03:00:00Z"), status: "COMPLETE", filledCount: 28, fileModifiedAt: new Date("2026-10-06T04:00:00Z") }],
       d,
       "Asia/Kolkata",
     );
     expect(e.atDeadline?.status).toBe("COMPLETE");
-    expect(e.completedAt).toBe("2026-10-06T15:00:00.000Z");
+    expect(e.completedAt).toBe("2026-10-06T04:00:00.000Z");
     expect(e.filledLateAt).toBeNull();
   });
   it("says so when nothing was read before the deadline", () => {

@@ -210,7 +210,7 @@ export default function MisReportsPage() {
         title="MIS Reports"
         subtitle={
           data
-            ? `${formatLongDate(data.date)} · staff get until the end of the next working day to fill their MIS, so this shows the last two working days (Sundays, 2nd Saturdays and holidays are skipped)`
+            ? `${formatLongDate(data.date)} · staff get until 11:00 AM on the next working day to fill their MIS, so this shows the last two working days (Sundays, 2nd Saturdays and holidays are skipped)`
             : 'Who filled their MIS, and what is missing'
         }
         actions={

@@ -23,7 +23,9 @@ import { cn } from '@/utils/cn';
 
 interface Settings {
   enabled: boolean;
-  sendTime: string;
+  warnEnabled: boolean;
+  warnTime: string;
+  resultEnabled: boolean;
   audience: 'ALL' | 'ISSUES';
   skipOffDays: boolean;
   hrSummary: boolean;
@@ -37,7 +39,10 @@ interface Settings {
 }
 
 interface RunSummary {
+  kind: 'WARN' | 'RESULT';
   runDate: string;
+  misDate: string | null;
+  outcomes: { red: number; yellow: number; green: number } | null;
   trigger: string;
   startedAt: string;
   finishedAt: string | null;
@@ -71,7 +76,8 @@ interface EmailData {
   settings: Settings;
   sender: Sender;
   recipients: Recipient[];
-  cronUrl: string;
+  cronUrls: { warn: string; result: string };
+  deadlineTime: string;
   timezone: string;
 }
 
@@ -79,6 +85,7 @@ interface LogRow {
   id: string;
   runDate: string;
   trigger: string;
+  kind: 'WARN' | 'RESULT' | 'SUMMARY';
   name: string | null;
   toEmail: string;
   subject: string;
@@ -116,7 +123,7 @@ export default function MisEmailPage() {
       <PageHeader
         eyebrow="MIS"
         title="MIS Emails"
-        subtitle="One email to every MIS staff member each night: their MIS status, what is missing, the deadline, and their red circles this month — plus a summary for HR."
+        subtitle="Two emails every working day about yesterday's MIS: a warning in the morning to people who haven't submitted, and the result at the 11:00 AM deadline — red circle, yellow or green — for everyone, plus a summary for HR."
       />
 
       {flash && <div className={cn('glass-card px-5 py-3 text-sm', flash.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600')}>{flash.text}</div>}
@@ -136,7 +143,7 @@ export default function MisEmailPage() {
           <SettingsCard data={data} />
           <RecipientsCard recipients={data.recipients} />
           <PreviewCard data={data} />
-          <BackupScheduleCard data={data} />
+          <BackupTimerCard data={data} />
           <LogCard settings={data.settings} canSend={data.sender.canSend} />
         </>
       )}
@@ -172,8 +179,7 @@ function SenderCard({ sender }: { sender: Sender }) {
         {sender.problem && <p className="text-amber-700 dark:text-amber-400 mt-1">{sender.problem}</p>}
         {sender.needsReconnect && sender.driver === 'graph' && (
           <p className="text-xs text-gray-500 mt-1">
-            Microsoft will ask to “Send mail as you” — accept it. Reading the MIS files keeps working while you do this. If Microsoft says an admin must approve, see step 1 in
-            “Before you switch it on” at the bottom of this page.
+            Microsoft will ask to “Send mail as you” — accept it. Reading the MIS files keeps working while you do this.
           </p>
         )}
         {start.isError && <p className="text-xs text-red-600 mt-1">{errText(start.error, 'Could not start Microsoft sign-in.')}</p>}
@@ -195,12 +201,12 @@ function SettingsCard({ data }: { data: EmailData }) {
   const s = data.settings;
   const [form, setForm] = useState({
     enabled: s.enabled,
-    sendTime: s.sendTime,
+    warnEnabled: s.warnEnabled,
+    warnTime: s.warnTime,
+    resultEnabled: s.resultEnabled,
     audience: s.audience,
-    skipOffDays: s.skipOffDays,
     hrSummary: s.hrSummary,
     hrEmails: s.hrEmails ?? '',
-    subject: s.subject ?? '',
     intro: s.intro ?? '',
     footer: s.footer ?? '',
   });
@@ -215,51 +221,68 @@ function SettingsCard({ data }: { data: EmailData }) {
   });
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
   const missing = data.recipients.filter((r) => !r.email).length;
+  const deadline = time12(data.deadlineTime);
 
   return (
     <div className="glass-card p-5 space-y-4">
       <div className="flex items-center gap-2">
         <Clock className="w-4 h-4 text-gray-500" />
-        <h2 className="text-sm font-semibold">Schedule and content</h2>
+        <h2 className="text-sm font-semibold">When the emails go out</h2>
       </div>
 
       <label className="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-800 p-3">
         <input type="checkbox" className="w-4 h-4" checked={form.enabled} onChange={(e) => set('enabled', e.target.checked)} />
         <span className="text-sm">
-          <b>Send the nightly email</b>
+          <b>Send MIS emails automatically</b>
           <span className="block text-xs text-gray-500">
             {form.enabled
-              ? `Every night at ${time12(form.sendTime)} (India time) to ${data.recipients.length - missing} people${missing ? ` — ${missing} have no email yet` : ''}.`
-              : 'Off — nothing is sent automatically. You can still preview and send a test below.'}
+              ? `On — every working day, about the last working day's MIS.${missing ? ` ${missing} people have no email yet and are skipped.` : ''}`
+              : 'Off — nothing is sent automatically. You can still preview, test and send by hand below.'}
           </span>
         </span>
       </label>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <label className="text-sm space-y-1">
-          <span className="text-xs font-medium text-gray-500">Send time (India time)</span>
-          <input type="time" value={form.sendTime} onChange={(e) => set('sendTime', e.target.value)} className="w-full px-3 py-2 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent" />
-          <span className="block text-[11px] text-gray-500">00:00 = midnight. A run just after midnight reports the day that just ended.</span>
-        </label>
-        <label className="text-sm space-y-1">
-          <span className="text-xs font-medium text-gray-500">Who gets it</span>
-          <select value={form.audience} onChange={(e) => set('audience', e.target.value as 'ALL' | 'ISSUES')} className="w-full px-3 py-2 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent">
-            <option value="ALL">Everyone, every night</option>
-            <option value="ISSUES">Only people with something missing / a red circle</option>
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className={cn('rounded-lg border p-4 space-y-2', form.warnEnabled ? 'border-amber-300 dark:border-amber-700' : 'border-gray-200 dark:border-gray-800 opacity-70')}>
+          <label className="flex items-center gap-2 text-sm font-semibold">
+            <input type="checkbox" checked={form.warnEnabled} onChange={(e) => set('warnEnabled', e.target.checked)} />
+            1. Warning
+          </label>
+          <div className="flex items-center gap-2 text-sm">
+            at
+            <input type="time" value={form.warnTime} onChange={(e) => set('warnTime', e.target.value)} className="px-2 py-1 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent" />
+            <span className="text-xs text-gray-500">India time</span>
+          </div>
+          <p className="text-xs text-gray-600 dark:text-gray-400">
+            Only to people whose MIS for the last working day is <b>not submitted</b> or <b>incomplete</b>: “Please submit it before {deadline}, or a red circle will be marked.” The
+            blank cells are listed. People who already submitted get nothing.
+          </p>
+        </div>
+        <div className={cn('rounded-lg border p-4 space-y-2', form.resultEnabled ? 'border-primary/40' : 'border-gray-200 dark:border-gray-800 opacity-70')}>
+          <label className="flex items-center gap-2 text-sm font-semibold">
+            <input type="checkbox" checked={form.resultEnabled} onChange={(e) => set('resultEnabled', e.target.checked)} />
+            2. Result — at {deadline} (the deadline)
+          </label>
+          <select
+            value={form.audience}
+            onChange={(e) => set('audience', e.target.value as 'ALL' | 'ISSUES')}
+            className="w-full px-2 py-1.5 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent text-sm"
+          >
+            <option value="ALL">To everyone (red, yellow and green)</option>
+            <option value="ISSUES">Only red and yellow</option>
           </select>
-        </label>
-        <label className="text-sm flex items-start gap-2 pt-6">
-          <input type="checkbox" className="mt-0.5" checked={form.skipOffDays} onChange={(e) => set('skipOffDays', e.target.checked)} />
-          <span>
-            Don't send on days off
-            <span className="block text-[11px] text-gray-500">Sundays, 2nd Saturday, holidays</span>
-          </span>
-        </label>
+          <p className="text-xs text-gray-600 dark:text-gray-400">
+            MailPilot re-reads every MIS at {deadline} and tells each person: <span className="text-red-600 font-medium">not submitted — red circle marked</span>,{' '}
+            <span className="text-amber-600 font-medium">incomplete — yellow</span> or <span className="text-emerald-600 font-medium">submitted — green</span>, with their red circles and
+            salary deduction this month.
+          </p>
+        </div>
       </div>
+      <p className="text-xs text-gray-500">Nothing is sent on days off (Sundays, 2nd Saturday, holidays) — the deadline is always on a working day.</p>
 
       <div className="grid gap-4 md:grid-cols-[auto_1fr] items-start">
         <label className="text-sm flex items-center gap-2 pt-2">
-          <input type="checkbox" checked={form.hrSummary} onChange={(e) => set('hrSummary', e.target.checked)} /> Summary for HR
+          <input type="checkbox" checked={form.hrSummary} onChange={(e) => set('hrSummary', e.target.checked)} /> Summary for HR at {deadline}
         </label>
         <label className="text-sm space-y-1">
           <input
@@ -269,41 +292,31 @@ function SettingsCard({ data }: { data: EmailData }) {
             placeholder="hr@farsightshares.com, boss@farsightshares.com"
             className="w-full px-3 py-2 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent disabled:opacity-50"
           />
-          <span className="block text-[11px] text-gray-500">One table of everyone: last two working days, red circles and salary days this month.</span>
+          <span className="block text-[11px] text-gray-500">One table: everyone's result (red first), red circles and salary days this month.</span>
         </label>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <label className="text-sm space-y-1">
-          <span className="text-xs font-medium text-gray-500">Subject</span>
+          <span className="text-xs font-medium text-gray-500">Opening line (optional)</span>
           <input
-            value={form.subject}
-            onChange={(e) => set('subject', e.target.value)}
-            placeholder="MIS update — {name} — {date}"
+            value={form.intro}
+            onChange={(e) => set('intro', e.target.value)}
+            placeholder="This is a reminder from MailPilot about your MIS report."
             className="w-full px-3 py-2 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent"
           />
         </label>
         <label className="text-sm space-y-1">
-          <span className="text-xs font-medium text-gray-500">Opening line</span>
+          <span className="text-xs font-medium text-gray-500">Closing note (optional)</span>
           <input
-            value={form.intro}
-            onChange={(e) => set('intro', e.target.value)}
-            placeholder="Here is your MIS status from MailPilot."
+            value={form.footer}
+            onChange={(e) => set('footer', e.target.value)}
+            placeholder="e.g. Questions: HR, ext. 201."
             className="w-full px-3 py-2 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent"
           />
         </label>
       </div>
-      <label className="text-sm space-y-1 block">
-        <span className="text-xs font-medium text-gray-500">Closing note (optional)</span>
-        <textarea
-          value={form.footer}
-          onChange={(e) => set('footer', e.target.value)}
-          rows={2}
-          placeholder="e.g. Please fill your MIS before leaving the office. Questions: HR, ext. 201."
-          className="w-full px-3 py-2 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent"
-        />
-        <span className="block text-[11px] text-gray-500">You can use {'{first}'}, {'{name}'}, {'{date}'}, {'{month}'} in the subject, opening line and closing note.</span>
-      </label>
+      <p className="text-[11px] text-gray-500">You can use {'{first}'}, {'{name}'}, {'{date}'}, {'{month}'} in the opening line and closing note.</p>
 
       <div className="flex items-center gap-3">
         <button onClick={() => save.mutate()} disabled={save.isPending} className="btn-primary flex items-center gap-2">
@@ -460,16 +473,22 @@ function RecipientRow({ r, onSave, saving }: { r: Recipient; onSave: (email: str
 // ---------------------------------------------------------------------------
 
 function PreviewCard({ data }: { data: EmailData }) {
+  const [kind, setKind] = useState<'warn' | 'result'>('warn');
   const [employeeId, setEmployeeId] = useState<string>(data.recipients.find((r) => r.hasMis)?.employeeId ?? data.recipients[0]?.employeeId ?? '');
   const [testTo, setTestTo] = useState('');
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const preview = useQuery({
-    queryKey: ['mis-email-preview', employeeId],
-    queryFn: async () => (await api.get<{ subject: string; html: string; to: string | null; name: string }>('/mis/email/preview', { params: { employeeId } })).data,
+    queryKey: ['mis-email-preview', kind, employeeId],
+    queryFn: async () =>
+      (
+        await api.get<{ subject: string; html: string; to: string | null; name: string; wouldSend: boolean; why: string | null }>('/mis/email/preview', {
+          params: { kind, employeeId },
+        })
+      ).data,
     enabled: !!employeeId,
   });
   const test = useMutation({
-    mutationFn: async () => (await api.post<RunSummary>('/mis/email/test', { to: testTo, employeeId })).data,
+    mutationFn: async () => (await api.post<RunSummary>('/mis/email/test', { to: testTo, employeeId, kind })).data,
     onSuccess: (r) => setMsg({ ok: true, text: r.note ?? 'Test email sent.' }),
     onError: (e) => setMsg({ ok: false, text: errText(e, 'Could not send the test email.') }),
   });
@@ -478,6 +497,13 @@ function PreviewCard({ data }: { data: EmailData }) {
       <div className="flex flex-wrap items-center gap-3">
         <Eye className="w-4 h-4 text-gray-500" />
         <h2 className="text-sm font-semibold">Preview</h2>
+        <div className="flex rounded-lg border border-gray-200 dark:border-gray-800 overflow-hidden text-sm">
+          {(['warn', 'result'] as const).map((k) => (
+            <button key={k} onClick={() => setKind(k)} className={cn('px-3 py-1.5', kind === k ? 'bg-primary text-white' : 'hover:bg-gray-50 dark:hover:bg-gray-900')}>
+              {k === 'warn' ? `Warning (${time12(data.settings.warnTime)})` : `Result (${time12(data.deadlineTime)})`}
+            </button>
+          ))}
+        </div>
         <select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} className="px-3 py-1.5 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent text-sm">
           {data.recipients.map((r) => (
             <option key={r.employeeId} value={r.employeeId}>
@@ -511,6 +537,7 @@ function PreviewCard({ data }: { data: EmailData }) {
             <div>
               <span className="text-gray-500">Subject:</span> <b>{preview.data.subject}</b>
             </div>
+            {preview.data.why && <div className="text-amber-700 dark:text-amber-400">{preview.data.why}</div>}
           </div>
           <iframe title="Email preview" srcDoc={preview.data.html} sandbox="" className="w-full h-[560px] bg-white" />
         </div>
@@ -522,75 +549,54 @@ function PreviewCard({ data }: { data: EmailData }) {
 
 // ---------------------------------------------------------------------------
 
-function BackupScheduleCard({ data }: { data: EmailData }) {
+/** Optional cron-job.org links — collapsed; the steps are in the chat / project notes. */
+function BackupTimerCard({ data }: { data: EmailData }) {
   const qc = useQueryClient();
-  const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const rotate = useMutation({ mutationFn: () => api.post('/mis/email/cron-token'), onSuccess: () => qc.invalidateQueries({ queryKey: ['mis-email'] }) });
-  const [h, m] = data.settings.sendTime.split(':');
+  const copy = async (k: string, url: string) => {
+    await navigator.clipboard.writeText(url);
+    setCopied(k);
+    setTimeout(() => setCopied(null), 2000);
+  };
   return (
-    <div className="glass-card p-5 space-y-3 text-sm">
-      <div className="flex items-center gap-2">
+    <div className="glass-card overflow-hidden">
+      <button onClick={() => setOpen(!open)} className="w-full px-5 py-3 flex items-center gap-2 text-left text-sm">
         <MailCheck className="w-4 h-4 text-gray-500" />
-        <h2 className="text-sm font-semibold">Before you switch it on</h2>
-      </div>
-      <ol className="list-decimal pl-5 space-y-2 text-gray-700 dark:text-gray-300">
-        <li>
-          <b>Allow sending</b> (box at the top). If Microsoft says an administrator must approve: in{' '}
-          <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" className="text-primary underline">
-            Azure → App registrations
-          </a>{' '}
-          open the MailPilot app → API permissions → Add a permission → Microsoft Graph → Delegated → <b>Mail.Send</b> → Add → <b>Grant admin consent</b>. Then click “Allow sending”
-          again.
-        </li>
-        <li>
-          <b>Add email addresses</b> for the staff (table above, or paste from Excel).
-        </li>
-        <li>
-          <b>Preview</b> and <b>send yourself a test</b>, then tick “Send the nightly email” and Save.
-        </li>
-        <li>
-          <b>Backup timer (recommended, free):</b> MailPilot sends on its own at the set time, but if the free server is asleep at that moment the email would be late. A free
-          cron-job.org timer wakes it exactly on time (a day is never sent twice):
-          <ol className="list-[lower-alpha] pl-5 mt-1 space-y-1 text-gray-600 dark:text-gray-400">
-            <li>
-              Sign up at{' '}
-              <a href="https://console.cron-job.org/signup" target="_blank" rel="noreferrer" className="text-primary underline">
-                cron-job.org
-              </a>{' '}
-              (free) → <b>Create cronjob</b>.
-            </li>
-            <li>
-              Title: <i>MailPilot MIS email</i>. URL: the link below.
-            </li>
-            <li>
-              Schedule: <b>Every day</b> at <b>{h}:{m}</b>, time zone <b>Asia/Kolkata</b> → <b>Create</b>.
-            </li>
-            <li>If you change the send time here, change it there too.</li>
-          </ol>
-        </li>
-      </ol>
-      <div className="flex flex-wrap items-center gap-2">
-        <code className="flex-1 min-w-[280px] px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-900 text-xs break-all">{data.cronUrl}</code>
-        <button
-          onClick={async () => {
-            await navigator.clipboard.writeText(data.cronUrl);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-          }}
-          className="btn-secondary text-sm flex items-center gap-2"
-        >
-          <Copy className="w-4 h-4" /> {copied ? 'Copied' : 'Copy link'}
-        </button>
-        <button
-          onClick={() => {
-            if (window.confirm('Make a new secret link? The old one stops working — update cron-job.org with the new link.')) rotate.mutate();
-          }}
-          className="btn-secondary text-sm"
-        >
-          New link
-        </button>
-      </div>
-      <p className="text-[11px] text-gray-500">Keep this link private — anyone with it can trigger tonight's emails (only once a day, and only to your staff).</p>
+        <span className="font-semibold">Backup timer links</span>
+        <span className="text-xs text-gray-500">optional — for cron-job.org</span>
+        <span className="ml-auto text-xs text-gray-400">{open ? 'Hide' : 'Show'}</span>
+      </button>
+      {open && (
+        <div className="px-5 pb-4 space-y-2">
+          {(
+            [
+              ['warn', `Warning — every day at ${data.settings.warnTime}`, data.cronUrls.warn],
+              ['result', `Result — every day at ${data.deadlineTime}`, data.cronUrls.result],
+            ] as const
+          ).map(([k, label, url]) => (
+            <div key={k} className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-gray-500 w-48">{label}</span>
+              <code className="flex-1 min-w-[240px] px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-900 text-[11px] break-all">{url}</code>
+              <button onClick={() => copy(k, url)} className="btn-secondary text-xs flex items-center gap-1.5">
+                <Copy className="w-3.5 h-3.5" /> {copied === k ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          ))}
+          <div className="flex items-center gap-3 pt-1">
+            <p className="text-[11px] text-gray-500">Keep these private. Each email still goes out only once a day.</p>
+            <button
+              onClick={() => {
+                if (window.confirm('Make new links? The old ones stop working — update cron-job.org with the new ones.')) rotate.mutate();
+              }}
+              className="text-xs text-gray-500 hover:text-primary ml-auto"
+            >
+              New links
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -602,7 +608,7 @@ function LogCard({ settings, canSend }: { settings: Settings; canSend: boolean }
   const log = useQuery({ queryKey: ['mis-email-log'], queryFn: async () => (await api.get<{ log: LogRow[] }>('/mis/email/log')).data.log, refetchInterval: 15_000 });
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const sendNow = useMutation({
-    mutationFn: async () => (await api.post<{ note: string }>('/mis/email/send-now')).data,
+    mutationFn: async (kind: 'warn' | 'result') => (await api.post<{ note: string }>('/mis/email/send-now', { kind })).data,
     onSuccess: (r) => {
       setMsg({ ok: true, text: r.note });
       setTimeout(() => {
@@ -615,10 +621,10 @@ function LogCard({ settings, canSend }: { settings: Settings; canSend: boolean }
   const runs = useMemo(() => {
     const map = new Map<string, LogRow[]>();
     for (const r of log.data ?? []) {
-      const k = `${r.runDate} · ${r.trigger}`;
+      const k = `${r.runDate} · ${r.kind === 'WARN' ? 'Warning' : 'Result'} · ${r.trigger.toLowerCase()}`;
       map.set(k, [...(map.get(k) ?? []), r]);
     }
-    return [...map.entries()].slice(0, 7);
+    return [...map.entries()].slice(0, 10);
   }, [log.data]);
   const last = settings.lastRunSummary;
 
@@ -629,19 +635,27 @@ function LogCard({ settings, canSend }: { settings: Settings; canSend: boolean }
         <h2 className="text-sm font-semibold">Sent emails</h2>
         {last && (
           <span className="text-xs text-gray-500">
-            Last run {settings.lastRunAt ? when(settings.lastRunAt) : last.runDate}: {last.sent} sent, {last.failed} failed, {last.skipped} skipped
+            Last: {last.kind === 'WARN' ? 'warning' : 'result'} {settings.lastRunAt ? when(settings.lastRunAt) : last.runDate} — {last.sent} sent
+            {last.failed ? `, ${last.failed} failed` : ''}
+            {last.outcomes ? ` (${last.outcomes.red} red, ${last.outcomes.yellow} yellow, ${last.outcomes.green} green)` : ''}
             {last.note ? ` — ${last.note}` : ''}
           </span>
         )}
-        <button
-          onClick={() => {
-            if (window.confirm('Send the MIS email to everyone now?')) sendNow.mutate();
-          }}
-          disabled={sendNow.isPending || !canSend}
-          className="btn-secondary text-sm ml-auto flex items-center gap-2"
-        >
-          {sendNow.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Send to everyone now
-        </button>
+        <div className="ml-auto flex gap-2">
+          {(['warn', 'result'] as const).map((k) => (
+            <button
+              key={k}
+              onClick={() => {
+                if (window.confirm(k === 'warn' ? 'Send the warning now to everyone who has not submitted?' : 'Send the result email to everyone now?')) sendNow.mutate(k);
+              }}
+              disabled={sendNow.isPending || !canSend}
+              className="btn-secondary text-sm flex items-center gap-2"
+            >
+              {sendNow.isPending && sendNow.variables === k ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              {k === 'warn' ? 'Send warning now' : 'Send result now'}
+            </button>
+          ))}
+        </div>
       </div>
       {msg && <p className={cn('text-xs', msg.ok ? 'text-emerald-600' : 'text-red-600')}>{msg.text}</p>}
       {last?.noEmail?.length ? <p className="text-xs text-amber-600">No email address (skipped): {last.noEmail.join(', ')}</p> : null}
@@ -661,6 +675,7 @@ function LogCard({ settings, canSend }: { settings: Settings; canSend: boolean }
                     <td className="px-4 py-1.5 whitespace-nowrap text-gray-500">{when(r.createdAt)}</td>
                     <td className="px-2 py-1.5">{r.name ?? '—'}</td>
                     <td className="px-2 py-1.5 text-gray-500">{r.toEmail}</td>
+                    <td className="px-2 py-1.5 text-gray-600 dark:text-gray-400">{r.subject}</td>
                     <td className={cn('px-2 py-1.5 font-medium', r.status === 'SENT' ? 'text-emerald-600' : r.status === 'FAILED' ? 'text-red-600' : 'text-gray-400')}>{r.status.toLowerCase()}</td>
                     <td className="px-2 py-1.5 text-gray-500">{r.error ?? ''}</td>
                   </tr>

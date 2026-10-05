@@ -133,6 +133,12 @@ const STATEMENTS: { migration: string; sql: string }[] = [
       CONSTRAINT "MisEmailLog_pkey" PRIMARY KEY ("id"))`,
   },
   { migration: "20261006120000_mis_email", sql: `CREATE INDEX IF NOT EXISTS "MisEmailLog_companyId_createdAt_idx" ON "MisEmailLog"("companyId", "createdAt")` },
+  { migration: "20261007120000_mis_email_two_step", sql: `ALTER TABLE "MisEmailSettings" ADD COLUMN IF NOT EXISTS "warnEnabled" BOOLEAN NOT NULL DEFAULT true` },
+  { migration: "20261007120000_mis_email_two_step", sql: `ALTER TABLE "MisEmailSettings" ADD COLUMN IF NOT EXISTS "warnTime" TEXT NOT NULL DEFAULT '09:30'` },
+  { migration: "20261007120000_mis_email_two_step", sql: `ALTER TABLE "MisEmailSettings" ADD COLUMN IF NOT EXISTS "resultEnabled" BOOLEAN NOT NULL DEFAULT true` },
+  { migration: "20261007120000_mis_email_two_step", sql: `ALTER TABLE "MisEmailSettings" ADD COLUMN IF NOT EXISTS "lastWarnDate" TEXT` },
+  { migration: "20261007120000_mis_email_two_step", sql: `ALTER TABLE "MisEmailSettings" ADD COLUMN IF NOT EXISTS "lastResultDate" TEXT` },
+  { migration: "20261007120000_mis_email_two_step", sql: `ALTER TABLE "MisEmailLog" ADD COLUMN IF NOT EXISTS "kind" TEXT NOT NULL DEFAULT 'RESULT'` },
 ];
 
 export async function ensureSchema(): Promise<void> {

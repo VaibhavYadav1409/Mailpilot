@@ -18,7 +18,7 @@ import { Prisma } from "../generated/prisma/client";
 import { emitToCompany } from "../sockets";
 import { buildWorkbook, colName, type XlsxCell, type XlsxStyle } from "../lib/xlsx";
 import { getMisStatusForDate, misFocusDates, type MisEmployeeDay, type MisSourceStatus } from "./misService";
-import { DEFAULT_CALENDAR, getWorkCalendar, offDay, type WorkCalendar } from "./workCalendar";
+import { DEFAULT_CALENDAR, deadlineClock, getWorkCalendar, offDay, type WorkCalendar } from "./workCalendar";
 import {
   buildEvidence,
   deadlineFor,
@@ -184,7 +184,7 @@ export function summarize(finalCircles: number, pendingCircles = 0): CircleSumma
     message = `${finalCircles} red circles = ${day(deductionDays)}' salary deducted. ${untilNext} more = ${day(deductionDays + 1)}.`;
   if (pendingCircles > 0) {
     const after = Math.floor((finalCircles + pendingCircles) / CIRCLES_PER_DEDUCTION);
-    message += ` The last working day's MIS is still missing — if it isn't filled by the deadline (end of the next working day) it becomes a red circle${after > deductionDays ? ` and ${day(after)} will be deducted` : ""}.`;
+    message += ` The last working day's MIS is still missing — if it isn't filled by the deadline (${deadlineClock()} on the next working day) it becomes a red circle${after > deductionDays ? ` and ${day(after)} will be deducted` : ""}.`;
   }
   return { circles: finalCircles, pendingCircles, deductionDays, untilNextDeduction: untilNext, message };
 }
@@ -197,7 +197,7 @@ export function summarize(finalCircles: number, pendingCircles = 0): CircleSumma
  * Writes the AUTO mark (code, reason and evidence) for every person with an
  * MIS for each date.
  *
- * Until the deadline (end of the next working day) the mark follows the file.
+ * Until the deadline (11:00 AM on the next working day) the mark follows the file.
  * After it, the mark is LOCKED to what the file showed at the deadline: filling
  * the MIS later is recorded as "filled late" but doesn't remove the circle.
  * Manual marks are never touched (only their remembered autoCode / evidence).
@@ -329,7 +329,7 @@ export function circleRules(): string[] {
     `Every ${CIRCLES_PER_DEDUCTION} red circles in a calendar month = 1 day's salary deducted. They do not need to be on consecutive days. ${CIRCLES_PER_DEDUCTION * 2} circles = 2 days, ${CIRCLES_PER_DEDUCTION * 3} = 3 days, and so on.`,
     `The count starts again from zero on the 1st of every month.`,
     `MIS is needed only on working days. Sundays, the 2nd Saturday, stock market (NSE) trading holidays and company holidays are off: no MIS is needed and they are never red circles.`,
-    `Staff get until the end of the next working day to fill a day's MIS (the deadline). Until then the last working day is shown as "pending" and can still turn green. At the deadline the result is locked: filling it later is recorded as "filled late" but the red circle stays.`,
+    `Staff get until ${deadlineClock()} on the next working day to fill a day's MIS (the deadline). Until then the last working day is shown as "pending" and can still turn green. At the deadline the result is locked: filling it later is recorded as "filled late" but the red circle stays.`,
     `For every red circle MailPilot keeps the evidence: the deadline, what the file showed at the deadline, when MailPilot read it, and when the employee last saved the Excel file (time and name, from OneDrive/SharePoint).`,
     `Leave (OL), on duty (ON), Saturday off (SO), holidays (H) and absent (A) never count as red circles.`,
     `Incomplete (IN, amber) = filled with a few blanks — shown as a warning, not a red circle.`,
@@ -440,8 +440,8 @@ export async function getCircleMonth(
       } else {
         cell = { code: null, source: null, note: null, pending: false, autoCode: null, reason: null, markedBy: null, evidence: null };
       }
-      // The last working day's automatic result can still change until the deadline.
-      cell.pending = date === yesterday && cell.source === "AUTO";
+      // An automatic result can still change until its deadline (11:00 AM on the next working day).
+      cell.pending = cell.source === "AUTO" && now < deadlineFor(date, cal).at;
       if (isCircleCode(cell.code)) {
         if (cell.pending) pendingCircles++;
         else finalCircles++;
@@ -493,7 +493,7 @@ export function monthStatus(lastDate: string, firstDate: string, yesterday: stri
   if (firstDate >= today) return { final: false, text: `This month hasn't started yet.` };
   if (lastDate < yesterday) return { final: true, text: `Month closed — these are the final figures.` };
   if (lastDate === yesterday)
-    return { final: false, text: `The month's last working day is still pending — it can be filled until the end of the next working day. Figures are final after that.` };
+    return { final: false, text: `The month's last working day is still pending — it can be filled until ${deadlineClock()} on the next working day. Figures are final after that.` };
   return {
     final: false,
     text: `Month in progress — figures up to ${dmy(yesterday)} (that day is still pending). Download again after the month ends for the final sheet.`,
@@ -846,7 +846,7 @@ export function circleWorkbook(data: CircleMonth, opts: { generatedAt?: Date; pe
     rows.push([{ v: "CODES", s: legendHead }]);
     const legendStart = rows.length + 1;
     for (const c of CIRCLE_CODES) rows.push([{ v: c.code, s: toneCell(c.tone, c.isCircle) }, { v: `${c.label} — ${c.meaning}`, s: legendText }]);
-    rows.push([{ v: "CM?", s: pendingCell }, { v: "Pending — the last working day's MIS is missing but can still be filled until the end of the next working day.", s: legendText }]);
+    rows.push([{ v: "CM?", s: pendingCell }, { v: `Pending — the last working day's MIS is missing but can still be filled until ${deadlineClock()} on the next working day.`, s: legendText }]);
     const merges = titleMerges(lastCol, 3);
     for (let r = legendStart; r <= rows.length; r++) merges.push(`B${r}:${colName(lastCol)}${r}`);
     sheets.push({
@@ -888,7 +888,7 @@ export function circleWorkbook(data: CircleMonth, opts: { generatedAt?: Date; pe
       statusRow,
       [
         {
-          v: "A day is a red circle when its MIS was not filled by the deadline (end of the next working day): no column for the date, nothing filled, or 20 or more of the person's usual entries blank — or an admin marked it CM. Save times come from OneDrive / SharePoint. Full log: \"Evidence Log\" tab.",
+          v: `A day is a red circle when its MIS was not filled by the deadline (${deadlineClock()} on the next working day): no column for the date, nothing filled, or 20 or more of the person's usual entries blank — or an admin marked it CM. Save times come from OneDrive / SharePoint. Full log: "Evidence Log" tab.`,
           s: sub,
         },
       ],
@@ -908,7 +908,7 @@ export function circleWorkbook(data: CircleMonth, opts: { generatedAt?: Date; pe
           e.pending ? { v: "Pending", s: pendingCell } : { v: e.number, s: e.triggersDeduction ? badBig : bad },
           { v: e.effect, s: e.triggersDeduction ? badText : text },
           { v: e.reason, s: text },
-          { v: ev ? fmtWhen(new Date(new Date(ev.deadline).getTime() - 60_000)) : "—", s: text },
+          { v: ev ? fmtWhen(ev.deadline) : "—", s: text },
           { v: d ? `${cap(statusText(d.status))} — ${d.filled} filled, ${d.blanks} blank` : ev ? "Not read before the deadline" : "—", s: text },
           { v: d ? fmtWhen(d.checkedAt) : "—", s: text },
           { v: d ? savedText(d.savedAt, d.savedBy) : "—", s: text },
@@ -1120,7 +1120,7 @@ export function circleWorkbook(data: CircleMonth, opts: { generatedAt?: Date; pe
       { v: "CM?", s: pendingCell },
       { v: "Pending", s: text },
       { v: "Not yet", s: plain },
-      { v: "The last working day's MIS is missing but staff can still fill it until the end of the next working day (the deadline). If they don't, it becomes CM.", s: text },
+      { v: `The last working day's MIS is missing but staff can still fill it until ${deadlineClock()} on the next working day (the deadline). If they don't, it becomes CM.`, s: text },
     ]);
     const offDays = data.days.filter((d) => d.isOff && weekday(d.date) !== 0);
     if (offDays.length) {

@@ -178,7 +178,7 @@ export default function MisCirclePage() {
                         d.offName
                           ? `${d.offName} — no MIS needed`
                           : d.date === data.yesterday
-                            ? 'Last working day — can still change until the end of the next working day'
+                            ? 'Last working day — can still change until 11:00 AM on the next working day'
                             : d.date === data.today
                               ? 'Today — checked after it ends'
                               : undefined
@@ -342,7 +342,7 @@ function RulesCard({ data }: { data: CircleMonth }) {
                 <span className="inline-flex w-9 h-6 shrink-0 items-center justify-center rounded text-[10px] bg-red-100 text-red-800 outline-dashed outline-2 outline-red-400">CM?</span>
                 <span className="text-gray-600 dark:text-gray-400">
                   <b className="text-gray-800 dark:text-gray-200">Pending</b> — the last working day's MIS is missing; it turns green if filled before the
-                  deadline (end of the next working day).
+                  deadline (11:00 AM on the next working day).
                 </span>
               </li>
             </ul>

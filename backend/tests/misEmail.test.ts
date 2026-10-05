@@ -34,53 +34,85 @@ describe("email helpers", () => {
   });
 });
 
-describe("buildPersonEmail", () => {
-  const src = (over: object) => ({ id: "s", label: "", fileName: "MIS.xlsx", webUrl: "", checkedBy: null, approvedBy: null, status: "COMPLETE", rowCount: 30, missingColumns: [], blanks: [], note: null, checkedAt: null, completedAt: null, fileSavedAt: null, fileSavedBy: null, ...over });
-  const person = {
+describe("warning (9:30) and result (11:00) emails", () => {
+  const base = {
     employeeId: "e1",
     name: "Mamta Sharma",
-    email: "mamta@farsight.example",
+    email: "mamta@farsight.example, mamta2@farsight.example",
     hasMis: true,
-    days: [
-      {
-        date: "2026-10-05",
-        label: "Yesterday",
-        open: true,
-        deadlineText: "Tue 6 Oct, 11:59 PM",
-        mis: { status: "INCOMPLETE", submitted: false, completedAt: null, missingColumns: ["Calls"], sources: [src({ status: "INCOMPLETE", blanks: [{ sheet: "Oct", cell: "AA23", field: "Calls made <today>" }] })] },
-        code: "IN",
-        reason: null,
-      },
-      { date: "2026-10-03", label: "Previous working day", open: false, deadlineText: "", mis: null, code: "CM", reason: "Not filled for 03-10-2026 — 24 of 30 usual entries are blank — still the case at the deadline." },
-    ],
-    circles: 4,
+    date: "2026-10-05",
+    label: "Yesterday",
+    deadlineText: "Tue 6 Oct, 11:00 AM",
+    status: "MISSING",
+    blanks: [] as string[],
+    note: "Not filled for 05-10-2026 — 24 of 30 usual entries are blank.",
+    code: null as string | null,
+    manual: false,
+    reason: null as string | null,
+    circles: 2,
     pendingCircles: 0,
-    deductionDays: 1,
-    untilNext: 2,
+    deductionDays: 0,
+    untilNext: 1,
     circleDates: ["Thu 1 Oct", "Sat 3 Oct"],
     monthLabel: "October 2026",
   };
-  it("explains both days, the deadline and the month, and escapes text", async () => {
-    const e = m.buildPersonEmail(person as never, { subject: null, intro: null, footer: "Contact HR: {first}" }, "contactus@farsightshares.com", "2026-10-06");
-    expect(e.subject).toBe("MIS update — Mamta Sharma — Tue 6 Oct");
-    expect(e.hasIssue).toBe(true);
-    expect(e.html).toContain("AA23 — Calls made &lt;today&gt;");
-    expect(e.html).toContain("Deadline: Tue 6 Oct, 11:59 PM");
-    expect(e.html).toContain("Red circle");
-    expect(e.html).toContain("4 red circles ÷ 3 = 1 day (1 circle left over");
-    expect(e.html).toContain("2 more red circles = 2 days");
+  const settings = { intro: null, footer: "Contact HR: {first}" };
+  it("warns about a missing MIS and what a red circle would mean", async () => {
+    const e = m.buildWarningEmail(base, settings, "contactus@farsightshares.com");
+    expect(e.subject).toBe("Reminder: your MIS for Mon 5 Oct is not submitted — submit it before 11:00 AM");
+    expect(e.html).toContain("Please submit it before Tue 6 Oct, 11:00 AM. If it is not submitted by then, a red circle will be marked.");
+    expect(e.html).toContain("you will have 3 — that means 1 day of salary deducted");
     expect(e.text).toContain("Contact HR: Mamta");
     if (process.env.MIS_EMAIL_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_EMAIL_HTML_OUT, e.html);
   });
-  it("uses the admin's subject template", () => {
-    const e = m.buildPersonEmail(person as never, { subject: "MIS {date} — {first}", intro: "Dear {name}", footer: null }, null, "2026-10-06");
-    expect(e.subject).toBe("MIS Tue 6 Oct — Mamta");
-    expect(e.html).toContain("Dear Mamta Sharma");
+  it("lists the blank cells for an incomplete MIS (escaped)", () => {
+    const e = m.buildWarningEmail({ ...base, status: "INCOMPLETE", blanks: ["AA23 — Calls made <today>"] }, settings, null);
+    expect(e.subject).toContain("is incomplete");
+    expect(e.html).toContain("AA23 — Calls made &lt;today&gt;");
   });
-  it("builds the HR summary", () => {
-    const hr = m.buildHrSummary([person as never], "2026-10-06", null);
-    expect(hr.subject).toBe("MIS summary — Tue 6 Oct — 1 new red circle");
-    expect(hr.html).toContain("Mamta Sharma");
+  it("only warns people who haven't submitted (and not people on leave)", () => {
+    expect(m.needsWarning(base)).toBe(true);
+    expect(m.needsWarning({ ...base, status: "INCOMPLETE" })).toBe(true);
+    expect(m.needsWarning({ ...base, status: "COMPLETE" })).toBe(false);
+    expect(m.needsWarning({ ...base, manual: true, code: "OL" })).toBe(false);
+    expect(m.needsWarning({ ...base, hasMis: false })).toBe(false);
+  });
+  it("result: red / yellow / green", async () => {
+    const red = m.buildResultEmail({ ...base, code: "CM", circles: 3, deductionDays: 1, untilNext: 3, reason: "Not filled — still the case at the deadline." }, settings, null)!;
+    expect(red.outcome).toBe("RED");
+    expect(red.subject).toBe("MIS Mon 5 Oct: not submitted — red circle marked");
+    expect(red.html).toContain("was not submitted by Tue 6 Oct, 11:00 AM, so a red circle has been marked.");
+    expect(red.html).toContain("3 red circles ÷ 3 = 1 day.");
+    const yellow = m.buildResultEmail({ ...base, code: "IN" }, settings, null)!;
+    expect(yellow.outcome).toBe("YELLOW");
+    expect(yellow.subject).toContain("incomplete — marked yellow");
+    const green = m.buildResultEmail({ ...base, code: "NC" }, settings, null)!;
+    expect(green.outcome).toBe("GREEN");
+    expect(green.subject).toBe("MIS Mon 5 Oct: submitted — green (no circle)");
+    expect(m.buildResultEmail({ ...base, code: "OL", manual: true }, settings, null)).toBeNull();
+    if (process.env.MIS_RESULT_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_RESULT_HTML_OUT, red.html);
+  });
+  it("HR summary lists red first", () => {
+    const hr = m.buildHrSummary([{ ...base, name: "Zed", code: "NC" }, { ...base, code: "CM" }], null);
+    expect(hr.subject).toBe("MIS result Mon 5 Oct — 1 red circle, 0 incomplete, 1 submitted");
+    expect(hr.html.indexOf("Mamta Sharma")).toBeLessThan(hr.html.indexOf("Zed"));
+  });
+});
+
+describe("dueKind", () => {
+  // Deadline: Tue 6 Oct 11:00 IST = 05:30 UTC
+  const t = { today: "2026-10-06", deadlineIsToday: true, deadline: { at: new Date("2026-10-06T05:30:00Z") } };
+  const s = { warnEnabled: true, warnTime: "09:30", resultEnabled: true, lastWarnDate: null as string | null, lastResultDate: null as string | null };
+  it("warning from 9:30 until the deadline, result from 11:00", () => {
+    expect(m.dueKind(s, t, new Date("2026-10-06T03:55:00Z"))).toBeNull(); // 9:25
+    expect(m.dueKind(s, t, new Date("2026-10-06T04:00:00Z"))).toBe("WARN"); // 9:30
+    expect(m.dueKind(s, t, new Date("2026-10-06T05:20:00Z"))).toBe("WARN"); // 10:50 (server was asleep)
+    expect(m.dueKind({ ...s, lastWarnDate: "2026-10-06" }, t, new Date("2026-10-06T05:20:00Z"))).toBeNull();
+    expect(m.dueKind({ ...s, lastWarnDate: "2026-10-06" }, t, new Date("2026-10-06T05:30:00Z"))).toBe("RESULT"); // 11:00
+    expect(m.dueKind({ ...s, lastWarnDate: "2026-10-06", lastResultDate: "2026-10-06" }, t, new Date("2026-10-06T06:00:00Z"))).toBeNull();
+  });
+  it("nothing on a day off", () => {
+    expect(m.dueKind(s, { ...t, deadlineIsToday: false }, new Date("2026-10-06T04:00:00Z"))).toBeNull();
   });
 });
 

@@ -17,7 +17,7 @@ import {
 import { MisGraphError, buildMisAuthUrl } from "../services/misMicrosoft";
 import { getMisDaysForEmployee } from "../services/msiService";
 import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../services/misCircle";
-import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, listHolidays, setHoliday } from "../services/workCalendar";
+import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, MIS_DEADLINE_TIME, listHolidays, setHoliday } from "../services/workCalendar";
 import { emitToCompany } from "../sockets";
 import {
   MisEmailError,
@@ -55,16 +55,16 @@ import {
  *   GET    /holidays?year=          NSE trading holidays + company holidays      (any employee)
  *   PUT    /holidays                { date, name?, isOff } add / switch a holiday  (Admin+)
  *   DELETE /holidays/:date          back to the default for that date            (Admin+)
- *   GET    /email                   nightly email: settings, sender, recipients, cron URL (Admin+)
- *   PUT    /email/settings          { enabled, sendTime, audience, skipOffDays, hrSummary, hrEmails, subject, intro, footer }
+ *   GET    /email                   MIS emails: settings, sender, recipients, timer links (Admin+)
+ *   PUT    /email/settings          { enabled, warnEnabled, warnTime, resultEnabled, audience, hrSummary, hrEmails, intro, footer }
  *   PUT    /email/recipients/:id    { email|null } one person's email address     (Admin+)
  *   POST   /email/recipients/bulk   { rows: [{ name, email }] }                   (Admin+)
- *   GET    /email/preview?employeeId=  the email that person would get now     (Admin+)
- *   POST   /email/test              { to } one sample email                      (Admin+)
- *   POST   /email/send-now          send to everyone now                         (Admin+)
+ *   GET    /email/preview?kind=warn|result&employeeId=  that person's email    (Admin+)
+ *   POST   /email/test              { to, kind } one sample email                (Admin+)
+ *   POST   /email/send-now          { kind } send the warning / result now       (Admin+)
  *   POST   /email/cron-token        new secret link (old one stops working)      (Admin+)
  *   GET    /email/log               what was sent                                (Admin+)
- *   GET|POST /email/cron/:token     for cron-job.org — no login; the token is the secret
+ *   GET|POST /email/cron/:token?type=warn|result  for cron-job.org — no login; the token is the secret
  */
 export const misRouter = Router();
 
@@ -364,11 +364,13 @@ misRouter.get("/email", requireAuth, requireMinRole("ADMIN"), async (req, res) =
     const companyId = req.user!.companyId;
     const [settings, sender, recipients] = await Promise.all([getEmailSettings(companyId), senderStatus(companyId), listRecipients(companyId)]);
     const { cronToken, ...rest } = settings;
+    const base = `${apiBase(req)}/api/mis/email/cron/${cronToken}`;
     return res.json({
       settings: rest,
       sender,
       recipients,
-      cronUrl: `${apiBase(req)}/api/mis/email/cron/${cronToken}`,
+      cronUrls: { warn: `${base}?type=warn`, result: `${base}?type=result` },
+      deadlineTime: MIS_DEADLINE_TIME,
       timezone: "Asia/Kolkata",
     });
   } catch (e) {
@@ -378,7 +380,9 @@ misRouter.get("/email", requireAuth, requireMinRole("ADMIN"), async (req, res) =
 
 const emailSettingsSchema = z.object({
   enabled: z.boolean().optional(),
-  sendTime: z.string().max(5).optional(),
+  warnEnabled: z.boolean().optional(),
+  warnTime: z.string().max(5).optional(),
+  resultEnabled: z.boolean().optional(),
   audience: z.enum(["ALL", "ISSUES"]).optional(),
   skipOffDays: z.boolean().optional(),
   hrSummary: z.boolean().optional(),
@@ -424,17 +428,20 @@ misRouter.post("/email/recipients/bulk", requireAuth, requireMinRole("ADMIN"), a
 misRouter.get("/email/preview", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
   try {
     const employeeId = typeof req.query.employeeId === "string" && req.query.employeeId ? req.query.employeeId : undefined;
-    return res.json(await previewEmail(req.user!.companyId, employeeId));
+    const kind = req.query.kind === "warn" ? "WARN" : "RESULT";
+    return res.json(await previewEmail(req.user!.companyId, kind, employeeId));
   } catch (e) {
     return handle(res, e);
   }
 });
 
 misRouter.post("/email/test", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
-  const body = z.object({ to: z.string().max(200), employeeId: z.string().uuid().optional() }).safeParse(req.body);
+  const body = z.object({ to: z.string().max(200), employeeId: z.string().uuid().optional(), kind: z.enum(["warn", "result"]).default("result") }).safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: "Enter the email address to send the test to." });
   try {
-    return res.json(await runMisEmails(req.user!.companyId, { trigger: "TEST", testTo: body.data.to, employeeId: body.data.employeeId }));
+    return res.json(
+      await runMisEmails(req.user!.companyId, { kind: body.data.kind === "warn" ? "WARN" : "RESULT", trigger: "TEST", testTo: body.data.to, employeeId: body.data.employeeId }),
+    );
   } catch (e) {
     return handle(res, e);
   }
@@ -445,8 +452,12 @@ misRouter.post("/email/send-now", requireAuth, requireMinRole("ADMIN"), async (r
     const companyId = req.user!.companyId;
     const sender = await senderStatus(companyId);
     if (!sender.canSend) return res.status(409).json({ error: sender.problem ?? "Email sending isn't set up." });
-    void runMisEmails(companyId, { trigger: "MANUAL" }).catch((e) => console.error("[MIS email] manual run failed:", e instanceof Error ? e.message : e));
-    return res.status(202).json({ accepted: true, note: "Sending now — this takes about 3 seconds per person. Refresh the log below to see progress." });
+    const kind = req.body?.kind === "warn" ? "WARN" : "RESULT";
+    void runMisEmails(companyId, { kind, trigger: "MANUAL" }).catch((e) => console.error("[MIS email] manual run failed:", e instanceof Error ? e.message : e));
+    return res.status(202).json({
+      accepted: true,
+      note: `Sending the ${kind === "WARN" ? "warning" : "result"} emails now — about 3 seconds per person. The log below updates as they go.`,
+    });
   } catch (e) {
     return handle(res, e);
   }
@@ -455,7 +466,8 @@ misRouter.post("/email/send-now", requireAuth, requireMinRole("ADMIN"), async (r
 misRouter.post("/email/cron-token", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
   try {
     const s = await rotateCronToken(req.user!.companyId);
-    return res.json({ cronUrl: `${apiBase(req)}/api/mis/email/cron/${s.cronToken}` });
+    const base = `${apiBase(req)}/api/mis/email/cron/${s.cronToken}`;
+    return res.json({ cronUrls: { warn: `${base}?type=warn`, result: `${base}?type=result` } });
   } catch (e) {
     return handle(res, e);
   }
@@ -472,7 +484,8 @@ misRouter.get("/email/log", requireAuth, requireMinRole("ADMIN"), async (req, re
 // cron-job.org (or any outside scheduler) — no login, the token in the URL is the secret.
 misRouter.all("/email/cron/:token", async (req, res) => {
   try {
-    const r = await triggerFromCron(String(req.params.token), { force: req.query.force === "1" });
+    const type = typeof req.query.type === "string" ? req.query.type : undefined;
+    const r = await triggerFromCron(String(req.params.token), { type, force: req.query.force === "1" });
     return res.status(r.accepted ? 202 : 200).json(r);
   } catch (e) {
     return handle(res, e);

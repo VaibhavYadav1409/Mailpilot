@@ -100,6 +100,19 @@ export function previousWorkingDay(date: string, cal: WorkCalendar = DEFAULT_CAL
   return d;
 }
 
+/**
+ * The MIS deadline: a day's MIS must be filled by this time (IST) on the NEXT
+ * working day. At that moment a missing MIS becomes a red circle. Override
+ * with MIS_DEADLINE_TIME=HH:mm if the office rule changes.
+ */
+export const MIS_DEADLINE_TIME = /^([01]\d|2[0-3]):[0-5]\d$/.test(process.env.MIS_DEADLINE_TIME ?? "") ? process.env.MIS_DEADLINE_TIME! : "11:00";
+
+/** "11:00 AM" */
+export function deadlineClock(t: string = MIS_DEADLINE_TIME): string {
+  const [h, m] = t.split(":").map(Number);
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+}
+
 /** The nearest working day strictly after `date`. */
 export function nextWorkingDay(date: string, cal: WorkCalendar = DEFAULT_CALENDAR): string {
   let d = addDaysTo(date, 1);
