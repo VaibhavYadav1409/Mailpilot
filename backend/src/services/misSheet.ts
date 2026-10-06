@@ -57,6 +57,8 @@ export interface MisCheckOptions {
    * holiday's empty column doesn't make every row look optional.
    */
   isOffDay?: (date: string) => boolean;
+  /** Treat a day copied from an earlier day as not filled (default true). */
+  detectCopies?: boolean;
 }
 
 export interface MisField {
@@ -84,6 +86,8 @@ export interface MisCheckResult {
   blanks: MisBlank[];
   /** How many usual entries are blank in total (blanks is capped / empty when not filled). */
   blankCount?: number;
+  /** The day's entries were copied from this earlier day ("YYYY-MM-DD") — counted as not filled. */
+  copiedFrom?: string | null;
   /** Fields seen on the sheet, with whether each was required. */
   fields: MisField[];
   /** Human-readable reason when something looks off. */
@@ -331,6 +335,116 @@ function matchesConfigured(label: string, configured: string[]): boolean {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Copied days
+// ---------------------------------------------------------------------------
+
+/**
+ * A copied day: the whole day's column is an exact duplicate of an earlier
+ * working day's — the last column pasted into today's. Rows in an MIS often
+ * repeat for good reasons ("not due", "Reconciled", "NA", a balance that didn't
+ * move), so to never accuse anyone wrongly ALL of these must hold:
+ *   1. every filled entry of the day (at least COPY_MIN_FILLED of them) is
+ *      exactly the same as on that earlier day, and the same rows are filled;
+ *   2. at least COPY_MIN_VOLATILE of those entries are ones that, for this
+ *      person, change almost every day (over the last COPY_HISTORY_DAYS
+ *      working days the value changed on ≥ COPY_VOLATILE_RATIO of days) —
+ *      counts, amounts, "updated till <date>" and the like — and every one
+ *      of them is unchanged too.
+ * Manager rows (approved by / remarks / reply) and headings are ignored.
+ */
+export const COPY_MIN_FILLED = 8;
+export const COPY_MIN_VOLATILE = 3;
+export const COPY_VOLATILE_RATIO = 0.75;
+const COPY_HISTORY_DAYS = 10;
+const COPY_LOOKBACK_DAYS = 3;
+const TRIVIAL = /^(nil+|na|n\/a|n\.a\.?|none|no|yes|y|n|ok|okay|done|completed?|pending|same|as above|not applicable|null|-+|\.+|x+|\*+|✓|✔)$/i;
+/** Values that naturally repeat day after day: "no query", "not due", "on leave", "holiday"… */
+const REPEATING = /^(no|not|nothing|nil|none|on leave|leave|half day|holiday|absent|off|wfh|week ?off)\b/i;
+
+/** Any filled value, normalised for comparing ("12,000" = "12000", case and spaces ignored). */
+function norm(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim().toLowerCase().replace(/\s+/g, " ");
+  if (!s) return null;
+  const n = Number(s.replace(/,/g, ""));
+  return Number.isFinite(n) && /\d/.test(s) ? String(n) : s;
+}
+
+/** Normalised value when it is distinctive enough to say "this changes daily", else null. */
+export function distinctive(v: unknown): string | null {
+  const s = norm(v);
+  if (s === null || TRIVIAL.test(s) || REPEATING.test(s)) return null;
+  const n = Number(s);
+  if (Number.isFinite(n) && /^-?[\d.]+(e[-+]?\d+)?$/.test(s)) return Math.abs(n) < 10 ? null : s;
+  return s.length < 3 ? null : s;
+}
+
+/** Row key -> normalised value for one day (staff rows only). */
+function dayValues(layouts: ColumnLayout[], date: string): Map<string, string> | null {
+  const owner = sheetForDate(layouts, date);
+  if (!owner) return null;
+  const out = new Map<string, string>();
+  for (const row of owner.layout.rows) {
+    if (NOT_STAFF_ROWS.test(row.label) || looksLikeHeading(row.label)) continue;
+    for (const c of owner.cols) {
+      const v = norm(cell(owner.layout.sheet, row.index, c));
+      if (v !== null) {
+        out.set(row.key, v);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** The earlier day this day's column was copied from, or null. */
+export function findCopiedDay(
+  layouts: ColumnLayout[],
+  date: string,
+  isOffDay?: (d: string) => boolean,
+): { date: string; filled: number; volatile: number; rows: { field: string; value: string }[] } | null {
+  const today = dayValues(layouts, date);
+  if (!today || today.size < COPY_MIN_FILLED) return null;
+  const earlier = new Set<string>();
+  for (const l of layouts) for (const d of l.dates) if (d.date < date && !isOffDay?.(d.date)) earlier.add(d.date);
+  // Newest first: the last COPY_HISTORY_DAYS working days that have something filled.
+  const history: { date: string; values: Map<string, string> }[] = [];
+  for (const d of [...earlier].sort().reverse()) {
+    const values = dayValues(layouts, d);
+    if (values && values.size > 0) history.push({ date: d, values });
+    if (history.length >= COPY_HISTORY_DAYS) break;
+  }
+  if (history.length < 4) return null; // too little history to know which rows change daily
+  const labelOf = new Map(layouts.flatMap((l) => l.rows.map((r) => [r.key, r.label] as const)));
+  for (let i = 0; i < Math.min(COPY_LOOKBACK_DAYS, history.length); i++) {
+    const p = history[i];
+    // 1. An exact duplicate: same rows filled, every value identical.
+    if (p.values.size !== today.size) continue;
+    let identical = true;
+    for (const [k, v] of today) if (p.values.get(k) !== v) identical = false;
+    if (!identical) continue;
+    // 2. …including entries that normally change every day (judged on the days before the source day).
+    const before = history.slice(i);
+    const volatileRows: { field: string; value: string }[] = [];
+    for (const [k, v] of today) {
+      if (distinctive(v) === null) continue;
+      let pairs = 0;
+      let changes = 0;
+      for (let j = 0; j + 1 < before.length; j++) {
+        const a = before[j].values.get(k);
+        const b = before[j + 1].values.get(k);
+        if (a === undefined || b === undefined) continue;
+        pairs++;
+        if (a !== b) changes++;
+      }
+      if (pairs >= 3 && changes / pairs >= COPY_VOLATILE_RATIO) volatileRows.push({ field: labelOf.get(k) ?? k, value: v });
+    }
+    if (volatileRows.length >= COPY_MIN_VOLATILE) return { date: p.date, filled: today.size, volatile: volatileRows.length, rows: volatileRows };
+  }
+  return null;
+}
+
 function checkColumns(layouts: ColumnLayout[], opts: MisCheckOptions): MisCheckResult | null {
   const owner = sheetForDate(layouts, opts.date);
   if (!owner) return null;
@@ -362,6 +476,28 @@ function checkColumns(layouts: ColumnLayout[], opts: MisCheckOptions): MisCheckR
         missing.add(row.label);
         blanks.push({ sheet: l.sheet.name, cell: a1(l.sheet, row.index, cols[cols.length - 1]), field: row.label });
       }
+    }
+  }
+
+  // Entries copied from an earlier day don't count as filling in the MIS.
+  if (filled > 0 && blanks.length < NOT_FILLED_BLANKS && opts.detectCopies !== false) {
+    const copy = findCopiedDay(layouts, opts.date, opts.isOffDay);
+    if (copy) {
+      return {
+        status: "MISSING",
+        layout: "DAY_COLUMNS",
+        sheet: todays[0].sheet.name,
+        filledCount: filled,
+        missingFields: [],
+        blanks: [],
+        blankCount: blanks.length,
+        copiedFrom: copy.date,
+        fields,
+        note: `Copied from ${fmt(copy.date)} — all ${copy.filled} entries are exactly the same as on ${fmt(copy.date)}, including ${copy.volatile} that change every day (e.g. ${copy.rows
+          .slice(0, 3)
+          .map((r) => `${r.field.slice(0, 40)}: "${r.value.slice(0, 30)}"`)
+          .join("; ")}). A copied day counts as not filled; please enter ${fmt(opts.date)}'s actual figures.`,
+      };
     }
   }
 

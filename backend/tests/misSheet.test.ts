@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkMisWorkbook, parseMisDate, readDateRow, sheetsWorthReading } from "../src/services/misSheet";
+import { checkMisWorkbook, distinctive, parseMisDate, readDateRow, sheetsWorthReading } from "../src/services/misSheet";
 
 const TODAY = "2026-09-29";
 /** Excel serial for a date — what Graph returns for a real date cell. */
@@ -182,5 +182,58 @@ describe("checkMisWorkbook — off days don't count when learning usual entries"
   it("without the calendar the blank holiday columns hide it", () => {
     const r = checkMisWorkbook([sheet], { date: "2026-09-16" });
     expect(r.status).toBe("COMPLETE");
+  });
+});
+
+describe("copied days (an exact copy of an earlier day's column)", () => {
+  // Working days 1–15 Sep 2026 (no Sundays, no 2nd Saturday 12 Sep).
+  const days = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11", "2026-09-14", "2026-09-15"];
+  const off = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay() === 0 || d === "2026-09-12";
+  const statuses = ["not due", "Reconciled", "done entry", "submitted", "NA", "Nil"];
+  /** Column i: three figures that change daily + six statuses that never change. */
+  const col = (i: number) => [100 + i * 7, 2000 + i * 13, `updated till ${String(i + 1).padStart(2, "0")}-09-2026`, ...statuses];
+  const build = (cols: unknown[][]) => ({
+    name: "Sep-2026",
+    values: [
+      ["Particulars", ...days.slice(0, cols.length).map((d) => d.split("-").reverse().join("."))],
+      ...["Accounts opened", "Amount collected", "Bank register", "TDS", "Bank reco", "Rent", "Report", "Other", "Misc"].map((label, r) => [label, ...cols.map((c) => c[r])]),
+      ["MIS Approved By Yogesh Ji", ...cols.map(() => "ok")],
+    ],
+  });
+  const genuine = days.map((_, i) => col(i));
+  const last = days[days.length - 1];
+
+  it("flags a day pasted from the previous working day", () => {
+    const cols = [...genuine.slice(0, -1), genuine[genuine.length - 2]];
+    const r = checkMisWorkbook([build(cols)], { date: last, isOffDay: off });
+    expect(r.status).toBe("MISSING");
+    expect(r.copiedFrom).toBe("2026-09-14");
+    expect(r.note).toMatch(/^Copied from 14-09-2026 — all 9 entries are exactly the same as on 14-09-2026, including 3 that change every day/);
+  });
+  it("does not flag a genuinely filled day whose statuses repeat", () => {
+    const r = checkMisWorkbook([build(genuine)], { date: last, isOffDay: off });
+    expect(r.status).toBe("COMPLETE");
+    expect(r.copiedFrom ?? null).toBeNull();
+  });
+  it("does not flag when only some daily figures are the same", () => {
+    const cols = [...genuine.slice(0, -1), [genuine[10][0], genuine[10][1], "updated till 15-09-2026", ...statuses]];
+    expect(checkMisWorkbook([build(cols)], { date: last, isOffDay: off }).copiedFrom ?? null).toBeNull();
+  });
+  it("does not flag repeated leave days", () => {
+    const leave = ["leave", "leave", "leave", "leave", "leave", "leave", "leave", "leave", "leave"];
+    const cols = [...genuine.slice(0, -2), leave, leave];
+    expect(checkMisWorkbook([build(cols)], { date: last, isOffDay: off }).copiedFrom ?? null).toBeNull();
+  });
+  it("can be switched off", () => {
+    const cols = [...genuine.slice(0, -1), genuine[genuine.length - 2]];
+    expect(checkMisWorkbook([build(cols)], { date: last, isOffDay: off, detectCopies: false }).status).toBe("COMPLETE");
+  });
+  it("only distinctive values count as daily-changing", () => {
+    expect(distinctive("Nil")).toBeNull();
+    expect(distinctive("not due")).toBeNull();
+    expect(distinctive("On Leave")).toBeNull();
+    expect(distinctive(5)).toBeNull();
+    expect(distinctive("12,000")).toBe("12000");
+    expect(distinctive("updated till 14-09-2026")).toBe("updated till 14-09-2026");
   });
 });

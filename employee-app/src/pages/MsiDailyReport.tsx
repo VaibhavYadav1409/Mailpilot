@@ -66,13 +66,19 @@ function explain(mis: MsiMis, date: string): { tone: "green" | "amber" | "red" |
         text: `Almost done. Fill the blank cells listed below in the ${d} column, then press "Check again".`,
       };
     case "MISSING": {
-      const note = mis.sources.map((s) => s.note).find((n) => n?.startsWith("Not filled"));
+      const notes = mis.sources.map((s) => s.note).filter((n): n is string => !!n);
+      const copied = notes.find((n) => n.startsWith("Copied from"));
+      if (copied) return { tone: "red", title: "Not submitted — copied from an earlier day", text: copied };
+      const note = notes.find((n) => n.startsWith("Not filled"));
+      const other = notes.find((n) => !n.startsWith("No entry dated"));
       return {
         tone: "red",
         title: "Not submitted",
         text: note
           ? `${note} ${NOT_FILLED_BLANKS} or more blanks counts as not filled — please fill the ${d} column.`
-          : `There is no ${d} column in your MIS yet. Add it and fill every row you normally fill.`,
+          : other
+            ? other
+            : `There is no ${d} column in your MIS yet. Add it and fill every row you normally fill.`,
       };
     }
     case "ERROR":
