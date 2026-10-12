@@ -19,6 +19,7 @@ import { emitToCompany } from "../sockets";
 import { buildWorkbook, colName, type XlsxCell, type XlsxStyle } from "../lib/xlsx";
 import { getMisStatusForDate, misFocusDates, type MisEmployeeDay, type MisSourceStatus } from "./misService";
 import { DEFAULT_CALENDAR, deadlineClock, getWorkCalendar, offDay, type WorkCalendar } from "./workCalendar";
+import { leaveMap } from "./misLeave";
 import {
   buildEvidence,
   deadlineFor,
@@ -52,7 +53,8 @@ export const CIRCLE_CODES: CircleCode[] = [
   { code: "CM", label: "Circle marked", meaning: "MIS not submitted for the day (red circle). Counts towards salary deduction.", isCircle: true, tone: "red", manual: true },
   { code: "NC", label: "No circle", meaning: "MIS submitted — every usual entry filled.", isCircle: false, tone: "green", manual: true },
   { code: "IN", label: "Incomplete", meaning: "MIS filled but a few usual entries (fewer than 20) were blank. Shown as a warning; not a red circle.", isCircle: false, tone: "amber", manual: true },
-  { code: "OL", label: "On leave", meaning: "On approved leave — no MIS expected, no circle.", isCircle: false, tone: "blue", manual: true },
+  { code: "OL", label: "On leave", meaning: "Planned leave — asked for in advance (leave form), no MIS needed, no circle.", isCircle: false, tone: "blue", manual: true },
+  { code: "EL", label: "Emergency leave", meaning: "Emergency leave — asked for late or after the leave (leave form), approved, no MIS needed, no circle.", isCircle: false, tone: "blue", manual: true },
   { code: "A", label: "Absent", meaning: "Absent — handled by attendance, not counted as an MIS circle.", isCircle: false, tone: "purple", manual: true },
   { code: "ON", label: "On duty", meaning: "On official duty outside — no MIS expected, no circle.", isCircle: false, tone: "blue", manual: true },
   { code: "SO", label: "Saturday off", meaning: "Saturday off for this person — no circle.", isCircle: false, tone: "grey", manual: true },
@@ -286,7 +288,7 @@ export class CircleError extends Error {
 
 export interface CircleCell {
   code: string | null;
-  source: "AUTO" | "MANUAL" | "CALENDAR" | null;
+  source: "AUTO" | "MANUAL" | "CALENDAR" | "LEAVE" | null;
   note: string | null;
   /** Last working day: can still change until the deadline. */
   pending: boolean;
@@ -331,7 +333,7 @@ export function circleRules(): string[] {
     `MIS is needed only on working days. Sundays, the 2nd Saturday, stock market (NSE) trading holidays and company holidays are off: no MIS is needed and they are never red circles.`,
     `Staff get until ${deadlineClock()} on the next working day to fill a day's MIS (the deadline). Until then the last working day is shown as "pending" and can still turn green. At the deadline the result is locked: filling it later is recorded as "filled late" but the red circle stays.`,
     `For every red circle MailPilot keeps the evidence: the deadline, what the file showed at the deadline, when MailPilot read it, and when the employee last saved the Excel file (time and name, from OneDrive/SharePoint).`,
-    `Leave (OL), on duty (ON), Saturday off (SO), holidays (H) and absent (A) never count as red circles.`,
+    `Approved leave from the leave form — planned (OL, asked at least 2 days before) or emergency (EL, asked later or after) — needs no MIS and is never a red circle. So are on duty (ON), Saturday off (SO), holidays (H) and absent (A).`,
     `Incomplete (IN, amber) = filled with a few blanks — shown as a warning, not a red circle.`,
     `An admin can change any cell (e.g. mark leave). A changed cell shows who changed it and is never overwritten by the automatic check.`,
   ];
@@ -387,6 +389,8 @@ export async function getCircleMonth(
   ]);
 
   const markOf = new Map(marks.map((m) => [`${m.employeeId}|${m.date.toISOString().slice(0, 10)}`, m]));
+  // Approved leave (leave form / added in MailPilot) — applies to past days too.
+  const leaves = await leaveMap(companyId, dates[0], dates[dates.length - 1], opts.employeeId);
 
   // Names of admins who changed cells by hand.
   const updaterIds = [...new Set(marks.filter((m) => m.source === "MANUAL" && m.updatedById).map((m) => m.updatedById!))];
@@ -419,9 +423,22 @@ export async function getCircleMonth(
       const m = markOf.get(k);
       const off = offDay(date, cal);
       let cell: CircleCell;
+      const leave = leaves.get(k);
       if (off && m?.source !== "MANUAL") {
         // Off day (Sunday, weekly-off Saturday, holiday): no MIS needed — the calendar wins over any automatic mark.
         cell = { code: off.code, source: "CALENDAR", note: null, pending: false, autoCode: null, reason: off.name, markedBy: "Calendar", evidence: null };
+      } else if (leave && m?.source !== "MANUAL") {
+        // Approved leave: no MIS needed — wins over the automatic check (the check is kept as autoCode).
+        cell = {
+          code: leave.code,
+          source: "LEAVE",
+          note: null,
+          pending: false,
+          autoCode: m?.code ?? null,
+          reason: leave.reason,
+          markedBy: "Leave record",
+          evidence: null,
+        };
       } else if (m) {
         const manual = m.source === "MANUAL";
         cell = {
@@ -760,7 +777,7 @@ export function circleWorkbook(data: CircleMonth, opts: { generatedAt?: Date; pe
         const c = r.cells[d]?.code;
         if (c) counts[c] = (counts[c] ?? 0) + 1;
       }
-      const other = ["OL", "A", "ON", "SO", "H"].filter((c) => counts[c]).map((c) => `${c} ${counts[c]}`).join(", ");
+      const other = ["OL", "EL", "A", "ON", "SO", "H"].filter((c) => counts[c]).map((c) => `${c} ${counts[c]}`).join(", ");
       const s = r.summary;
       const left = s.untilNextDeduction;
       rows.push([

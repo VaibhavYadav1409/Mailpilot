@@ -42,7 +42,7 @@ export interface MisSource {
   fileSavedAt?: string | null;
   fileSavedBy?: string | null;
   /** [last working day, the working day before] — Sundays, 2nd Saturdays and holidays are skipped. */
-  days: { date: string; label: string; check: MisCheck | null }[];
+  days: { date: string; label: string; check: MisCheck | null; excused?: { code: string; reason: string } | null }[];
 }
 
 export function useMisConnection() {

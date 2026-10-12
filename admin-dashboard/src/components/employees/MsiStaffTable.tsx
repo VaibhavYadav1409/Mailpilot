@@ -68,12 +68,13 @@ export function MsiStaffTable() {
   const allStaff = (employees ?? []).filter((e) => isMsiStaffLogin(e.email));
   const withStatus = allStaff.map((s) => {
     const mine = sourcesOf(s.id);
-    return { s, mine, y: personStatus(mine, 0), d: personStatus(mine, 1) };
+    const ex = (i: number) => mine.map((m) => m.days[i]?.excused).find(Boolean) ?? null;
+    return { s, mine, y: personStatus(mine, 0), d: personStatus(mine, 1), ey: ex(0), ed: ex(1) };
   });
   const counts = {
     green: withStatus.filter((x) => x.y?.status === 'COMPLETE').length,
     amber: withStatus.filter((x) => x.y?.status === 'INCOMPLETE').length,
-    red: withStatus.filter((x) => x.y?.status === 'MISSING').length,
+    red: withStatus.filter((x) => x.y?.status === 'MISSING' && !x.ey).length,
     unlinked: withStatus.filter((x) => !x.y).length,
   };
   const rows = withStatus
@@ -215,7 +216,7 @@ export function MsiStaffTable() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {rows.map(({ s, mine, y, d }) => {
+                {rows.map(({ s, mine, y, d, ey, ed }) => {
                   const fullName = `${s.firstName} ${s.lastName}`.trim();
                   const open = openMis === s.id;
                   return (
@@ -240,7 +241,14 @@ export function MsiStaffTable() {
                         </td>
                         {[y, d].map((x, i) => (
                           <td key={i} className="px-5 py-3.5">
-                            {x ? (
+                            {(i === 0 ? ey : ed) && x?.status !== 'COMPLETE' ? (
+                              <span
+                                title={(i === 0 ? ey : ed)!.reason}
+                                className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-300"
+                              >
+                                {(i === 0 ? ey : ed)!.code === 'EL' ? 'Emergency leave' : (i === 0 ? ey : ed)!.code === 'OL' ? 'On leave' : `Excused (${(i === 0 ? ey : ed)!.code})`}
+                              </span>
+                            ) : x ? (
                               <button onClick={() => setOpenMis(open ? null : s.id)} title="See why">
                                 <StatusBadge status={x.status} blanks={x.blanks} />
                               </button>

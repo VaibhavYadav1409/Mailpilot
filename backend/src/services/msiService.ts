@@ -6,6 +6,7 @@ import { getMailDayTimezone } from "./retentionEngine";
 import { emitToCompany } from "../sockets";
 import { ensureMisFresh, getMisStatusForDate, misCheckDates, misFocusDates, type MisEmployeeDay } from "./misService";
 import { getWorkCalendar, offDay, shortDate } from "./workCalendar";
+import { leaveMap } from "./misLeave";
 
 /**
  * MSI Daily Work Report — business logic.
@@ -337,7 +338,8 @@ export async function getMisDaysForEmployee(actor: MsiActor, now = new Date()) {
   const out = [];
   for (const d of days) {
     const mis = (await getMisStatusForDate(actor.companyId, d.date, actor.employeeId)).get(actor.employeeId) ?? null;
-    if (mis) out.push({ ...d, mis });
+    const excused = (await excusedOn(actor.companyId, d.date)).get(actor.employeeId) ?? null;
+    if (mis) out.push({ ...d, mis, excused });
   }
   return out;
 }
@@ -535,6 +537,24 @@ export interface MsiEmployeeStatus {
   report: PublicMsiReport | null;
   /** MIS auto-check for this day; null when the person has no MIS spreadsheet linked. */
   mis: MisEmployeeDay | null;
+  /** Excused that day: approved leave (OL / EL) or an HR mark (on duty, holiday…). No MIS needed. */
+  excused?: { code: string; reason: string } | null;
+}
+
+/** Codes an HR mark can use to excuse a day (no MIS needed). */
+const EXCUSE_CODES = ["OL", "EL", "A", "ON", "SO", "H"];
+
+/** "employeeId" -> why the person needs no MIS on `date` (approved leave, or an HR mark). */
+export async function excusedOn(companyId: string, date: string): Promise<Map<string, { code: string; reason: string }>> {
+  const out = new Map<string, { code: string; reason: string }>();
+  const [leaves, marks] = await Promise.all([
+    leaveMap(companyId, date, date),
+    prisma.misCircleMark.findMany({ where: { companyId, date: dateColumnValue(date), source: "MANUAL", code: { in: EXCUSE_CODES } } }).catch(() => []),
+  ]);
+  for (const [k, l] of leaves) out.set(k.split("|")[0], { code: l.code, reason: l.reason });
+  // An HR mark on the Circle Report wins over the leave record.
+  for (const m of marks) out.set(m.employeeId, { code: m.code, reason: m.note ? `Marked ${m.code} by HR: ${m.note}` : `Marked ${m.code} by HR.` });
+  return out;
 }
 
 /**
@@ -609,6 +629,7 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
     }),
     getMisStatusForDate(companyId, date),
   ]);
+  const excused = await excusedOn(companyId, date);
 
   const reportByEmployee = new Map(reports.map((r) => [r.employeeId, toPublicReport(r)]));
   const reportingRoles = new Set<string>(MSI_REPORTING_ROLES);
@@ -636,9 +657,10 @@ export async function getAdminOverview(companyId: string, dateParam: string | un
       submittedAt: (mis?.submitted ? mis.completedAt : null) ?? report?.submittedAt ?? null,
       report,
       mis,
+      excused: excused.get(e.id) ?? null,
     };
-    // A Sunday with nothing filled isn't held against anyone.
-    if (!isSubmitted && !report && mis?.status === "OFF") dayOff.push(row);
+    // A day off with nothing filled, or approved leave, isn't held against anyone.
+    if (!isSubmitted && !report && (mis?.status === "OFF" || row.excused)) dayOff.push(row);
     else (isSubmitted ? submitted : notSubmitted).push(row);
   }
   submitted.sort((a, b) => (a.submittedAt ?? "\uffff").localeCompare(b.submittedAt ?? "\uffff"));

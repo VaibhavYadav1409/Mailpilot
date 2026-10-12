@@ -141,7 +141,14 @@ function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string
       </Card>
 
       {days.map((d) => {
-        const e = explain(d.mis, d.date);
+        const e =
+          d.excused && d.mis.status !== "COMPLETE"
+            ? {
+                tone: "gray" as const,
+                title: d.excused.code === "EL" ? "Emergency leave — no MIS needed" : d.excused.code === "OL" ? "On leave — no MIS needed" : "Excused — no MIS needed",
+                text: d.excused.reason,
+              }
+            : explain(d.mis, d.date);
         return (
           <Card key={d.date} className={`p-5 space-y-3 ${TONES[e.tone]}`}>
             <div className="flex items-start gap-3">

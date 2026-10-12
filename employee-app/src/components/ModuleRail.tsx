@@ -37,7 +37,8 @@ export function ModuleRail() {
         const Icon = item.icon;
         // MIS staff: green when yesterday's MIS is complete (amber = some blanks).
         const misY = today.data?.misDays?.[0]?.mis.status;
-        const submitted = misY ? misY === "COMPLETE" || misY === "OFF" : today.data?.submitted;
+        const onLeave = !!today.data?.misDays?.[0]?.excused;
+        const submitted = misY ? misY === "COMPLETE" || misY === "OFF" || onLeave : today.data?.submitted;
         const amber = misY === "INCOMPLETE";
         return (
           <Link

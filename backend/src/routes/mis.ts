@@ -20,6 +20,18 @@ import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../s
 import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, MIS_DEADLINE_TIME, listHolidays, setHoliday } from "../services/workCalendar";
 import { emitToCompany } from "../sockets";
 import {
+  LeaveError,
+  createLeave,
+  deleteLeave,
+  formScript,
+  getLeaveSettings,
+  listLeaves,
+  receiveFormRows,
+  rotateLeaveToken,
+  updateLeave,
+  updateLeaveSettings,
+} from "../services/misLeave";
+import {
   MisEmailError,
   bulkSetEmails,
   getEmailSettings,
@@ -65,13 +77,20 @@ import {
  *   POST   /email/cron-token        new secret link (old one stops working)      (Admin+)
  *   GET    /email/log               what was sent                                (Admin+)
  *   GET|POST /email/cron/:token?type=warn|result  for cron-job.org — no login; the token is the secret
+ *   GET    /leaves?from=&to=        leave records + people + form script        (Admin+)
+ *   POST   /leaves                  { employeeId, from, to, type, status, reason } add by hand (Admin+)
+ *   PATCH  /leaves/:id              edit (person, dates, type, status, reason)   (Admin+)
+ *   DELETE /leaves/:id                                                           (Admin+)
+ *   PUT    /leaves/settings         { noticeDays }                               (Admin+)
+ *   POST   /leaves/token            new secret form link                         (Admin+)
+ *   POST   /leaves/form/:token      { mode, rows } from the Google form script — no login
  */
 export const misRouter = Router();
 
 const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET as string;
 
 function handle(res: Response, e: unknown) {
-  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError || e instanceof HolidayError || e instanceof MisEmailError)
+  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError || e instanceof HolidayError || e instanceof MisEmailError || e instanceof LeaveError)
     return res.status(e.status).json({ error: e.message });
   console.error("[MIS] request failed:", e);
   return res.status(500).json({ error: "Something went wrong. Please try again." });
@@ -487,6 +506,106 @@ misRouter.all("/email/cron/:token", async (req, res) => {
     const type = typeof req.query.type === "string" ? req.query.type : undefined;
     const r = await triggerFromCron(String(req.params.token), { type, force: req.query.force === "1" });
     return res.status(r.accepted ? 202 : 200).json(r);
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Leave records (Google leave form)
+// ---------------------------------------------------------------------------
+
+async function leaveFormUrl(req: Request, companyId: string) {
+  const s = await getLeaveSettings(companyId);
+  return `${apiBase(req)}/api/mis/leaves/form/${s.token}`;
+}
+
+misRouter.get("/leaves", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    const companyId = req.user!.companyId;
+    const q = (k: string) => (typeof req.query[k] === "string" ? (req.query[k] as string) : undefined);
+    const data = await listLeaves(companyId, { from: q("from"), to: q("to") });
+    const url = await leaveFormUrl(req, companyId);
+    return res.json({ ...data, formUrl: url, script: formScript(url, q("gid")) });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+const leaveSchema = z.object({
+  employeeId: z.string().uuid().nullable().optional(),
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  type: z.enum(["PLANNED", "EMERGENCY"]).optional(),
+  status: z.enum(["APPROVED", "REJECTED"]).optional(),
+  reason: z.string().max(2000).nullable().optional(),
+  note: z.string().max(1000).nullable().optional(),
+});
+
+const leaveChanged = (companyId: string) => emitToCompany(companyId, "msi:updated", { source: "mis-leave" });
+
+misRouter.post("/leaves", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = leaveSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid leave." });
+  try {
+    const l = await createLeave(req.user!.companyId, req.user!.employeeId, body.data);
+    leaveChanged(req.user!.companyId);
+    return res.status(201).json({ id: l.id });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.patch("/leaves/:id", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = leaveSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid leave." });
+  try {
+    await updateLeave(req.user!.companyId, req.user!.employeeId, String(req.params.id), body.data);
+    leaveChanged(req.user!.companyId);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.delete("/leaves/:id", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    await deleteLeave(req.user!.companyId, String(req.params.id));
+    leaveChanged(req.user!.companyId);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.put("/leaves/settings", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z.object({ noticeDays: z.number().int().min(0).max(30) }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Notice days must be a whole number from 0 to 30." });
+  try {
+    await updateLeaveSettings(req.user!.companyId, body.data);
+    leaveChanged(req.user!.companyId);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/leaves/token", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    await rotateLeaveToken(req.user!.companyId);
+    return res.json({ formUrl: await leaveFormUrl(req, req.user!.companyId) });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// From the Google form's Apps Script — no login; the token in the URL is the secret.
+misRouter.post("/leaves/form/:token", async (req, res) => {
+  const body = z.object({ mode: z.string().max(20).optional(), rows: z.array(z.record(z.string(), z.unknown())).max(5000) }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Expected { rows: [...] }." });
+  try {
+    const r = await receiveFormRows(String(req.params.token), body.data.rows, body.data.mode ?? "submit");
+    return res.json(r);
   } catch (e) {
     return handle(res, e);
   }

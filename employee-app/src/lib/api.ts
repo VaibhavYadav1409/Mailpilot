@@ -453,6 +453,8 @@ export interface MisDayResult {
   date: string;
   label: string;
   mis: MsiMis;
+  /** Approved leave (OL planned / EL emergency) or an HR mark — no MIS needed. */
+  excused?: { code: string; reason: string } | null;
 }
 
 export interface MsiToday {

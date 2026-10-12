@@ -644,6 +644,50 @@ model MisEmailLog {
   @@index([companyId, createdAt])
 }
 
+// Leave records (src/services/misLeave.ts): from the Google leave form (sent by
+// a small Apps Script) or added by hand. Approved leave days need no MIS and
+// are never red circles. PLANNED = asked at least noticeDays before; anything
+// later (or after the leave) = EMERGENCY. Both are approved automatically;
+// HR/CEO/COO can edit, reject or delete — a record edited in MailPilot is
+// never overwritten by the form again.
+model MisLeave {
+  id          String    @id @default(uuid())
+  companyId   String
+  employeeId  String?   // null until matched to a person
+  personName  String    // as written in the form
+  email       String?
+  fromDate    DateTime  @db.Date
+  toDate      DateTime  @db.Date
+  type        String    @default("PLANNED") // PLANNED | EMERGENCY
+  status      String    @default("APPROVED") // APPROVED | REJECTED
+  leaveKind   String?   // the form's own leave type (sick, casual…)
+  reason      String?   @db.Text
+  submittedAt DateTime? // form timestamp
+  source      String    @default("FORM") // FORM | MANUAL
+  formKey     String?   // identifies the form response (timestamp + person + dates)
+  editedInApp Boolean   @default(false)
+  note        String?   @db.Text
+  raw         Json?
+  updatedById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([companyId, formKey])
+  @@index([companyId, fromDate])
+  @@index([employeeId, fromDate])
+}
+
+model MisLeaveSettings {
+  id             String    @id @default(uuid())
+  companyId      String    @unique
+  token          String    @unique // secret in the form script's URL
+  noticeDays     Int       @default(2)
+  lastReceivedAt DateTime?
+  lastSummary    Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
 // Holidays on top of the built-in NSE trading holidays (src/services/workCalendar.ts):
 // isOff = true adds a company holiday; isOff = false turns a built-in one into a working day.
 model MisHoliday {

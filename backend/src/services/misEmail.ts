@@ -341,6 +341,8 @@ export interface PersonData {
   /** Circle Report cell (result): CM / IN / NC / OL / … */
   code: string | null;
   manual: boolean;
+  /** On approved leave that day (leave form / added in MailPilot). */
+  leave?: boolean;
   reason: string | null;
   circles: number;
   pendingCircles: number;
@@ -519,12 +521,23 @@ export function buildResultEmail(
 export function buildHrSummary(people: PersonData[], from: string | null): { subject: string; html: string; text: string } {
   const day = people[0] ? shortDate(people[0].date) : "";
   const res = (p: PersonData) =>
-    p.code === "CM" ? { t: "Red circle", c: "#b91c1c" } : p.code === "IN" ? { t: "Incomplete (yellow)", c: "#b45309" } : p.code === "NC" ? { t: "Submitted (green)", c: "#15803d" } : { t: p.code ?? "—", c: "#6b7280" };
+    p.code === "CM"
+      ? { t: "Red circle", c: "#b91c1c" }
+      : p.code === "IN"
+        ? { t: "Incomplete (yellow)", c: "#b45309" }
+        : p.code === "NC"
+          ? { t: "Submitted (green)", c: "#15803d" }
+          : p.code === "OL"
+            ? { t: "On leave (planned)", c: "#1d4ed8" }
+            : p.code === "EL"
+              ? { t: "Emergency leave", c: "#1d4ed8" }
+              : { t: p.code ?? "—", c: "#6b7280" };
   const red = people.filter((p) => p.code === "CM").length;
   const yellow = people.filter((p) => p.code === "IN").length;
   const green = people.filter((p) => p.code === "NC").length;
+  const onLeave = people.filter((p) => p.code === "OL" || p.code === "EL").length;
   const rows = [...people]
-    .sort((a, b) => ["CM", "IN", "NC"].indexOf(a.code ?? "") - ["CM", "IN", "NC"].indexOf(b.code ?? "") || a.name.localeCompare(b.name))
+    .sort((a, b) => ["CM", "IN", "NC", "EL", "OL"].indexOf(a.code ?? "") - ["CM", "IN", "NC", "EL", "OL"].indexOf(b.code ?? "") || a.name.localeCompare(b.name))
     .map((p) => {
       const r = res(p);
       return `<tr>
@@ -538,7 +551,7 @@ export function buildHrSummary(people: PersonData[], from: string | null): { sub
   const html = `<!doctype html><html><body style="font-family:Segoe UI,Arial,sans-serif;background:#f6f7f9;margin:0;padding:20px">
     <div style="max-width:720px;margin:0 auto;background:#fff;border-radius:12px;padding:22px">
       <div style="font-size:18px;font-weight:700;color:#111827">MIS result — ${esc(day)} (checked at ${esc(deadlineClock())})</div>
-      <div style="font-size:13px;color:#6b7280;margin:4px 0 14px">${red} red circle${red === 1 ? "" : "s"} · ${yellow} incomplete · ${green} submitted · ${people.reduce((n, p) => n + p.deductionDays, 0)} salary day(s) to deduct this month so far.</div>
+      <div style="font-size:13px;color:#6b7280;margin:4px 0 14px">${red} red circle${red === 1 ? "" : "s"} · ${yellow} incomplete · ${green} submitted${onLeave ? ` · ${onLeave} on leave` : ""} · ${people.reduce((n, p) => n + p.deductionDays, 0)} salary day(s) to deduct this month so far.</div>
       <table width="100%" cellspacing="0" cellpadding="0" style="font-size:13px;color:#374151;border-collapse:collapse">
         <tr style="background:#f9fafb;color:#6b7280;font-size:12px;text-align:left">
           <th style="padding:6px 8px">Name</th><th style="padding:6px 8px">${esc(day)}</th><th style="padding:6px 8px">Red circles (month)</th><th style="padding:6px 8px">Salary days</th>
@@ -593,6 +606,7 @@ async function collect(companyId: string, now: Date, opts: { employeeId?: string
       note: mis?.sources.find((s) => s.note)?.note ?? null,
       code: cell?.code ?? null,
       manual: cell?.source === "MANUAL",
+      leave: cell?.source === "LEAVE",
       reason: cell?.reason ?? null,
       circles: row?.summary.circles ?? 0,
       pendingCircles: row?.summary.pendingCircles ?? 0,
@@ -606,7 +620,8 @@ async function collect(companyId: string, now: Date, opts: { employeeId?: string
 }
 
 /** Who gets the 9:30 warning: an MIS file, not submitted / incomplete, and not marked leave/holiday by HR. */
-export const needsWarning = (p: PersonData) => p.hasMis && (p.status === "MISSING" || p.status === "INCOMPLETE") && !(p.manual && p.code !== "CM");
+export const needsWarning = (p: PersonData) =>
+  p.hasMis && !p.leave && (p.status === "MISSING" || p.status === "INCOMPLETE") && !(p.manual && p.code !== "CM");
 
 /** The email one person would get (for the preview). */
 export async function previewEmail(companyId: string, kind: EmailKind, employeeId: string | undefined, now = new Date()) {
@@ -796,7 +811,7 @@ export async function runMisEmails(
         if (!(await send(p, mail))) break;
       }
       const hrList = parseEmailList(settings.hrEmails);
-      const reportable = people.filter((p) => p.hasMis && ["CM", "IN", "NC"].includes(p.code ?? ""));
+      const reportable = people.filter((p) => p.hasMis && ["CM", "IN", "NC", "OL", "EL"].includes(p.code ?? ""));
       if (!opts.employeeId && settings.hrSummary && hrList.length && reportable.length) {
         const hr = buildHrSummary(reportable, sender.from);
         await new Promise((r) => setTimeout(r, first ? 0 : SEND_GAP_MS));

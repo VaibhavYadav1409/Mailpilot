@@ -235,6 +235,8 @@ export async function listMisSources(companyId: string, now = new Date()) {
     include: { checks: { where: { checkDate: { in: [f.yesterday, f.dayBefore].map(dateColumnValue) } } } },
   });
   const on = <T extends { checkDate: Date }>(checks: T[], date: string) => checks.find((c) => c.checkDate.toISOString().slice(0, 10) === date);
+  const { excusedOn } = await import("./msiService");
+  const [exLast, exPrev] = await Promise.all([excusedOn(companyId, f.yesterday), excusedOn(companyId, f.dayBefore)]);
   return sources.map((s) => ({
     id: s.id,
     employeeId: s.employeeId,
@@ -254,8 +256,8 @@ export async function listMisSources(companyId: string, now = new Date()) {
     fileSavedBy: s.fileModifiedBy ?? null,
     /** Last working day first, then the working day before — what the dashboard reviews. */
     days: [
-      { date: f.yesterday, label: f.labels.last, check: publicCheck(on(s.checks, f.yesterday)) },
-      { date: f.dayBefore, label: f.labels.previous, check: publicCheck(on(s.checks, f.dayBefore)) },
+      { date: f.yesterday, label: f.labels.last, check: publicCheck(on(s.checks, f.yesterday)), excused: exLast.get(s.employeeId) ?? null },
+      { date: f.dayBefore, label: f.labels.previous, check: publicCheck(on(s.checks, f.dayBefore)), excused: exPrev.get(s.employeeId) ?? null },
     ],
   }));
 }

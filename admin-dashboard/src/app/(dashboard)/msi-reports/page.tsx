@@ -65,6 +65,8 @@ interface PersonDay {
   submittedAt: string | null;
   report: UploadedReport | null;
   mis: MisDay | null;
+  /** Approved leave (OL / EL) or an HR mark — no MIS needed that day. */
+  excused?: { code: string; reason: string } | null;
 }
 
 interface Overview {
@@ -408,7 +410,7 @@ export default function MisReportsPage() {
           )}
 
           {filter === 'all' && data.dayOff.length > 0 && (
-            <PeopleSection tone="gray" title="Day off" hint="Day off, nothing filled — not counted." rows={data.dayOff} date={data.date} empty="" tz={data.timezone} circleOf={circleOf} />
+            <PeopleSection tone="gray" title="Day off" hint="Day off or on approved leave — no MIS needed, not counted." rows={data.dayOff} date={data.date} empty="" tz={data.timezone} circleOf={circleOf} />
           )}
 
           {show('important') && important.length > 0 && (
@@ -587,7 +589,7 @@ function PersonRow({
         </div>
 
         <div className="flex-[2] min-w-[260px] text-[13px] text-gray-700 dark:text-gray-300">
-          {explainDay(mis, date, !!row.report)}
+          {row.excused ? row.excused.reason : explainDay(mis, date, !!row.report)}
           {mis && (
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
               <OpenLinks sources={mis.sources} />
