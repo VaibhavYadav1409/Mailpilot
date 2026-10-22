@@ -19,6 +19,7 @@ import { getMisDaysForEmployee } from "../services/msiService";
 import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../services/misCircle";
 import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, MIS_DEADLINE_TIME, invalidateWorkCalendar, listHolidays, setHoliday } from "../services/workCalendar";
 import { emitToCompany } from "../sockets";
+import { cancelCompanyEmail, createCompanyEmail, listCompanyEmails, sendCompanyEmailTest } from "../services/companyEmail";
 import { WeeklyError, deleteWeeklyReport, listWeekly, setWeekly, uploadWeeklyReport, weeklyReportFile } from "../services/misWeekly";
 import {
   LeaveError,
@@ -671,6 +672,55 @@ misRouter.get("/weekly/:id/download", requireAuth, requireMinRole("ADMIN"), asyn
     res.setHeader("Content-Type", f.fileType);
     res.setHeader("Content-Disposition", `attachment; filename="${f.fileName.replace(/[^\w.\- ()]/g, "_")}"`);
     return res.send(f.data);
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Custom email to everyone (now or at a set time)
+// ---------------------------------------------------------------------------
+
+misRouter.get("/company-email", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    return res.json(await listCompanyEmails(req.user!.companyId));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+const companyEmailSchema = z.object({
+  subject: z.string().max(200),
+  body: z.string().max(20000),
+  audience: z.enum(["ALL", "MIS", "MAILBOX", "CHOSEN"]),
+  employeeIds: z.array(z.string().uuid()).max(1000).optional(),
+  sendAt: z.string().max(40).nullish(),
+});
+
+misRouter.post("/company-email", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = companyEmailSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Write the subject and message, and choose who gets it." });
+  try {
+    return res.status(201).json(await createCompanyEmail(req.user!.companyId, req.user!.employeeId, body.data));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/company-email/test", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z.object({ subject: z.string().max(200), body: z.string().max(20000), to: z.string().max(500) }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Write the subject and message first." });
+  try {
+    return res.json(await sendCompanyEmailTest(req.user!.companyId, body.data));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.delete("/company-email/:id", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    await cancelCompanyEmail(req.user!.companyId, String(req.params.id));
+    return res.json({ success: true });
   } catch (e) {
     return handle(res, e);
   }

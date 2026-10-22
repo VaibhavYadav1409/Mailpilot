@@ -15,6 +15,7 @@ import { purgeExpiredMsiReports } from "./services/msiService";
 import { purgeOldMisChecks, runAllMisChecks } from "./services/misService";
 import { runDueMisEmails } from "./services/misEmail";
 import { retryRevokedAccounts } from "./services/mailAccountRecovery";
+import { runDueCompanyEmails } from "./services/companyEmail";
 
 /**
  * Registers all scheduled jobs. Called once from server.ts at startup.
@@ -284,6 +285,8 @@ export function startScheduler() {
   // Mail accounts marked "needs reconnect": try them again every 6 hours (self-heals wrong calls).
   setTimeout(() => void retryRevokedAccounts().catch(() => undefined), 90_000); // once soon after each deploy
   cron.schedule("20 */6 * * *", () => void retryRevokedAccounts().then((r) => r.tried && console.log(`[MailRecovery] tried ${r.tried}, recovered ${r.recovered}`)).catch((e) => console.error("[Scheduler] mail recovery failed:", e)), { timezone: "UTC" });
+  // Custom emails to everyone that are scheduled for later: checked every minute.
+  cron.schedule("* * * * *", () => void runDueCompanyEmails().catch((e) => console.error("[Scheduler] company email failed:", e)), { timezone: "UTC" });
   cron.schedule("*/5 * * * *", () => void runDueMisEmails().catch((e) => console.error("[Scheduler] MIS email failed:", e)), { timezone: "UTC" });
 
   cron.schedule("35 * * * *", () => void purgeOldMisChecks().catch((e) => console.error("[Scheduler] MIS prune failed:", e)), { timezone: "UTC" });

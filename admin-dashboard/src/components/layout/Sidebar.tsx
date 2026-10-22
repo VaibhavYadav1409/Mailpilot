@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, Users, Building2, BarChart3, Trophy, FileText, Settings, LogOut, Loader2, Plane, ClipboardList, CircleAlert, MailCheck, CalendarCheck } from 'lucide-react';
+import { LayoutDashboard, Users, Building2, BarChart3, Trophy, FileText, Settings, LogOut, Loader2, Plane, ClipboardList, CircleAlert, MailCheck, CalendarCheck, Send } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
 import { useLogout } from '@/hooks/useAuthInit';
@@ -26,6 +26,8 @@ const menuItems = [
   { icon: CalendarCheck, label: 'Leave Records', href: '/mis-leave', minRole: 'ADMIN' },
   // 9:30 MIS Alert + 12:00 MIS Status email to MIS staff (+ HR summary).
   { icon: MailCheck, label: 'MIS Emails', href: '/mis-email', minRole: 'ADMIN' },
+  // Write an email to everyone in the company — now or scheduled.
+  { icon: Send, label: 'Email Everyone', href: '/email-everyone', minRole: 'ADMIN' },
   { icon: Settings, label: 'Settings', href: '/settings', minRole: 'ADMIN' },
 ];
 

@@ -57,7 +57,7 @@ const SEND_GAP_MS = Number(process.env.MIS_EMAIL_GAP_MS ?? 2500); // Exchange al
 const WARN_WINDOW_MIN = 90;
 const RESULT_WINDOW_MIN = 180;
 
-const esc = (s: unknown) =>
+export const esc = (s: unknown) =>
   String(s ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -177,7 +177,7 @@ export async function senderStatus(companyId: string): Promise<SenderStatus> {
   return { driver: "graph", from: conn.accountEmail, canSend: true, problem: null, needsReconnect: false };
 }
 
-interface OutMail {
+export interface OutMail {
   to: string[];
   cc?: string[];
   subject: string;
@@ -185,7 +185,7 @@ interface OutMail {
   text: string;
 }
 
-async function deliver(companyId: string, msg: OutMail): Promise<void> {
+export async function deliver(companyId: string, msg: OutMail): Promise<void> {
   const d = driver();
   if (d === "console") {
     console.log(`[MIS email:console] To: ${msg.to.join(", ")} | Subject: ${msg.subject}\n${msg.text}`);
@@ -510,6 +510,15 @@ export function buildResultEmail(
 /** The staff wording for HR: "your MIS file" -> "their MIS file". */
 const theirs = (t: string) => t.replace(/\bYour\b/g, "Their").replace(/\byour\b/g, "their");
 
+/**
+ * The result email for a preview / test send, before the day is decided:
+ * based on what the file shows now — Complete (green) or Incomplete (red).
+ * Never null (a null here used to crash the preview for anyone below 80%).
+ */
+export function resultEmailForPreview(p: PersonData, settings: { intro: string | null; footer: string | null }, from: string | null) {
+  return buildResultEmail(p, settings, from) ?? buildResultEmail({ ...p, code: p.status === "COMPLETE" ? "NC" : "CM" }, settings, from)!;
+}
+
 /** One table for HR after the deadline check. */
 export function buildHrSummary(people: PersonData[], from: string | null): { subject: string; html: string; text: string } {
   // The day most people are about; anyone on a personal calendar (Saturday off) shows their own day.
@@ -648,7 +657,7 @@ export async function previewEmail(companyId: string, kind: EmailKind, employeeI
     const mail = buildWarningEmail(p, settings, sender.from);
     return { kind, employeeId: p.employeeId, name: p.name, to: p.email, wouldSend: needsWarning(p), why: needsWarning(p) ? null : `${p.name}'s MIS for ${shortDate(p.date)} is ${p.status === "COMPLETE" ? "already submitted" : p.status.toLowerCase().replace("_", " ")}, so no warning goes to them — this is what it would look like.`, ...mail };
   }
-  const mail = buildResultEmail(p, settings, sender.from) ?? buildResultEmail({ ...p, code: p.status === "COMPLETE" ? "NC" : p.status === "INCOMPLETE" ? "IN" : "CM" }, settings, sender.from)!;
+  const mail = resultEmailForPreview(p, settings, sender.from);
   return { kind, employeeId: p.employeeId, name: p.name, to: p.email, wouldSend: !!buildResultEmail(p, settings, sender.from), why: p.code && ["CM", "IN", "NC"].includes(p.code) ? null : `Not decided yet (${p.code ?? `before ${deadlineClock()}`}) — preview based on the file right now.`, subject: mail.subject, html: mail.html, text: mail.text };
 }
 
@@ -761,7 +770,7 @@ export async function runMisEmails(
       const mail =
         opts.kind === "WARN"
           ? buildWarningEmail({ ...p, status: p.status === "INCOMPLETE" ? "INCOMPLETE" : "MISSING" }, settings, sender.from)
-          : buildResultEmail(p, settings, sender.from) ?? buildResultEmail({ ...p, code: p.status === "COMPLETE" ? "NC" : p.status === "INCOMPLETE" ? "IN" : "CM" }, settings, sender.from)!;
+          : resultEmailForPreview(p, settings, sender.from);
       try {
         await deliver(companyId, { to: [to], subject: `[TEST] ${mail.subject}`, html: mail.html, text: mail.text });
         summary.sent++;

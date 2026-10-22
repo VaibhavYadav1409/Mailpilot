@@ -268,8 +268,8 @@ function SettingsCard({ data }: { data: EmailData }) {
             onChange={(e) => set('audience', e.target.value as 'ALL' | 'ISSUES')}
             className="w-full px-2 py-1.5 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent text-sm"
           >
-            <option value="ALL">To everyone (red circles and submitted)</option>
-            <option value="ISSUES">Only red circles</option>
+            <option value="ALL">To everyone (complete and incomplete)</option>
+            <option value="ISSUES">Only incomplete (red circle)</option>
           </select>
           <p className="text-xs text-gray-600 dark:text-gray-400">
             MailPilot re-reads every MIS at {deadline} and tells each person: <span className="text-emerald-600 font-medium">Complete — green circle</span> (80% or more of the

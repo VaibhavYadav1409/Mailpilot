@@ -244,6 +244,30 @@ const STATEMENTS: { migration: string; sql: string }[] = [
   // MIS deadline moved to 12:00 PM and the company name to "Farsight Group" (Oct 2026):
   // update the saved email intro/footer texts.
   { migration: "20261024120000_mis_noon_deadline", sql: NOON_TEXTS },
+  // Custom emails to everyone (sent now or later).
+  {
+    migration: "20261024130000_company_email",
+    sql: `CREATE TABLE IF NOT EXISTS "CompanyEmail" (
+      "id" TEXT NOT NULL,
+      "companyId" TEXT NOT NULL,
+      "subject" TEXT NOT NULL,
+      "body" TEXT NOT NULL,
+      "audience" TEXT NOT NULL DEFAULT 'ALL',
+      "employeeIds" JSONB,
+      "sendAt" TIMESTAMP(3) NOT NULL,
+      "status" TEXT NOT NULL DEFAULT 'SCHEDULED',
+      "total" INTEGER NOT NULL DEFAULT 0,
+      "sent" INTEGER NOT NULL DEFAULT 0,
+      "failed" INTEGER NOT NULL DEFAULT 0,
+      "error" TEXT,
+      "createdById" TEXT,
+      "sentAt" TIMESTAMP(3),
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL,
+      CONSTRAINT "CompanyEmail_pkey" PRIMARY KEY ("id"))`,
+  },
+  { migration: "20261024130000_company_email", sql: `CREATE INDEX IF NOT EXISTS "CompanyEmail_companyId_createdAt_idx" ON "CompanyEmail"("companyId", "createdAt")` },
+  { migration: "20261024130000_company_email", sql: `CREATE INDEX IF NOT EXISTS "CompanyEmail_status_sendAt_idx" ON "CompanyEmail"("status", "sendAt")` },
 ];
 
 export async function ensureSchema(): Promise<void> {

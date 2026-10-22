@@ -656,6 +656,30 @@ model MisEmailSettings {
   updatedAt      DateTime  @updatedAt
 }
 
+// A custom email to everyone in the company (or chosen people), sent now or
+// at a set time. Each person gets their own copy (MisEmailLog kind CUSTOM).
+model CompanyEmail {
+  id          String    @id @default(uuid())
+  companyId   String
+  subject     String
+  body        String    @db.Text
+  audience    String    @default("ALL") // ALL | MIS | MAILBOX | CHOSEN
+  employeeIds Json?     // CHOSEN: the people picked
+  sendAt      DateTime
+  status      String    @default("SCHEDULED") // SCHEDULED | SENDING | SENT | CANCELLED | FAILED
+  total       Int       @default(0)
+  sent        Int       @default(0)
+  failed      Int       @default(0)
+  error       String?   @db.Text
+  createdById String?
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([companyId, createdAt])
+  @@index([status, sendAt])
+}
+
 model MisEmailLog {
   id         String   @id @default(uuid())
   companyId  String

@@ -94,6 +94,12 @@ describe("MIS Alert (9:30) and MIS Status (12:00) emails", () => {
     if (process.env.MIS_RESULT_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_RESULT_HTML_OUT, red.html);
     if (process.env.MIS_GREEN_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_GREEN_HTML_OUT, green.html);
   });
+  it("preview / test of the 12:00 PM email never fails before the day is decided", () => {
+    for (const [status, code, outcome] of [["INCOMPLETE", null, "RED"], ["INCOMPLETE", "IN", "RED"], ["MISSING", null, "RED"], ["NOT_CHECKED", null, "RED"], ["COMPLETE", null, "GREEN"]] as const) {
+      const e = m.resultEmailForPreview({ ...base, status, code }, settings, null);
+      expect(e.outcome, `${status}/${code}`).toBe(outcome);
+    }
+  });
   it("HR status report lists red first, with the reason", async () => {
     const hr = m.buildHrSummary([{ ...base, name: "Zed", code: "NC" }, { ...base, code: "CM", reason: "No entry dated 05-10-2026 yet — still the case at the deadline." }], null);
     expect(hr.subject).toBe("MIS Status Report Mon 5 Oct — 1 complete, 1 incomplete");
