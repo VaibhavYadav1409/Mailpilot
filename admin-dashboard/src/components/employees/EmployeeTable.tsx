@@ -2,7 +2,8 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/services/api';
-import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck, X, Paperclip, Star, Download, Loader2 } from 'lucide-react';
+import { Search, Filter, MoreVertical, KeyRound, UserX, UserCheck, X, Paperclip, Star, Download, Loader2, Trash2 } from 'lucide-react';
+import { useRemoveEmployee } from './useRemoveEmployee';
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
@@ -51,6 +52,7 @@ export const EmployeeTable = () => {
   const resetPasswordMutation = useMutation({
     mutationFn: (id: string) => api.post<{ tempPassword: string }>(`/employees/${id}/reset-password`),
   });
+  const { remove } = useRemoveEmployee();
 
   // MIS staff (username logins, no mailbox) have their own section on the page.
   const filteredEmployees = employees?.filter(
@@ -260,6 +262,15 @@ export const EmployeeTable = () => {
                               <UserX className="w-4 h-4" /> Suspend
                             </button>
                           )}
+                          <button
+                            onClick={() => {
+                              setOpenMenuId(null);
+                              remove({ id: employee.id, name: `${employee.firstName} ${employee.lastName}`.trim(), login: employee.email });
+                            }}
+                            className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600"
+                          >
+                            <Trash2 className="w-4 h-4" /> Remove permanently
+                          </button>
                           <button
                             onClick={async () => {
                               const result = await resetPasswordMutation.mutateAsync(employee.id);

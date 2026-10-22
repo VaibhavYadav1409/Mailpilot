@@ -9,6 +9,7 @@ import { ROLE_RANK, type Role } from "../../../shared/const";
 import { emitToCompany } from "../sockets";
 import { sendTempPasswordEmail } from "../lib/email";
 import { upsertMsiStaff, MsiStaffError } from "../services/msiStaff";
+import { removeEmployee, EmployeeRemovalError } from "../services/employeeRemoval";
 
 export const employeesRouter = Router();
 
@@ -277,6 +278,30 @@ employeesRouter.patch("/:id", requireAuth, requireMinRole("ADMIN"), async (req, 
   emitToCompany(req.user!.companyId, "employee:updated", { employeeId: employee.id, status: employee.status });
 
   return res.json(withActiveGmailAccount(employee));
+});
+
+/**
+ * DELETE /:id — Admin+ only. Removes someone who has left, permanently: the
+ * person and all their mail, reports and MIS data (see services/employeeRemoval).
+ * The body must repeat the person's login ({ confirm }) so it can't happen by a stray click.
+ */
+employeesRouter.delete("/:id", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const allowed = await canActOnEmployee(req.user!, req.params.id);
+  if (!allowed) return res.status(403).json({ error: "You do not have permission to remove this employee" });
+  const target = await prisma.employee.findFirst({ where: { id: req.params.id, companyId: req.user!.companyId }, select: { email: true } });
+  if (!target) return res.status(404).json({ error: "Employee not found." });
+  const confirm = typeof req.body?.confirm === "string" ? req.body.confirm.trim().toLowerCase() : "";
+  if (confirm !== target.email.toLowerCase()) return res.status(400).json({ error: "Confirmation didn't match — nothing was removed." });
+  try {
+    const r = await removeEmployee({ companyId: req.user!.companyId, employeeId: req.user!.employeeId, role: req.user!.role as Role }, req.params.id);
+    emitToCompany(req.user!.companyId, "employee:updated", { employeeId: req.params.id, status: "REMOVED" });
+    emitToCompany(req.user!.companyId, "msi:updated", { source: "employee-removed" });
+    return res.json({ success: true, ...r });
+  } catch (e) {
+    if (e instanceof EmployeeRemovalError) return res.status(e.status).json({ error: e.message });
+    console.error("[employees] remove failed:", e);
+    return res.status(500).json({ error: "Couldn't remove the employee — nothing was changed." });
+  }
 });
 
 /** POST /:id/reset-password — Admin+ only. Returns the new temp password once; it is never stored in plaintext. */

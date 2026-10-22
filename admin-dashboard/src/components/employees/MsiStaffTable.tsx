@@ -2,7 +2,8 @@
 
 import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ClipboardPaste, FileSpreadsheet, KeyRound, Loader2, Plus, Search, UserCheck, UserX } from 'lucide-react';
+import { ChevronDown, ClipboardPaste, FileSpreadsheet, KeyRound, Loader2, Plus, Search, Trash2, UserCheck, UserX } from 'lucide-react';
+import { useRemoveEmployee } from './useRemoveEmployee';
 import api from '@/services/api';
 import { cn } from '@/utils/cn';
 import { useAuthStore } from '@/store/authStore';
@@ -99,6 +100,7 @@ export function MsiStaffTable() {
     mutationFn: (args: { id: string; status: 'SUSPENDED' | 'OFFLINE' }) => api.patch(`/employees/${args.id}`, { status: args.status }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['employees'] }),
   });
+  const { remove, removing } = useRemoveEmployee();
 
   const chip = (key: DayFilter, label: string, n: number, cls: string) => (
     <button
@@ -311,6 +313,14 @@ export function MsiStaffTable() {
                                   <UserX className="w-3.5 h-3.5" /> Suspend
                                 </button>
                               )}
+                              <button
+                                onClick={() => remove({ id: s.id, name: fullName, login: s.email })}
+                                disabled={removing}
+                                title="Delete this person and all their data (someone who has left)"
+                                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" /> Remove
+                              </button>
                             </div>
                           </td>
                         )}
