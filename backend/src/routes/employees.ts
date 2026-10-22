@@ -25,7 +25,7 @@ const employeeSummary = {
   createdAt: true,
   departmentId: true,
   department: { select: { id: true, name: true } },
-  gmailAccounts: { where: { isActive: true }, take: 1, select: { id: true, emailAddress: true, status: true, lastSyncedAt: true } },
+  gmailAccounts: { where: { isActive: true }, take: 1, select: { id: true, emailAddress: true, status: true, lastSyncedAt: true, provider: true, lastError: true, lastErrorAt: true } },
 } as const;
 
 // Employee.gmailAccounts is a one-to-many relation (an employee can have

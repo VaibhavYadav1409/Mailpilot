@@ -61,6 +61,8 @@ export async function connectOutlookAccount(employeeId: string, companyId: strin
     // and returns nothing — leaving the inbox stuck at whatever it had.
     // Nulling it forces the next sync down the full "newest N" path.
     lastSyncedAt: null,
+    lastError: null,
+    lastErrorAt: null,
   };
 
   const account = existingForMailbox
@@ -98,19 +100,31 @@ export async function ensureFreshOutlookAccount(account: GmailAccount): Promise<
         ...(refreshed.refreshToken ? { refreshToken: encryptToken(refreshed.refreshToken) } : {}),
         tokenExpiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
         status: "CONNECTED",
+        lastError: null,
+        lastErrorAt: null,
       },
     });
   } catch (err: any) {
     if (err.isInvalidGrant) {
-      await markOutlookRevoked(account);
+      await markOutlookRevoked(account, err.tokenError?.reason);
       throw new Error("Outlook connection expired — please reconnect.");
+    }
+    if (err.tokenError) {
+      // Temporary, or a problem with MailPilot's own Microsoft app: keep the account connected, note why.
+      await prisma.gmailAccount
+        .update({ where: { id: account.id }, data: { lastError: String(err.tokenError.reason).slice(0, 500), lastErrorAt: new Date() } })
+        .catch(() => undefined);
     }
     throw err;
   }
 }
 
-async function markOutlookRevoked(account: GmailAccount) {
-  await prisma.gmailAccount.update({ where: { id: account.id }, data: { status: "REVOKED" } });
+async function markOutlookRevoked(account: GmailAccount, reason?: string) {
+  console.warn(`[Outlook] ${account.emailAddress} needs reconnecting: ${reason ?? "invalid_grant"}`);
+  await prisma.gmailAccount.update({
+    where: { id: account.id },
+    data: { status: "REVOKED", lastError: (reason ?? "Microsoft no longer accepts this mailbox's sign-in.").slice(0, 500), lastErrorAt: new Date() },
+  });
 
   const employee = await prisma.employee.findUnique({ where: { id: account.employeeId } });
   const message = `${employee ? `${employee.firstName} ${employee.lastName}` : "An employee"}'s Outlook connection (${account.emailAddress}) was revoked and needs to be reconnected.`;

@@ -16,7 +16,15 @@ interface Employee {
   email: string;
   status: 'ONLINE' | 'OFFLINE' | 'IDLE' | 'SUSPENDED';
   department: { id: string; name: string } | null;
-  gmailAccount: { emailAddress: string; status: string; lastSyncedAt: string | null } | null;
+  gmailAccount: {
+    emailAddress: string;
+    status: string;
+    lastSyncedAt: string | null;
+    provider?: string;
+    /** Why the sign-in stopped working (plain English). */
+    lastError?: string | null;
+    lastErrorAt?: string | null;
+  } | null;
   // `pending` counts only mail that actually warrants a reply; mail the AI
   // classified as an acknowledgment / FYI / automated notification is counted
   // under `noReplyNeeded` instead. Optional so an older backend that predates
@@ -170,10 +178,21 @@ export const EmployeeTable = () => {
                         : 'bg-gray-100 dark:bg-gray-800 text-gray-500'
                     )}
                   >
-                    {employee.gmailAccount?.status ?? 'NOT CONNECTED'}
+                    {employee.gmailAccount?.status === 'REVOKED' ? 'NEEDS RECONNECT' : employee.gmailAccount?.status ?? 'NOT CONNECTED'}
                   </span>
                   {employee.gmailAccount?.emailAddress && (
                     <div className="text-xs text-gray-500 mt-1">{employee.gmailAccount.emailAddress}</div>
+                  )}
+                  {employee.gmailAccount?.status === 'REVOKED' && (
+                    <div className="text-[11px] text-red-600 dark:text-red-400 mt-1 max-w-[260px] leading-snug">
+                      {employee.gmailAccount.lastError ?? 'The mailbox sign-in stopped working.'} Ask {employee.firstName} to open the MailPilot employee app and click
+                      {employee.gmailAccount.provider === 'GMAIL' ? ' Connect Gmail' : ' Connect Outlook'}. MailPilot also retries every 6 hours.
+                    </div>
+                  )}
+                  {employee.gmailAccount?.status === 'CONNECTED' && employee.gmailAccount.lastError && (
+                    <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-1 max-w-[260px] leading-snug" title={employee.gmailAccount.lastErrorAt ?? undefined}>
+                      Last sync problem: {employee.gmailAccount.lastError}
+                    </div>
                   )}
                 </td>
                 <td className="px-6 py-4">

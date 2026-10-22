@@ -21,6 +21,12 @@ const BACKFILL_SECONDARY_TO = `UPDATE "Email" SET "isSecondaryTo" = true WHERE "
     )
 )`;
 
+const R = (col: string) =>
+  `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE("${col}", 'Farsight Shares', 'Farsight Group'), 'Farsight shares', 'Farsight Group'), '11:00 AM', '12:00 PM'), '11:00 am', '12:00 pm'), '11:00AM', '12:00PM'), '11 AM', '12 PM'), '11 am', '12 pm')`;
+// Idempotent (nothing left to replace after the first run), so it is safe on every boot.
+const NOON_TEXTS = `UPDATE "MisEmailSettings" SET "intro" = ${R("intro")}, "footer" = ${R("footer")}
+  WHERE "intro" ~ '(Farsight [Ss]hares|11(:00)? ?[AaPp][Mm])' OR "footer" ~ '(Farsight [Ss]hares|11(:00)? ?[AaPp][Mm])'`;
+
 /**
  * Applies small, additive schema changes at boot, so a deploy works even when
  * `prisma migrate deploy` can't be run from a developer PC (e.g. the office
@@ -232,6 +238,12 @@ const STATEMENTS: { migration: string; sql: string }[] = [
   { migration: "20261022140000_mis_weekly", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisWeeklyReport_storageReference_key" ON "MisWeeklyReport"("storageReference")` },
   { migration: "20261022140000_mis_weekly", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisWeeklyReport_employeeId_weekStart_key" ON "MisWeeklyReport"("employeeId", "weekStart")` },
   { migration: "20261022140000_mis_weekly", sql: `CREATE INDEX IF NOT EXISTS "MisWeeklyReport_companyId_weekStart_idx" ON "MisWeeklyReport"("companyId", "weekStart")` },
+  // Why a mail account needs reconnecting.
+  { migration: "20261024120000_mail_account_error", sql: `ALTER TABLE "GmailAccount" ADD COLUMN IF NOT EXISTS "lastError" TEXT` },
+  { migration: "20261024120000_mail_account_error", sql: `ALTER TABLE "GmailAccount" ADD COLUMN IF NOT EXISTS "lastErrorAt" TIMESTAMP(3)` },
+  // MIS deadline moved to 12:00 PM and the company name to "Farsight Group" (Oct 2026):
+  // update the saved email intro/footer texts.
+  { migration: "20261024120000_mis_noon_deadline", sql: NOON_TEXTS },
 ];
 
 export async function ensureSchema(): Promise<void> {

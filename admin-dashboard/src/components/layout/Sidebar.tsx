@@ -24,7 +24,7 @@ const menuItems = [
   { icon: CircleAlert, label: 'MIS Circle Report', href: '/mis-circle', minRole: 'ADMIN' },
   // Google leave form → approved leave (no MIS needed, never a red circle) + holidays.
   { icon: CalendarCheck, label: 'Leave Records', href: '/mis-leave', minRole: 'ADMIN' },
-  // 9:30 warning + 11:00 result email to MIS staff (+ HR summary).
+  // 9:30 MIS Alert + 12:00 MIS Status email to MIS staff (+ HR summary).
   { icon: MailCheck, label: 'MIS Emails', href: '/mis-email', minRole: 'ADMIN' },
   { icon: Settings, label: 'Settings', href: '/settings', minRole: 'ADMIN' },
 ];

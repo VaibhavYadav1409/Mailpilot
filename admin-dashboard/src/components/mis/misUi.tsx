@@ -297,7 +297,7 @@ export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
     {
       tone: 'red',
       title: 'Red circle',
-      text: `No column for that date, nothing filled, a day copied from an earlier day, or less than ${COMPLETE_PERCENT}% of the boxes filled (e.g. 39 of 50). The blank cells are listed so they can be fixed before ${'11:00 AM'} on the next working day.`,
+      text: `No column for that date, nothing filled, a day copied from an earlier day, or less than ${COMPLETE_PERCENT}% of the boxes filled (e.g. 39 of 50). The blank cells are listed so they can be fixed before 12:00 PM on the next working day.`,
     },
     { tone: 'gray', title: 'Grey', text: 'Day off (Sunday, 2nd Saturday or holiday — not counted), or the file couldn’t be opened — the reason is shown.' },
   ];
@@ -328,7 +328,7 @@ export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
           </ul>
           <ul className="space-y-2 text-gray-600 dark:text-gray-400 list-disc pl-5">
             <li>
-              MIS is checked <b>one working day late</b>: staff have until <b>11:00 AM on the next working day</b> to fill a day, so
+              MIS is checked <b>one working day late</b>: staff have until <b>12:00 PM on the next working day</b> to fill a day, so
               this page shows the <b>last working day</b> and the <b>one before it</b> — never today.
             </li>
             <li>

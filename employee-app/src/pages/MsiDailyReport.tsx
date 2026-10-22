@@ -120,7 +120,7 @@ const TITLE_TONES = {
 };
 
 /**
- * The last two working days' MIS. Staff get until 11:00 AM on the next working
+ * The last two working days' MIS. Staff get until 12:00 PM on the next working
  * day to fill a day, so these are the days the CEO sees. Each file shows exactly which cells are blank.
  */
 function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string; onUpdate: (d: MisDayResult[]) => void }) {
@@ -151,7 +151,7 @@ function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string
           for the day = <span className="text-red-700 font-medium">red circle</span>.
         </p>
         <p>
-          You get until 11:00 AM on the next working day to fill each day, so you are checked for the last two working days. Sundays, the 2nd
+          You get until 12:00 PM on the next working day to fill each day, so you are checked for the last two working days. Sundays, the 2nd
           Saturday, holidays and approved leave need no MIS. MailPilot also records when you last saved the Excel file.
         </p>
       </Card>
@@ -342,7 +342,7 @@ function CircleCard({ data }: { data: MyCircle }) {
         </div>
       )}
       <p className="text-xs text-muted-foreground">
-        CM = red circle (MIS not filled by the deadline — 11:00 AM on the next working day). Every 3 red circles in a month = 1 day's salary
+        CM = red circle (MIS not filled by the deadline — 12:00 PM on the next working day). Every 3 red circles in a month = 1 day's salary
         deducted — they don't need to be in a row; 1 or 2 circles means no deduction yet. The count restarts on the 1st. Leave, on duty, Sundays,
         2nd Saturdays and holidays never count. Filling after the deadline is recorded as "filled late" and the circle stays.
       </p>

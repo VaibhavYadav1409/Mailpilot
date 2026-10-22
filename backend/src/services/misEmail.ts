@@ -1,11 +1,11 @@
 /**
  * MIS emails — two emails on every working day, about the LAST WORKING DAY's
- * MIS (deadline: 11:00 AM on the next working day, MIS_DEADLINE_TIME):
+ * MIS (deadline: 12:00 PM on the next working day, MIS_DEADLINE_TIME):
  *
  *   1. WARNING (default 9:30 AM) — only to people whose MIS for that day is
- *      not submitted or incomplete: "submit it before 11:00 AM, or a red circle
+ *      not submitted or incomplete: "complete it by 12:00 PM, or a red circle
  *      is marked", with the blank cells listed.
- *   2. RESULT (at the deadline, 11:00 AM) — to everyone, after re-reading the
+ *   2. RESULT (at the deadline, 12:00 PM) — to everyone, after re-reading the
  *      files and locking the day: red circle marked (not submitted), yellow
  *      (incomplete — no circle) or green (submitted — no circle), plus the
  *      month's red circles and salary deduction. HR gets one summary table.
@@ -334,7 +334,7 @@ export interface PersonData {
   /** The MIS day ("YYYY-MM-DD") and its label ("Yesterday" / "Last working day"). */
   date: string;
   label: string;
-  /** "Mon 5 Oct, 11:00 AM" */
+  /** "Mon 5 Oct, 12:00 PM" */
   deadlineText: string;
   /** Live status from the file (warning). */
   status: string;
@@ -361,9 +361,10 @@ interface Look {
   color: string;
   bg: string;
 }
-const RED: Look = { label: "Red circle marked", color: "#991b1b", bg: "#fee2e2" };
+// Only two outcomes: Complete (green circle) or Incomplete (red circle).
+const RED: Look = { label: "Incomplete — red circle", color: "#991b1b", bg: "#fee2e2" };
 const AMBER: Look = { label: "Incomplete", color: "#92400e", bg: "#fef3c7" };
-const GREEN: Look = { label: "Submitted on time", color: "#166534", bg: "#dcfce7" };
+const GREEN: Look = { label: "Complete — green circle", color: "#166534", bg: "#dcfce7" };
 
 /** "39 of 50 boxes filled (78%)" in a check note -> numbers. */
 export function boxShare(text: string | null | undefined): { filled: number; boxes: number; pct: number; needed: number } | null {
@@ -435,9 +436,6 @@ function layout(opts: {
           </table>
         </td></tr>
         ${opts.footer ? `<tr><td style="font-size:13px;color:#374151;padding-bottom:12px">${esc(opts.footer).replace(/\n/g, "<br>")}</td></tr>` : ""}
-        <tr><td style="font-size:11px;color:#9ca3af;border-top:1px solid #f3f4f6;padding-top:10px">
-          Automatic email from MailPilot${opts.from ? ` (${esc(opts.from)})` : ""}. Each day's MIS must be filled by ${esc(deadlineClock())} on the next working day, with at least ${COMPLETE_PERCENT}% of its boxes filled. Sundays, the 2nd Saturday, holidays and approved leave need no MIS.
-        </td></tr>
       </table>
     </td></tr>
   </table></body></html>`;
@@ -449,7 +447,7 @@ const textOf = (first: string, intro: string, title: string, look: Look, lines: 
     .join("\n")
     .trim();
 
-/** 9:30 AM MIS Alert: "your MIS for <day> is not complete yet — here is why — fill it before 11:00 AM". */
+/** 9:30 AM MIS Alert: "your MIS for <day> is incomplete — please complete it by <deadline>". */
 export function buildWarningEmail(
   p: PersonData,
   settings: { intro: string | null; footer: string | null },
@@ -457,13 +455,12 @@ export function buildWarningEmail(
 ): { subject: string; html: string; text: string } {
   const first = p.name.split(/\s+/)[0] || p.name;
   const vars = { name: p.name, first, date: shortDate(p.date), month: p.monthLabel };
-  const incomplete = p.status === "INCOMPLETE";
   const day = shortDate(p.date);
   const subject = `MIS Alert: ${day} — please complete by ${p.deadlineText}`;
   const intro = settings.intro ? fill(settings.intro, vars) : "This is an automatic message about your daily MIS report.";
-  // Short and professional: the status, and the deadline. (The exact blank cells are in the staff portal.)
-  const lines: string[] = [alertReason(p), `Please complete it by ${p.deadlineText} to avoid a red circle.`];
-  const look: Look = incomplete ? AMBER : { ...RED, label: "Not filled yet" };
+  // Short and professional: the status and the deadline only. (Details are in the staff portal.)
+  const lines: string[] = [`Your MIS for ${day} is incomplete.`, `Please complete it by ${p.deadlineText}.`];
+  const look: Look = AMBER;
   const title = `${p.label} · ${day}`;
   const footer = settings.footer ? fill(settings.footer, vars) : null;
   return {
@@ -473,7 +470,7 @@ export function buildWarningEmail(
   };
 }
 
-/** 11:00 AM MIS Status: red circle (with the reason) or submitted. Null = nothing to report (leave, holiday, unreadable file). */
+/** Deadline (12:00 PM) MIS Status: Complete (green circle) or Incomplete (red circle). Null = nothing to report (leave, holiday, unreadable file). */
 export function buildResultEmail(
   p: PersonData,
   settings: { intro: string | null; footer: string | null },
@@ -486,25 +483,18 @@ export function buildResultEmail(
   let outcome: "RED" | "YELLOW" | "GREEN";
   let subject: string;
   const lines: string[] = [];
+  // Two outcomes only: Complete = green circle, Incomplete = red circle.
   if (p.code === "CM") {
     look = RED;
     outcome = "RED";
-    subject = `MIS Status for ${day}: red circle marked`;
-    lines.push(`A red circle has been marked for ${day}.`);
-    lines.push(`Reason: ${circleReason(p)}`);
-  } else if (p.code === "IN") {
-    // Only set by hand now (before 22 Oct 2026 this was the "a few blanks" result).
-    look = AMBER;
-    outcome = "YELLOW";
-    subject = `MIS Status for ${day}: incomplete`;
-    lines.push(`Your MIS for ${day} was marked incomplete. No red circle.`);
-    if (p.reason) lines.push(`Note: ${p.reason}`);
+    subject = `MIS Status for ${day}: incomplete — red circle`;
+    lines.push(`Your MIS for ${day} was incomplete at the deadline (${p.deadlineText}). A red circle has been marked.`);
+    if (p.manual) lines.push("This was marked by HR.");
   } else if (p.code === "NC") {
     look = GREEN;
     outcome = "GREEN";
-    subject = `MIS Status for ${day}: submitted on time`;
-    const share = boxShare(p.reason) ?? boxShare(p.note);
-    lines.push(`Your MIS for ${day} was submitted on time${share ? ` (${share.filled} of ${share.boxes} boxes filled)` : ""}. Thank you.`);
+    subject = `MIS Status for ${day}: complete — green circle`;
+    lines.push(`Your MIS for ${day} is complete. Thank you.`);
   } else return null;
   const intro = settings.intro ? fill(settings.intro, vars) : "This is your daily MIS status from MailPilot.";
   const title = `${p.label} · ${day} · checked at ${deadlineClock()}`;
@@ -520,7 +510,7 @@ export function buildResultEmail(
 /** The staff wording for HR: "your MIS file" -> "their MIS file". */
 const theirs = (t: string) => t.replace(/\bYour\b/g, "Their").replace(/\byour\b/g, "their");
 
-/** One table for HR after the 11:00 AM check. */
+/** One table for HR after the deadline check. */
 export function buildHrSummary(people: PersonData[], from: string | null): { subject: string; html: string; text: string } {
   // The day most people are about; anyone on a personal calendar (Saturday off) shows their own day.
   const counts = new Map<string, number>();
@@ -529,11 +519,11 @@ export function buildHrSummary(people: PersonData[], from: string | null): { sub
   const day = mainDate ? shortDate(mainDate) : "";
   const res = (p: PersonData) =>
     p.code === "CM"
-      ? { t: "Red circle", c: "#b91c1c" }
+      ? { t: "Incomplete — red", c: "#b91c1c" }
       : p.code === "IN"
         ? { t: "Incomplete (marked by HR)", c: "#b45309" }
         : p.code === "NC"
-          ? { t: "Submitted", c: "#15803d" }
+          ? { t: "Complete — green", c: "#15803d" }
           : p.code === "OL"
             ? { t: "On leave (planned)", c: "#1d4ed8" }
             : p.code === "EL"
@@ -559,24 +549,23 @@ export function buildHrSummary(people: PersonData[], from: string | null): { sub
     .join("");
   const html = `<!doctype html><html><body style="font-family:Segoe UI,Arial,sans-serif;background:#f6f7f9;margin:0;padding:20px">
     <div style="max-width:720px;margin:0 auto;background:#fff;border-radius:12px;padding:22px">
-      <div style="font-size:18px;font-weight:700;color:#111827">MIS Status Report — ${esc(day)} (checked at ${esc(deadlineClock())})</div>
-      <div style="font-size:13px;color:#6b7280;margin:4px 0 14px">${red} red circle${red === 1 ? "" : "s"}${yellow ? ` · ${yellow} incomplete` : ""} · ${green} submitted${onLeave ? ` · ${onLeave} on leave` : ""} · ${people.reduce((n, p) => n + p.deductionDays, 0)} salary day(s) to deduct this month so far.</div>
+      <div style="font-size:18px;font-weight:700;color:#111827">MIS Status Report — ${esc(day)}</div>
+      <div style="font-size:13px;color:#6b7280;margin:4px 0 14px">${green} complete · ${red} incomplete (red circle${red === 1 ? "" : "s"})${onLeave ? ` · ${onLeave} on leave` : ""} · ${people.reduce((n, p) => n + p.deductionDays, 0)} salary day(s) to deduct this month so far.</div>
       <table width="100%" cellspacing="0" cellpadding="0" style="font-size:13px;color:#374151;border-collapse:collapse">
         <tr style="background:#f9fafb;color:#6b7280;font-size:12px;text-align:left">
           <th style="padding:6px 8px">Name</th><th style="padding:6px 8px">${esc(day)}</th><th style="padding:6px 8px">Red circles (month)</th><th style="padding:6px 8px">Salary days</th>
         </tr>
         ${rows}
       </table>
-      <div style="font-size:11px;color:#9ca3af;margin-top:14px">Automatic email from MailPilot${from ? ` (${esc(from)})` : ""}. Reasons and evidence: MailPilot → MIS Circle Report → Download Excel.</div>
     </div></body></html>`;
   const text = [
-    `MIS Status Report — ${day}: ${red} red circle${red === 1 ? "" : "s"}, ${green} submitted`,
+    `MIS Status Report — ${day}: ${green} complete, ${red} incomplete`,
     ...people.map((p) => `${p.name}: ${res(p).t}${p.code === "CM" ? ` (${theirs(circleReason(p))})` : ""} · red circles ${p.circles} · salary days ${p.deductionDays}`),
   ].join("\n");
-  return { subject: `MIS Status Report ${day} — ${red} red circle${red === 1 ? "" : "s"}, ${green} submitted${onLeave ? `, ${onLeave} on leave` : ""}`, html, text };
+  return { subject: `MIS Status Report ${day} — ${green} complete, ${red} incomplete${onLeave ? `, ${onLeave} on leave` : ""}`, html, text };
 }
 
-/** The day the emails are about: the last working day, whose deadline is today at 11:00 AM (if today is a working day). */
+/** The day the emails are about: the last working day, whose deadline is today at 12:00 PM (if today is a working day). */
 async function target(companyId: string, now: Date) {
   const cal = await getWorkCalendar(companyId);
   const f = misFocusDates(now, cal);
@@ -660,7 +649,7 @@ export async function previewEmail(companyId: string, kind: EmailKind, employeeI
     return { kind, employeeId: p.employeeId, name: p.name, to: p.email, wouldSend: needsWarning(p), why: needsWarning(p) ? null : `${p.name}'s MIS for ${shortDate(p.date)} is ${p.status === "COMPLETE" ? "already submitted" : p.status.toLowerCase().replace("_", " ")}, so no warning goes to them — this is what it would look like.`, ...mail };
   }
   const mail = buildResultEmail(p, settings, sender.from) ?? buildResultEmail({ ...p, code: p.status === "COMPLETE" ? "NC" : p.status === "INCOMPLETE" ? "IN" : "CM" }, settings, sender.from)!;
-  return { kind, employeeId: p.employeeId, name: p.name, to: p.email, wouldSend: !!buildResultEmail(p, settings, sender.from), why: p.code && ["CM", "IN", "NC"].includes(p.code) ? null : `Not decided yet (${p.code ?? "before 11:00 AM"}) — preview based on the file right now.`, subject: mail.subject, html: mail.html, text: mail.text };
+  return { kind, employeeId: p.employeeId, name: p.name, to: p.email, wouldSend: !!buildResultEmail(p, settings, sender.from), why: p.code && ["CM", "IN", "NC"].includes(p.code) ? null : `Not decided yet (${p.code ?? `before ${deadlineClock()}`}) — preview based on the file right now.`, subject: mail.subject, html: mail.html, text: mail.text };
 }
 
 // ---------------------------------------------------------------------------
@@ -907,6 +896,8 @@ export async function triggerFromCron(token: string, opts: { type?: string; forc
     opts.type === "warn" ? "WARN" : opts.type === "result" ? "RESULT" : now < t.deadline.at ? "WARN" : "RESULT";
   if (!t.deadlineIsToday) return { accepted: false, note: "Today is a day off — no MIS deadline today." };
   if (!opts.force && (kind === "WARN" ? s.lastWarnDate : s.lastResultDate) === t.today) return { accepted: false, note: `Already sent today.` };
+  // A backup timer still set for an earlier time must not send the result before the deadline.
+  if (!opts.force && kind === "RESULT" && now < t.deadline.at) return { accepted: false, note: `Too early — the result goes out at the ${deadlineClock()} deadline.` };
   void runMisEmails(s.companyId, { kind, trigger: "CRON", force: opts.force, now }).catch((e) => console.error(`[MIS email] cron ${kind} failed:`, e instanceof Error ? e.message : e));
   return { accepted: true, note: `Sending the ${kind === "WARN" ? "warning" : "result"} emails for ${shortDate(t.date)}.` };
 }

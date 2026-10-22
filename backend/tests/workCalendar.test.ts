@@ -55,10 +55,10 @@ describe("working calendar", () => {
 describe("evidence", () => {
   const cal = w.DEFAULT_CALENDAR;
   const base = { sourceId: "s1", sourceLabel: "MIS", blankCount: 0, note: null, fileModifiedBy: "Mamta Sharma" };
-  it("deadline = 11:00 AM on the next working day (IST)", () => {
+  it("deadline = 12:00 PM on the next working day (IST)", () => {
     const d = ev.deadlineFor("2026-10-01", cal, "Asia/Kolkata"); // next working day: Sat 3 Oct (2 Oct is a holiday)
     expect(d.day).toBe("2026-10-03");
-    expect(d.at.toISOString()).toBe("2026-10-03T05:30:00.000Z");
+    expect(d.at.toISOString()).toBe("2026-10-03T06:30:00.000Z"); // 12:00 PM IST
     expect(ev.deadlineFor("2026-10-09", cal, "Asia/Kolkata").day).toBe("2026-10-12"); // Fri -> Mon after the 2nd-Saturday weekend
   });
   it("records not filled at the deadline, then filled late", () => {

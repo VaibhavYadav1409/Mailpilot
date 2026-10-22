@@ -556,7 +556,7 @@ function SaturdaysOffCard({ people, canEdit }: { people: LeaveData['people']; ca
         </span>
       </div>
       <p className="text-xs text-gray-600 dark:text-gray-400">
-        For people whose every Saturday is off: no MIS is needed on any Saturday and it is never a red circle (shown as SO). Their Friday MIS is due by 11:00 AM on Monday. Past Saturdays update too.
+        For people whose every Saturday is off: no MIS is needed on any Saturday and it is never a red circle (shown as SO). Their Friday MIS is due by 12:00 PM on Monday. Past Saturdays update too.
       </p>
       {canEdit && (
         <>

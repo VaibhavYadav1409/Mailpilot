@@ -7,6 +7,7 @@
 // username/password, and app passwords) for personal Outlook.com and
 // Exchange Online accounts, so IMAP now requires an OAuth2 access token
 // (XOAUTH2). See imapSync.buildClient for where the token is actually used.
+import { explainMicrosoftTokenError } from "./tokenErrors";
 
 const REDIRECT_URI = process.env.MS_REDIRECT_URI ?? "http://localhost:4000/api/outlook/callback";
 
@@ -57,6 +58,8 @@ const SCOPES = [
   "offline_access",
   "openid",
 ].join(" ");
+/** Read-only scopes — used when a mailbox never consented to Mail.Send. */
+const READ_SCOPES = ["https://graph.microsoft.com/Mail.Read", "https://graph.microsoft.com/User.Read", "offline_access", "openid"].join(" ");
 
 function getCredentials(): { clientId: string; clientSecret: string } {
   const clientId = process.env.MS_CLIENT_ID;
@@ -193,25 +196,34 @@ export async function refreshAccessToken(
   refreshToken: string
 ): Promise<{ accessToken: string; refreshToken: string | null; expiresIn: number }> {
   const { clientId, clientSecret } = getCredentials();
-  const res = await fetch(`${AUTHORITY}/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "refresh_token",
-      scope: SCOPES,
-    }),
-  });
+  const call = (scope: string) =>
+    fetch(`${AUTHORITY}/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "refresh_token",
+        scope,
+      }),
+    });
+  let res = await call(SCOPES);
+  if (!res.ok && MS_ENABLE_SEND) {
+    const body = await res.clone().text();
+    // A mailbox connected before sending was switched on never consented to
+    // Mail.Send: asking for it on refresh fails (consent / scope). Keep the
+    // account working read-only instead of treating it as disconnected.
+    if (/AADSTS65001|AADSTS70011|invalid_scope|consent_required/.test(body)) res = await call(READ_SCOPES);
+  }
   if (!res.ok) {
     const body = await res.text();
+    const info = explainMicrosoftTokenError(res.status, body);
     const err = new Error(`Microsoft token refresh failed: ${body}`);
-    // AADSTS700082 (expired), invalid_grant, or a revoked/consent-withdrawn
-    // refresh token → the user must reconnect. Callers use this to
-    // distinguish "reconnect needed" from a transient network blip.
-    (err as any).isInvalidGrant =
-      res.status === 400 && (body.includes("invalid_grant") || body.includes("AADSTS"));
+    // Only a real loss of the mailbox's sign-in means "reconnect" — not a
+    // temporary error, and not a problem with MailPilot's own app secret.
+    (err as any).isInvalidGrant = info.kind === "RECONNECT";
+    (err as any).tokenError = info;
     throw err;
   }
   const json = (await res.json()) as {

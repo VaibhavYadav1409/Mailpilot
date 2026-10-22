@@ -14,6 +14,7 @@ import {
 import { purgeExpiredMsiReports } from "./services/msiService";
 import { purgeOldMisChecks, runAllMisChecks } from "./services/misService";
 import { runDueMisEmails } from "./services/misEmail";
+import { retryRevokedAccounts } from "./services/mailAccountRecovery";
 
 /**
  * Registers all scheduled jobs. Called once from server.ts at startup.
@@ -280,6 +281,9 @@ export function startScheduler() {
   });
   // Nightly MIS email: sends within 30 minutes after the time set in MailPilot
   // (cron-job.org calling /api/mis/email/cron/<token> is the backup — a day is only sent once).
+  // Mail accounts marked "needs reconnect": try them again every 6 hours (self-heals wrong calls).
+  setTimeout(() => void retryRevokedAccounts().catch(() => undefined), 90_000); // once soon after each deploy
+  cron.schedule("20 */6 * * *", () => void retryRevokedAccounts().then((r) => r.tried && console.log(`[MailRecovery] tried ${r.tried}, recovered ${r.recovered}`)).catch((e) => console.error("[Scheduler] mail recovery failed:", e)), { timezone: "UTC" });
   cron.schedule("*/5 * * * *", () => void runDueMisEmails().catch((e) => console.error("[Scheduler] MIS email failed:", e)), { timezone: "UTC" });
 
   cron.schedule("35 * * * *", () => void purgeOldMisChecks().catch((e) => console.error("[Scheduler] MIS prune failed:", e)), { timezone: "UTC" });

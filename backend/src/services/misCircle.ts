@@ -199,7 +199,7 @@ export function summarize(finalCircles: number, pendingCircles = 0): CircleSumma
  * Writes the AUTO mark (code, reason and evidence) for every person with an
  * MIS for each date.
  *
- * Until the deadline (11:00 AM on the next working day) the mark follows the file.
+ * Until the deadline (12:00 PM on the next working day) the mark follows the file.
  * After it, the mark is LOCKED to what the file showed at the deadline: filling
  * the MIS later is recorded as "filled late" but doesn't remove the circle.
  * Manual marks are never touched (only their remembered autoCode / evidence).
@@ -468,7 +468,7 @@ export async function getCircleMonth(
       } else {
         cell = { code: null, source: null, note: null, pending: false, autoCode: null, reason: null, markedBy: null, evidence: null };
       }
-      // An automatic result can still change until its deadline (11:00 AM on the next working day).
+      // An automatic result can still change until its deadline (12:00 PM on the next working day).
       cell.pending = cell.source === "AUTO" && now < deadlineFor(date, pcal).at;
       if (isCircleCode(cell.code)) {
         if (cell.pending) pendingCircles++;

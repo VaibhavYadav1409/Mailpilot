@@ -113,9 +113,9 @@ export function previousWorkingDay(date: string, cal: WorkCalendar = DEFAULT_CAL
  * working day. At that moment a missing MIS becomes a red circle. Override
  * with MIS_DEADLINE_TIME=HH:mm if the office rule changes.
  */
-export const MIS_DEADLINE_TIME = /^([01]\d|2[0-3]):[0-5]\d$/.test(process.env.MIS_DEADLINE_TIME ?? "") ? process.env.MIS_DEADLINE_TIME! : "11:00";
+export const MIS_DEADLINE_TIME = /^([01]\d|2[0-3]):[0-5]\d$/.test(process.env.MIS_DEADLINE_TIME ?? "") ? process.env.MIS_DEADLINE_TIME! : "12:00";
 
-/** "11:00 AM" */
+/** "12:00 PM" */
 export function deadlineClock(t: string = MIS_DEADLINE_TIME): string {
   const [h, m] = t.split(":").map(Number);
   return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;

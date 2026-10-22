@@ -185,7 +185,7 @@ describe("circleWorkbook", () => {
       "6th red circle → 2nd day",
       "24 of 30 usual entries",
       "2 red circles ÷ 3 = 0 days",
-      "08-10-2026 11:00 AM", // deadline for 7 Oct = Thu 8 Oct 11:00 AM
+      "08-10-2026 12:00 PM", // deadline for 7 Oct = Thu 8 Oct 12:00 PM
       "07-10-2026 05:30 PM", // Excel saved before the deadline
       "09-10-2026 09:30 AM", // filled late
       "Mahatma Gandhi Jayanti",

@@ -3,6 +3,7 @@
 // different: credentials are no longer read from a single global Settings
 // row, and tokens are never returned to the caller in plaintext — every
 // caller in this backend goes through gmailAccountService.getValidAccessToken.
+import { explainGoogleTokenError } from "./tokenErrors";
 
 const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ?? "http://localhost:4000/api/gmail/callback";
 
@@ -92,7 +93,9 @@ export async function refreshAccessToken(refreshToken: string): Promise<{ access
     // needs to reconnect."
     const body = await res.text();
     const err = new Error(`Google token refresh failed: ${body}`);
-    (err as any).isInvalidGrant = res.status === 400 && body.includes("invalid_grant");
+    const info = explainGoogleTokenError(res.status, body);
+    (err as any).isInvalidGrant = info.kind === "RECONNECT";
+    (err as any).tokenError = info;
     throw err;
   }
   const json = (await res.json()) as { access_token: string; expires_in: number };

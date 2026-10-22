@@ -2,7 +2,7 @@
  * Evidence behind every Circle Report cell — so HR can show WHEN and WHY a red
  * circle was marked:
  *
- *   - the deadline (11:00 AM on the next working day after the MIS day),
+ *   - the deadline (12:00 PM on the next working day after the MIS day),
  *   - what MailPilot saw at the deadline (status, filled / blank entries),
  *   - when MailPilot read the file, and when the employee last SAVED the
  *     Excel file before that (time + who, from OneDrive / SharePoint),
@@ -83,7 +83,7 @@ export interface CircleEvidence {
   lines: string[];
 }
 
-/** The exact moment a day's MIS stops being "pending": 11:00 AM (MIS_DEADLINE_TIME) on the next working day. */
+/** The exact moment a day's MIS stops being "pending": 12:00 PM (MIS_DEADLINE_TIME) on the next working day. */
 export function deadlineFor(date: string, cal: WorkCalendar, tz: string = getMsiTimezone(), time: string = MIS_DEADLINE_TIME): { day: string; at: Date } {
   const day = nextWorkingDay(date, cal);
   const [h, m] = time.split(":").map(Number);

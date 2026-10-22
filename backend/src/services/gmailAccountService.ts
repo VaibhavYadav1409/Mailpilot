@@ -78,6 +78,8 @@ export async function connectGmailAccount(employeeId: string, companyId: string,
           tokenExpiresAt: expiresAt,
           status: "CONNECTED",
           isActive: true,
+          lastError: null,
+          lastErrorAt: null,
         },
       })
     : await prisma.gmailAccount.create({
@@ -126,24 +128,33 @@ export async function getValidAccessToken(employeeId: string): Promise<string | 
         accessToken: encryptToken(refreshed.accessToken),
         tokenExpiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
         status: "CONNECTED",
+        lastError: null,
+        lastErrorAt: null,
       },
     });
     return refreshed.accessToken;
   } catch (err: any) {
     if (err.isInvalidGrant) {
-      await markRevoked(account.id, account.companyId, account.employeeId, account.emailAddress);
+      await markRevoked(account.id, account.companyId, account.employeeId, account.emailAddress, err.tokenError?.reason);
       return null;
     }
+    if (err.tokenError) await noteTokenError(account.id, err.tokenError.reason);
     // Transient failure (network, Google outage) — leave status as-is so we
     // retry next time rather than false-alarming admins.
     throw err;
   }
 }
 
-async function markRevoked(accountId: string, companyId: string, employeeId: string, emailAddress: string) {
+/** Remember why a refresh failed (temporary / app problem) without disconnecting the account. */
+export async function noteTokenError(accountId: string, reason: string) {
+  await prisma.gmailAccount.update({ where: { id: accountId }, data: { lastError: reason.slice(0, 500), lastErrorAt: new Date() } }).catch(() => undefined);
+}
+
+async function markRevoked(accountId: string, companyId: string, employeeId: string, emailAddress: string, reason?: string) {
+  console.warn(`[Gmail] ${emailAddress} needs reconnecting: ${reason ?? "invalid_grant"}`);
   await prisma.gmailAccount.update({
     where: { id: accountId },
-    data: { status: "REVOKED" },
+    data: { status: "REVOKED", lastError: (reason ?? "Google no longer accepts this mailbox's sign-in.").slice(0, 500), lastErrorAt: new Date() },
   });
 
   const employee = await prisma.employee.findUnique({ where: { id: employeeId } });

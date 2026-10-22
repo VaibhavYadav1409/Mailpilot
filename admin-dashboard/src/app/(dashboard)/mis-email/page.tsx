@@ -123,7 +123,7 @@ export default function MisEmailPage() {
       <PageHeader
         eyebrow="MIS"
         title="MIS Emails"
-        subtitle="Two emails every working day about the last working day's MIS: an MIS Alert in the morning (with the likely reason) to people who aren't done yet, and the MIS Status at the 11:00 AM deadline — red circle with the reason, or submitted — plus a status report for HR."
+        subtitle="Two emails every working day about the last working day's MIS: an MIS Alert at 9:30 AM to people who aren't done yet, and the MIS Status at the 12:00 PM deadline — Complete (green circle) or Incomplete (red circle) — plus a status report for HR."
       />
 
       {flash && <div className={cn('glass-card px-5 py-3 text-sm', flash.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600')}>{flash.text}</div>}
@@ -254,8 +254,8 @@ function SettingsCard({ data }: { data: EmailData }) {
             <span className="text-xs text-gray-500">India time</span>
           </div>
           <p className="text-xs text-gray-600 dark:text-gray-400">
-            Only to people whose MIS for the last working day is <b>not submitted</b> or <b>incomplete</b>: “Please submit it before {deadline}, or a red circle will be marked.” The
-            blank cells are listed. People who already submitted get nothing.
+            Only to people whose MIS for the last working day is <b>incomplete</b>: “Your MIS for … is incomplete. Please complete it by …, {deadline}.” People whose MIS
+            is already complete get nothing.
           </p>
         </div>
         <div className={cn('rounded-lg border p-4 space-y-2', form.resultEnabled ? 'border-primary/40' : 'border-gray-200 dark:border-gray-800 opacity-70')}>
@@ -272,8 +272,8 @@ function SettingsCard({ data }: { data: EmailData }) {
             <option value="ISSUES">Only red circles</option>
           </select>
           <p className="text-xs text-gray-600 dark:text-gray-400">
-            MailPilot re-reads every MIS at {deadline} and tells each person: <span className="text-red-600 font-medium">red circle marked</span> (with the reason in 1–2 lines) or{' '}
-            <span className="text-emerald-600 font-medium">submitted on time</span>. At least 80% of the day&apos;s boxes must be filled.
+            MailPilot re-reads every MIS at {deadline} and tells each person: <span className="text-emerald-600 font-medium">Complete — green circle</span> (80% or more of the
+            day&apos;s boxes filled) or <span className="text-red-600 font-medium">Incomplete — red circle</span> (below 80%).
           </p>
         </div>
       </div>
