@@ -384,13 +384,12 @@ function copiedFrom(text: string | null | undefined): string | null {
 export function alertReason(p: Pick<PersonData, "status" | "note" | "date">): string {
   const day = shortDate(p.date);
   const copy = copiedFrom(p.note);
-  if (copy) return `Your entries for ${day} are exactly the same as on ${copy}, so they look copied. A copied day counts as not filled.`;
+  if (copy) return `Your entries for ${day} are identical to ${copy} and count as not filled.`;
   const share = boxShare(p.note);
-  if (share && p.status === "INCOMPLETE")
-    return `Only ${share.filled} of ${share.boxes} boxes are filled (${share.pct}%). You need at least ${COMPLETE_PERCENT}% — ${share.needed} boxes — so please fill at least ${share.needed - share.filled} more.`;
-  if (/No entry dated|no column/i.test(p.note ?? "")) return `There is no column for ${day} in your MIS file yet.`;
-  if (/all \d+ boxes are blank|Not filled/i.test(p.note ?? "")) return `The ${day} column in your MIS file is empty.`;
-  return `Your MIS for ${day} has not been filled yet.`;
+  if (share && p.status === "INCOMPLETE") return `Your MIS for ${day} is ${share.pct}% complete (${share.filled} of ${share.boxes}); at least ${COMPLETE_PERCENT}% is required.`;
+  if (/No entry dated|no column/i.test(p.note ?? "")) return `No entry for ${day} was found in your MIS file.`;
+  if (/all \d+ boxes are blank|Not filled/i.test(p.note ?? "")) return `Your MIS for ${day} has not been filled.`;
+  return `Your MIS for ${day} has not been filled.`;
 }
 
 /** Why a red circle was marked, in 1–2 plain lines. */
@@ -460,17 +459,10 @@ export function buildWarningEmail(
   const vars = { name: p.name, first, date: shortDate(p.date), month: p.monthLabel };
   const incomplete = p.status === "INCOMPLETE";
   const day = shortDate(p.date);
-  const subject = incomplete
-    ? `MIS Alert: your MIS for ${day} is incomplete — please complete it by ${p.deadlineText}`
-    : `MIS Alert: your MIS for ${day} is not filled yet — please fill it by ${p.deadlineText}`;
+  const subject = `MIS Alert: ${day} — please complete by ${p.deadlineText}`;
   const intro = settings.intro ? fill(settings.intro, vars) : "This is an automatic message about your daily MIS report.";
-  const lines: string[] = [`Reason: ${alertReason(p)}`];
-  if (incomplete && p.blanks.length) {
-    lines.push("Blank boxes:");
-    lines.push(...p.blanks.slice(0, 12).map((b) => `• ${b}`));
-    if (p.blanks.length > 12) lines.push(`• …and ${p.blanks.length - 12} more`);
-  }
-  lines.push(`Please complete it by ${p.deadlineText}. If it is not done by then, a red circle will be marked.`);
+  // Short and professional: the status, and the deadline. (The exact blank cells are in the staff portal.)
+  const lines: string[] = [alertReason(p), `Please complete it by ${p.deadlineText} to avoid a red circle.`];
   const look: Look = incomplete ? AMBER : { ...RED, label: "Not filled yet" };
   const title = `${p.label} · ${day}`;
   const footer = settings.footer ? fill(settings.footer, vars) : null;

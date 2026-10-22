@@ -57,31 +57,31 @@ describe("MIS Alert (9:30) and MIS Status (11:00) emails", () => {
     monthLabel: "October 2026",
   };
   const settings = { intro: null, footer: "Contact HR: {first}" };
-  it("MIS Alert: a missing MIS, with the likely reason and no red-circle box", async () => {
+  it("MIS Alert: short — the status and the deadline, no red-circle box", async () => {
     const e = m.buildWarningEmail(base, settings, "contactus@farsightshares.com");
-    expect(e.subject).toBe("MIS Alert: your MIS for Mon 5 Oct is not filled yet — please fill it by Tue 6 Oct, 11:00 AM");
+    expect(e.subject).toBe("MIS Alert: Mon 5 Oct — please complete by Tue 6 Oct, 11:00 AM");
     expect(e.html).toContain("MIS Alert — Mon 5 Oct");
-    expect(e.html).toContain("Reason: There is no column for Mon 5 Oct in your MIS file yet.");
-    expect(e.html).toContain("Please complete it by Tue 6 Oct, 11:00 AM. If it is not done by then, a red circle will be marked.");
+    expect(e.html).toContain("No entry for Mon 5 Oct was found in your MIS file.");
+    expect(e.html).toContain("Please complete it by Tue 6 Oct, 11:00 AM to avoid a red circle.");
     expect(e.html).not.toContain("red circles so far");
     expect(e.html).not.toContain("salary");
     expect(e.text).toContain("Contact HR: Mamta");
     if (process.env.MIS_EMAIL_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_EMAIL_HTML_OUT, e.html);
   });
-  it("MIS Alert: below 80% says how many boxes are missing and lists them (escaped)", async () => {
+  it("MIS Alert: below 80% gives the percentage and does not list the blank boxes", async () => {
     const e = m.buildWarningEmail(
-      { ...base, status: "INCOMPLETE", note: "Incomplete — 39 of 50 boxes filled (78%); at least 80% (40 of 50) is needed.", blanks: ["Calls made <today> (cell AA23)"] },
+      { ...base, status: "INCOMPLETE", note: "Incomplete — 39 of 50 boxes filled (78%); at least 80% (40 of 50) is needed.", blanks: ["Calls made (cell AA23)"] },
       settings,
       null,
     );
-    expect(e.subject).toBe("MIS Alert: your MIS for Mon 5 Oct is incomplete — please complete it by Tue 6 Oct, 11:00 AM");
-    expect(e.html).toContain("Reason: Only 39 of 50 boxes are filled (78%). You need at least 80% — 40 boxes — so please fill at least 1 more.");
-    expect(e.html).toContain("Calls made &lt;today&gt; (cell AA23)");
+    expect(e.html).toContain("Your MIS for Mon 5 Oct is 78% complete (39 of 50); at least 80% is required.");
+    expect(e.html).not.toContain("Calls made");
+    expect(e.html).not.toContain("cell AA23");
     if (process.env.MIS_ALERT2_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_ALERT2_HTML_OUT, e.html);
   });
   it("MIS Alert: a copied day", () => {
     const e = m.buildWarningEmail({ ...base, note: "Copied from 02-10-2026 — all 9 entries are exactly the same as on 02-10-2026 …" }, settings, null);
-    expect(e.html).toContain("Reason: Your entries for Mon 5 Oct are exactly the same as on Fri 2 Oct, so they look copied.");
+    expect(e.html).toContain("Your entries for Mon 5 Oct are identical to Fri 2 Oct and count as not filled.");
   });
   it("only warns people who haven't submitted (and not people on leave)", () => {
     expect(m.needsWarning(base)).toBe(true);
