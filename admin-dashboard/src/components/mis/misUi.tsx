@@ -74,8 +74,16 @@ export interface MisDay {
   sources: MisSourceDay[];
 }
 
-/** Blanks at or above this mean "not filled" rather than "incomplete" (backend misSheet.NOT_FILLED_BLANKS). */
+/** A day is submitted when at least this % of its boxes are filled (backend misSheet.COMPLETE_PERCENT). */
+export const COMPLETE_PERCENT = 80;
+/** @deprecated old rule — kept so older imports compile. */
 export const NOT_FILLED_BLANKS = 20;
+
+/** "39 of 50 boxes filled (78%)" in a check note -> "39 of 50 (78%)". */
+export function boxShareText(note: string | null | undefined): string | null {
+  const m = /(\d+) of (\d+) boxes filled \((\d+)%\)/.exec(note ?? '');
+  return m ? `${m[1]} of ${m[2]} boxes (${m[3]}%)` : null;
+}
 
 type Tone = 'green' | 'amber' | 'red' | 'gray';
 
@@ -110,8 +118,7 @@ export function toneOf(status: MisStatus | undefined | null): Tone {
   switch (status) {
     case 'COMPLETE':
       return 'green';
-    case 'INCOMPLETE':
-      return 'amber';
+    case 'INCOMPLETE': // below 80% — a red circle at the deadline
     case 'MISSING':
       return 'red';
     default:
@@ -125,7 +132,7 @@ export function statusLabel(status: MisStatus | undefined | null, blanks = 0): s
     case 'COMPLETE':
       return 'Submitted';
     case 'INCOMPLETE':
-      return `Incomplete · ${blanks} blank`;
+      return `Below ${COMPLETE_PERCENT}% · ${blanks} blank`;
     case 'MISSING':
       return 'Not submitted';
     case 'ERROR':
@@ -189,12 +196,16 @@ export function shortDay(date: string) {
  */
 export function explainSource(s: MisSourceDay, date: string): string {
   switch (s.status) {
-    case 'COMPLETE':
-      return `Every entry they usually fill has something for ${dmy(date)}.`;
-    case 'INCOMPLETE':
-      return `Filled, but ${s.missingColumns.length} of their usual ${s.missingColumns.length === 1 ? 'entry is' : 'entries are'} blank for ${dmy(date)}.`;
+    case 'COMPLETE': {
+      const share = boxShareText(s.note);
+      return share ? `Submitted — ${share} filled for ${dmy(date)}.` : `Submitted for ${dmy(date)}.`;
+    }
+    case 'INCOMPLETE': {
+      const share = boxShareText(s.note);
+      return `Incomplete — only ${share ?? 'some boxes'} filled for ${dmy(date)}. At least ${COMPLETE_PERCENT}% is needed, so this is a red circle at the deadline.`;
+    }
     case 'MISSING':
-      if (s.note?.startsWith('Not filled')) return `${s.note} (${NOT_FILLED_BLANKS}+ blanks counts as not filled.)`;
+      if (s.note?.startsWith('Not filled')) return `${s.note} Nothing was filled.`;
       if (s.note?.startsWith('No entry dated')) return `There is no ${dmy(date)} column in the sheet — the day was never started.`;
       return s.note ?? `Nothing was filled for ${dmy(date)}.`;
     case 'ERROR':
@@ -282,16 +293,11 @@ export function BlankList({ blanks, max = 8 }: { blanks: MisBlank[]; max?: numbe
 export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   const rows: { tone: Tone; title: string; text: string }[] = [
-    { tone: 'green', title: 'Submitted', text: 'Every entry the person usually fills has something in that day’s column.' },
-    {
-      tone: 'amber',
-      title: 'Incomplete',
-      text: `The day was filled, but 1–${NOT_FILLED_BLANKS - 1} of their usual entries are blank. The exact cells are listed so they can be fixed.`,
-    },
+    { tone: 'green', title: 'Submitted', text: `At least ${COMPLETE_PERCENT}% of the boxes in that day’s column are filled (e.g. 40 of 50). Every box counts.` },
     {
       tone: 'red',
-      title: 'Not submitted',
-      text: `There is no column for that date, or ${NOT_FILLED_BLANKS} or more of their usual entries are blank.`,
+      title: 'Red circle',
+      text: `No column for that date, nothing filled, a day copied from an earlier day, or less than ${COMPLETE_PERCENT}% of the boxes filled (e.g. 39 of 50). The blank cells are listed so they can be fixed before ${'11:00 AM'} on the next working day.`,
     },
     { tone: 'gray', title: 'Grey', text: 'Day off (Sunday, 2nd Saturday or holiday — not counted), or the file couldn’t be opened — the reason is shown.' },
   ];
@@ -301,7 +307,7 @@ export function MisLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
         <HelpCircle className="w-4 h-4 text-primary" />
         <span className="text-sm font-medium">How MIS is checked & what the colours mean</span>
         <span className="ml-auto flex items-center gap-1.5">
-          {(['green', 'amber', 'red', 'gray'] as Tone[]).map((t) => (
+          {(['green', 'red', 'gray'] as Tone[]).map((t) => (
             <span key={t} className={cn('w-2.5 h-2.5 rounded-full', TONE[t].dot)} />
           ))}
           <ChevronDown className={cn('w-4 h-4 text-gray-400 transition-transform', open && 'rotate-180')} />

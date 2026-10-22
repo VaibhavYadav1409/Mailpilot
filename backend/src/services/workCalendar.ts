@@ -46,7 +46,7 @@ export const MARKET_HOLIDAYS: Record<string, string> = {
 };
 export const MARKET_HOLIDAY_SOURCE = "NSE trading holiday circular (Ref. 212/2025, 12 Dec 2025)";
 
-export type OffCode = "SU" | "SSO" | "H";
+export type OffCode = "SU" | "SSO" | "H" | "SO";
 
 export interface HolidayOverride {
   date: string;
@@ -58,6 +58,13 @@ export interface HolidayOverride {
 export interface WorkCalendar {
   /** Holidays in effect: date -> name. */
   holidays: Map<string, string>;
+  /** A person whose every Saturday is off (personal calendar, see forPerson). */
+  saturdaysOff?: boolean;
+}
+
+/** The company calendar as one person sees it (e.g. every Saturday off). */
+export function forPerson(cal: WorkCalendar, person: { misSaturdaysOff?: boolean | null } | null | undefined): WorkCalendar {
+  return person?.misSaturdaysOff ? { ...cal, saturdaysOff: true } : cal;
 }
 
 /** Built-in holidays plus the company's overrides. */
@@ -88,6 +95,7 @@ export function offDay(date: string, cal: WorkCalendar = DEFAULT_CALENDAR): { co
   const h = cal.holidays.get(date);
   if (h) return { code: "H", name: h };
   if (d === 6 && saturdayNumber(date) === 2) return { code: "SSO", name: "Second Saturday (weekly off)" };
+  if (d === 6 && cal.saturdaysOff) return { code: "SO", name: "Saturday off (every Saturday is off for this person)" };
   return null;
 }
 
@@ -169,6 +177,18 @@ export async function getWorkCalendar(companyId: string): Promise<WorkCalendar> 
     return DEFAULT_CALENDAR;
   }
 }
+
+/** Ids of people whose every Saturday is off (Employee.misSaturdaysOff). */
+export async function saturdaysOffSet(companyId: string): Promise<Set<string>> {
+  try {
+    const rows = await prisma.employee.findMany({ where: { companyId, misSaturdaysOff: true }, select: { id: true } });
+    return new Set(rows.map((r) => r.id));
+  } catch {
+    return new Set(); // column not there yet (first boot) — nobody
+  }
+}
+
+export const isSaturday = (date: string) => weekday(date) === 6;
 
 export function invalidateWorkCalendar(companyId: string) {
   cache.delete(companyId);

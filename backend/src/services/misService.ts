@@ -27,7 +27,7 @@ import {
   scopesAllowMail,
 } from "./misMicrosoft";
 import { addDays, availableDates, businessDateString, dateColumnValue } from "./msiService";
-import { DEFAULT_CALENDAR, focusLabels, getWorkCalendar, isWorkingDay, lastWorkingDays, type WorkCalendar } from "./workCalendar";
+import { DEFAULT_CALENDAR, focusLabels, forPerson, getWorkCalendar, isWorkingDay, lastWorkingDays, type WorkCalendar } from "./workCalendar";
 
 /** OFF = an off day (Sunday, weekly-off Saturday, holiday) with nothing filled — not counted against anyone. */
 export type MisSourceStatus = "COMPLETE" | "INCOMPLETE" | "MISSING" | "ERROR" | "NOT_CHECKED" | "OFF";
@@ -446,12 +446,18 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
   const sources = await prisma.misSource.findMany({
     where: {
       companyId,
+      employee: { status: { not: "SUSPENDED" } }, // don't read the files of people who left
       ...(opts.sourceId ? { id: opts.sourceId } : {}),
       ...(opts.employeeId ? { employeeId: opts.employeeId } : {}),
       ...(opts.force ? {} : { OR: [{ lastCheckedAt: null }, { lastCheckedAt: { lt: new Date(now.getTime() - 60_000) } }] }),
     },
   });
   if (sources.length === 0) return;
+  // People whose every Saturday is off see the calendar with those Saturdays off.
+  const satOff = new Set(
+    (await prisma.employee.findMany({ where: { id: { in: [...new Set(sources.map((s) => s.employeeId))] }, misSaturdaysOff: true }, select: { id: true } })).map((e) => e.id),
+  );
+  const calOf = (employeeId: string) => forPerson(cal, { misSaturdaysOff: satOff.has(employeeId) });
 
   let token: string;
   try {
@@ -498,7 +504,7 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
           sheetName: s.sheetName,
           dateColumn: s.dateColumn,
           requiredColumns: asStringArray(s.requiredColumns),
-          isOffDay: (d) => !isWorkingDay(d, cal),
+          isOffDay: (d) => !isWorkingDay(d, calOf(s.employeeId)),
         }),
       }));
       const detected: MisField[] = results[0].result.fields;
@@ -507,7 +513,7 @@ async function doRun(companyId: string, opts: { sourceId?: string; employeeId?: 
         data: { ...patch, detectedColumns: detected as unknown as Prisma.InputJsonValue, lastCheckedAt: now, lastError: null },
       });
       for (const { date, result } of results) {
-        changed = (await saveCheck(s, date, result, now, cal, info)) || changed;
+        changed = (await saveCheck(s, date, result, now, calOf(s.employeeId), info)) || changed;
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

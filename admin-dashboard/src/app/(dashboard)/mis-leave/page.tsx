@@ -35,7 +35,7 @@ interface Leave {
 
 interface LeaveData {
   leaves: Leave[];
-  people: { employeeId: string; name: string; username: string }[];
+  people: { employeeId: string; name: string; username: string; saturdaysOff?: boolean }[];
   settings: {
     noticeDays: number;
     lastReceivedAt: string | null;
@@ -149,6 +149,8 @@ export default function MisLeavePage() {
       )}
       {data && <LeaveTable rows={rows} people={data.people} canEdit={canEdit} />}
       {data && canEdit && <AddLeave people={data.people} />}
+
+      {data && <SaturdaysOffCard people={data.people} canEdit={canEdit} />}
 
       <HolidaysCard year={Number(month.slice(0, 4))} canEdit={canEdit} defaultOpen />
     </div>
@@ -524,5 +526,63 @@ function AddLeave({ people }: { people: LeaveData['people'] }) {
       </button>
       {msg && <span className={cn('text-xs', msg.ok ? 'text-emerald-600' : 'text-red-600')}>{msg.text}</span>}
     </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/** People whose every Saturday is off (not only the 2nd): no MIS, no circle, Friday's deadline moves to Monday. */
+function SaturdaysOffCard({ people, canEdit }: { people: LeaveData['people']; canEdit: boolean }) {
+  const qc = useQueryClient();
+  const [q, setQ] = useState('');
+  const [err, setErr] = useState('');
+  const toggle = useMutation({
+    mutationFn: (v: { employeeId: string; off: boolean }) => api.put('/mis/leaves/saturdays-off', v),
+    onSuccess: () => {
+      setErr('');
+      for (const k of ['mis-leaves', 'mis-circle', 'msi-admin', 'mis-sources']) qc.invalidateQueries({ queryKey: [k] });
+    },
+    onError: (e) => setErr(errText(e, 'Could not save.')),
+  });
+  const on = people.filter((p) => p.saturdaysOff);
+  const shown = people.filter((p) => p.name.toLowerCase().includes(q.trim().toLowerCase()));
+  return (
+    <div className="glass-card p-5 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <CalendarCheck className="w-4 h-4 text-gray-500" />
+        <h2 className="text-sm font-semibold">Every Saturday off</h2>
+        <span className="text-xs text-gray-500">
+          {on.length ? `On for: ${on.map((p) => p.name).join(', ')}` : 'Nobody yet — everyone works the 1st, 3rd, 4th and 5th Saturday.'}
+        </span>
+      </div>
+      <p className="text-xs text-gray-600 dark:text-gray-400">
+        For people whose every Saturday is off: no MIS is needed on any Saturday and it is never a red circle (shown as SO). Their Friday MIS is due by 11:00 AM on Monday. Past Saturdays update too.
+      </p>
+      {canEdit && (
+        <>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Find a person"
+            className="px-3 py-1.5 w-60 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent text-sm"
+          />
+          <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto">
+            {shown.map((p) => (
+              <label
+                key={p.employeeId}
+                className={cn(
+                  'flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs cursor-pointer',
+                  p.saturdaysOff ? 'border-sky-300 bg-sky-50 text-sky-800 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800' : 'border-gray-200 dark:border-gray-800',
+                )}
+              >
+                <input type="checkbox" checked={!!p.saturdaysOff} disabled={toggle.isPending} onChange={(e) => toggle.mutate({ employeeId: p.employeeId, off: e.target.checked })} />
+                {p.name}
+              </label>
+            ))}
+          </div>
+        </>
+      )}
+      {err && <p className="text-xs text-red-600">{err}</p>}
+    </div>
   );
 }

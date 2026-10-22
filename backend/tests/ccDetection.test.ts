@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from "vitest";
 // requiring a live DB or a regenerated Prisma client.
 vi.mock("../src/lib/db", () => ({ prisma: {} }));
 
-import { parseAddressList, computeIsCc } from "../src/services/emailSync";
+import { parseAddressList, computeIsCc, computeIsSecondaryTo } from "../src/services/emailSync";
 
 describe("parseAddressList", () => {
   it("extracts addresses from angle-bracket form and lowercases them", () => {
@@ -64,5 +64,21 @@ describe("computeIsCc", () => {
 
   it("is false when the owner address is empty", () => {
     expect(computeIsCc("", ["a@b.com"], ["c@d.com"])).toBe(false);
+  });
+});
+
+describe("computeIsSecondaryTo — only the first To address has to reply", () => {
+  const to = ["risk_mgm@farsightshares.com", "accounts@farsightshares.com"];
+  it("the first To address must reply", () => {
+    expect(computeIsSecondaryTo("risk_mgm@farsightshares.com", to)).toBe(false);
+  });
+  it("a later To address does not (case and spaces ignored)", () => {
+    expect(computeIsSecondaryTo("accounts@farsightshares.com", to)).toBe(true);
+    expect(computeIsSecondaryTo(" Accounts@FarsightShares.com", ["a@b.com", "ACCOUNTS@farsightshares.com "])).toBe(true);
+  });
+  it("alone in To, or not visibly in To (bcc / alias): unchanged", () => {
+    expect(computeIsSecondaryTo("accounts@farsightshares.com", ["accounts@farsightshares.com"])).toBe(false);
+    expect(computeIsSecondaryTo("accounts@farsightshares.com", ["list@farsightshares.com", "x@y.com"])).toBe(false);
+    expect(computeIsSecondaryTo("", to)).toBe(false);
   });
 });

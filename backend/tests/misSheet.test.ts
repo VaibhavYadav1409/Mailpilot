@@ -55,7 +55,7 @@ describe("checkMisWorkbook — dates across the top (Farsight MIS layout)", () =
       ["A", "DP Account"],
       [1, "Accounts received", "Nil", 2, "Nil", 1, "Nil", 3, ...(today ? [today[0]] : [])],
       [2, "Accounts activated", "N.A", 2, "N.A", 1, "N.A", 3, ...(today ? [today[1]] : [])],
-      [3, "Weekly Checking", "", "", "", "", "done", "", ...(today ? [""] : [])],
+      [3, "Weekly Checking", "", "", "", "", "", "", ...(today ? [""] : [])],
       [4, "MIS Approved By Yogesh Ji", "", "ok", "ok", "ok", "ok", "ok", ...(today ? [""] : [])],
       ...extra,
     ],
@@ -66,7 +66,7 @@ describe("checkMisWorkbook — dates across the top (Farsight MIS layout)", () =
     expect(r.status).toBe("COMPLETE");
     expect(r.layout).toBe("DAY_COLUMNS");
     expect(r.filledCount).toBe(2);
-    // Section heading, weekly row and manager's approval row are not demanded.
+    // Section heading, a label row nobody ever fills and the manager's approval row are not boxes.
     expect(r.fields.filter((f) => f.required).map((f) => f.name)).toEqual(["1 Accounts received", "2 Accounts activated"]);
   });
 
@@ -84,30 +84,75 @@ describe("checkMisWorkbook — dates across the top (Farsight MIS layout)", () =
     expect(r.blanks).toEqual([]);
   });
 
-  it("20+ blanks among the usually-filled particulars counts as not submitted", () => {
-    const days2 = ["2026-09-26", "2026-09-28"];
-    const head = ["#", "Particulars", ...days2.map((d) => d.split("-").reverse().join(".")), "29.09.2026"];
-    const rows = Array.from({ length: 25 }, (_, i) => [i + 1, `Task ${i + 1}`, "done", "done", i < 4 ? "done" : ""]);
-    const r = checkMisWorkbook([{ name: "S", values: [head, ...rows] }], { date: TODAY });
-    expect(r.status).toBe("MISSING");
-    expect(r.note).toMatch(/21 of 25/);
-    const few = rows.map((row, i) => (i < 6 ? [...row.slice(0, 4), ""] : [...row.slice(0, 4), "done"]));
-    expect(checkMisWorkbook([{ name: "S", values: [head, ...few] }], { date: TODAY }).status).toBe("INCOMPLETE");
+  // Six earlier working days, then 29 Sep.
+  const days6 = ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-28"];
+  const head6 = ["#", "Particulars", ...days6.map((d) => d.split("-").reverse().join(".")), "29.09.2026"];
+  /** n boxes that are always filled; today the first `filledToday` are filled. */
+  const boxes = (n: number, filledToday: number) =>
+    Array.from({ length: n }, (_, i) => [i + 1, `Task ${i + 1}`, ...days6.map(() => "done"), i < filledToday ? "done" : ""]);
+
+  it("80% rule: 40 of 50 boxes is submitted, 39 of 50 is incomplete", () => {
+    const ok = checkMisWorkbook([{ name: "S", values: [head6, ...boxes(50, 40)] }], { date: TODAY });
+    expect(ok.status).toBe("COMPLETE");
+    expect(ok.note).toBe("40 of 50 boxes filled (80%).");
+    expect(ok.blanks).toHaveLength(10); // still listed, so they can be filled
+    const short = checkMisWorkbook([{ name: "S", values: [head6, ...boxes(50, 39)] }], { date: TODAY });
+    expect(short.status).toBe("INCOMPLETE");
+    expect(short.note).toBe("Incomplete — 39 of 50 boxes filled (78%); at least 80% (40 of 50) is needed.");
+    expect(short.blankCount).toBe(11);
   });
 
-  it("rows that are usually left empty don't count towards the 20", () => {
-    const days2 = ["2026-09-26", "2026-09-28"];
-    const head = ["#", "Particulars", ...days2.map((d) => d.split("-").reverse().join(".")), "29.09.2026"];
-    // 30 rows that are never filled + 3 rows that always are.
+  it("a few filled boxes is incomplete, nothing filled is not filled", () => {
+    expect(checkMisWorkbook([{ name: "S", values: [head6, ...boxes(25, 4)] }], { date: TODAY }).note).toMatch(/^Incomplete — 4 of 25 boxes filled \(16%\)/);
+    const none = checkMisWorkbook([{ name: "S", values: [head6, ...boxes(25, 0)] }], { date: TODAY });
+    expect(none.status).toBe("MISSING");
+    expect(none.note).toBe("Not filled for 29-09-2026 — all 25 boxes are blank.");
+  });
+
+  it("no scaling down: a box filled even once in the last 40 working days counts every day", () => {
+    // 10 boxes filled daily + 40 the person skips most days (filled once, on 21 Sep).
     const rows = [
-      ...Array.from({ length: 30 }, (_, i) => [i + 1, `Rarely used ${i + 1}`, "", "", ""]),
-      [31, "Daily A", "x", "x", "x"],
-      [32, "Daily B", "x", "x", "x"],
-      [33, "Daily C", "x", "x", ""],
+      ...boxes(10, 10),
+      ...Array.from({ length: 40 }, (_, i) => [i + 11, `Skipped ${i + 1}`, "x", "", "", "", "", "", ""]),
     ];
-    const r = checkMisWorkbook([{ name: "S", values: [head, ...rows] }], { date: TODAY });
+    const r = checkMisWorkbook([{ name: "S", values: [head6, ...rows] }], { date: TODAY });
     expect(r.status).toBe("INCOMPLETE");
-    expect(r.missingFields).toEqual(["33 Daily C"]);
+    expect(r.note).toMatch(/^Incomplete — 10 of 50 boxes filled \(20%\)/);
+  });
+
+  it("labels nobody has filled in 40 working days are not boxes", () => {
+    const rows = [
+      ...Array.from({ length: 30 }, (_, i) => [i + 1, `Group label ${i + 1}`, "", "", "", "", "", "", ""]),
+      ...boxes(3, 2).map((r, i) => [31 + i, `Daily ${i + 1}`, ...r.slice(2)]),
+    ];
+    const r = checkMisWorkbook([{ name: "S", values: [head6, ...rows] }], { date: TODAY });
+    expect(r.status).toBe("INCOMPLETE");
+    expect(r.missingFields).toEqual(["33 Daily 3"]);
+    expect(r.note).toMatch(/2 of 3 boxes/);
+  });
+
+  it("a new sheet with little history: every row except headings is a box", () => {
+    const head2 = ["#", "Particulars", "26.09.2026", "28.09.2026", "29.09.2026"];
+    const rows = [[1, "Rarely used", "", "", ""], [2, "Daily", "x", "x", "x"]];
+    const r = checkMisWorkbook([{ name: "S", values: [head2, ...rows] }], { date: TODAY });
+    expect(r.status).toBe("INCOMPLETE");
+    expect(r.note).toMatch(/1 of 2 boxes/);
+  });
+
+  it("a section heading filled with NIL answers for the rows under it", () => {
+    const rows = [
+      ["M", "Overseas Account", ...days6.map(() => "NIL"), "NIL"],
+      [1, "Received", "x", ...days6.slice(1).map(() => ""), ""], // a box (filled once), blank today but covered by NIL
+      [2, "Opened", ...days6.map(() => ""), ""],
+      ["N", "Daily work", ...days6.map(() => ""), ""],
+      ...boxes(4, 4).map((r, i) => [i + 1, `Work ${i + 1}`, ...r.slice(2)]),
+    ];
+    const r = checkMisWorkbook([{ name: "S", values: [head6, ...rows] }], { date: TODAY });
+    expect(r.status).toBe("COMPLETE");
+    expect(r.note).toBe("6 of 6 boxes filled (100%).");
+    // The same heading with real text (not NIL) does not cover anything.
+    const text = rows.map((row, i) => (i === 0 ? [...row.slice(0, -1), "see below"] : row));
+    expect(checkMisWorkbook([{ name: "S", values: [head6, ...text] }], { date: TODAY }).missingFields).toEqual(["1 Received"]);
   });
 
   it("MISSING when today's column doesn't exist yet", () => {
@@ -174,14 +219,14 @@ describe("checkMisWorkbook — off days don't count when learning usual entries"
     ],
   };
   const off = new Set(["2026-09-12", "2026-09-13", "2026-09-14"]);
-  it("a row filled on every working day is required even if holidays are blank", () => {
+  it("a row filled on working days is a box even if holidays are blank", () => {
     const r = checkMisWorkbook([sheet], { date: "2026-09-16", isOffDay: (d) => off.has(d) });
     expect(r.status).toBe("INCOMPLETE");
     expect(r.missingFields).toEqual(["Calls made"]);
   });
-  it("without the calendar the blank holiday columns hide it", () => {
+  it("every box counts with or without the calendar", () => {
     const r = checkMisWorkbook([sheet], { date: "2026-09-16" });
-    expect(r.status).toBe("COMPLETE");
+    expect(r.status).toBe("INCOMPLETE");
   });
 });
 

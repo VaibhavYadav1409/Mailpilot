@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
 const state = {
+  satOff: false,
   leaves: [] as any[],
   marks: [
     { employeeId: "e1", date: D("2026-10-05"), code: "CM", source: "AUTO", note: null, autoCode: "CM", reason: "Not filled", updatedById: null, evidence: null },
@@ -11,7 +12,7 @@ const state = {
 };
 vi.mock("../src/lib/db", () => ({
   prisma: {
-    employee: { findMany: async () => [{ id: "e1", firstName: "Mamta", lastName: "", email: "mamta", _count: { misSources: 1 } }] },
+    employee: { findMany: async () => [{ id: "e1", firstName: "Mamta", lastName: "", email: "mamta", misSaturdaysOff: state.satOff, _count: { misSources: 1 } }] },
     misCircleMark: { findMany: async () => state.marks },
     misHoliday: { findMany: async () => [] },
     misSource: { findMany: async () => [] },
@@ -58,5 +59,23 @@ describe("leave records change the Circle Report (also for past days)", () => {
     state.marks = [{ ...state.marks[0], code: "CM", source: "MANUAL", note: "Leave not approved by manager" }];
     const m = await c.getCircleMonth("co", "2026-10", { now });
     expect(m.rows[0].cells["2026-10-05"]).toMatchObject({ code: "CM", source: "MANUAL" });
+  });
+});
+
+describe("every Saturday off for one person", () => {
+  it("turns a red circle on a working Saturday into SO (also for past days)", async () => {
+    state.leaves = [];
+    state.marks = [
+      { employeeId: "e1", date: D("2026-10-03"), code: "CM", source: "AUTO", note: null, autoCode: "CM", reason: "Not filled", updatedById: null, evidence: null }, // 1st Saturday
+      { employeeId: "e1", date: D("2026-10-05"), code: "CM", source: "AUTO", note: null, autoCode: "CM", reason: "Not filled", updatedById: null, evidence: null },
+    ];
+    state.satOff = false;
+    expect((await c.getCircleMonth("co", "2026-10", { now })).rows[0].summary.circles).toBe(2);
+    state.satOff = true;
+    const r = (await c.getCircleMonth("co", "2026-10", { now })).rows[0];
+    expect(r.cells["2026-10-03"]).toMatchObject({ code: "SO", source: "CALENDAR" });
+    expect(r.cells["2026-10-05"].code).toBe("CM");
+    expect(r.summary.circles).toBe(1);
+    state.satOff = false;
   });
 });

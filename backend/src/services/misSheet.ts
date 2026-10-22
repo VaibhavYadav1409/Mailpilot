@@ -3,8 +3,8 @@
  *
  * Decides, for one MIS workbook and one business date, whether the person has
  * filled in that day's MIS:
- *   COMPLETE   — the day exists in the sheet and every required field has something in it
- *   INCOMPLETE — the day exists but some required fields are blank
+ *   COMPLETE   — the day exists and at least 80% of its boxes are filled
+ *   INCOMPLETE — the day exists but fewer than 80% of its boxes are filled (a red circle)
  *   MISSING    — the day isn't in the sheet yet
  *
  * Input is what Microsoft Graph's `usedRange(valuesOnly=true)` returns for a
@@ -16,14 +16,13 @@
  * 1. DAY COLUMNS (how every Farsight MIS is built): one header row holds the
  *    dates across the top (01.09.2026 | 02.09.2026 | …), the "particulars"
  *    run down the left, and each day's work is a new column. The day's column
- *    must have every required particular filled.
- *    Required particulars are learned from history: a row is required when it
- *    was filled on at least half of the last 10 working days (so section
- *    headings like "A  DP Account" and occasional rows like "Weekly Checking"
- *    are not demanded every day). An admin can pin an explicit list instead.
+ *    must have at least 80% of its boxes filled. Every box counts — nothing is
+ *    scaled down to what the person usually fills. Only manager rows and
+ *    labels (headings / group names nobody filled in the last 40 working
+ *    days) are not boxes. An admin can pin an explicit list instead.
  *
- * 2. DAY ROWS: a normal table with a "Date" column; the day's rows must have
- *    every named column filled (except S.No / Remarks-style columns).
+ * 2. DAY ROWS: a normal table with a "Date" column; at least 80% of the named
+ *    columns of the day's rows must be filled (except S.No / Remarks-style columns).
  *
  * Dates are read the way they are typed in India (day first: 01.09.2026,
  * 14/9/2026, 27.08.26, 17-08-2026 …). Excel often stores "01/09/2026" typed on
@@ -268,14 +267,31 @@ function findColumnLayout(sheet: MisSheetInput): ColumnLayout | null {
   return { sheet, headerIndex: best.index, dates: best.dates, firstDateCol, rows };
 }
 
-const HISTORY_DAYS = 10;
 /**
- * This many blank entries among the particulars the person usually fills
- * (learned from past days, or the admin's list) = the MIS wasn't filled at
- * all for that day, rather than "almost done".
+ * Every box in the day's column must be filled — nothing is scaled down to
+ * what a person usually fills. A day is SUBMITTED when at least
+ * COMPLETE_PERCENT of its boxes are filled (40 of 50); below that it is
+ * INCOMPLETE and a red circle, like an unfilled day.
+ *
+ * Not boxes: manager rows (checked/approved by, remarks, reply) and labels —
+ * section headings ("A  DP Account") and group labels ("3 Weekly Checking",
+ * an account holder's name above their bank accounts) that nobody has filled
+ * on any of the last BOX_HISTORY_DAYS working days. Any row filled even once
+ * in that time is a box every day. A section heading filled with "NIL"
+ * answers for the rows under it.
  */
+export const COMPLETE_PERCENT = 80;
+const BOX_HISTORY_DAYS = 40;
+/** Fewer earlier working days than this = too new to tell labels from boxes: every row except headings is a box. */
+const BOX_MIN_HISTORY = 5;
+/** @deprecated kept for older callers — the rule is now COMPLETE_PERCENT of all boxes. */
 export const NOT_FILLED_BLANKS = 20;
-const REQUIRED_FILL_RATIO = 0.5;
+
+/** true when `filled` of `boxes` reaches COMPLETE_PERCENT (integer maths: 40 of 50 = exactly 80% passes). */
+export const meetsCompletePercent = (filled: number, boxes: number) => boxes > 0 && filled * 100 >= boxes * COMPLETE_PERCENT;
+/** Boxes needed for a day to count as submitted. */
+export const boxesNeeded = (boxes: number) => Math.ceil((boxes * COMPLETE_PERCENT) / 100);
+export const percentOf = (filled: number, boxes: number) => (boxes > 0 ? Math.floor((filled * 100) / boxes) : 0);
 
 function medianMs(l: ColumnLayout): number {
   const ms = l.dates.map((d) => toMs(d.date)).sort((a, b) => a - b);
@@ -300,26 +316,27 @@ function sheetForDate(layouts: ColumnLayout[], date: string): { layout: ColumnLa
   return best && { layout: best.layout, cols: best.cols };
 }
 
-/** How often each particular was filled on the most recent working days before `date`, across all sheets. */
-function learnRequired(layouts: ColumnLayout[], date: string, isOffDay?: (date: string) => boolean): Map<string, boolean> {
+/**
+ * Rows filled at least once on the last BOX_HISTORY_DAYS working days before
+ * `date` (any sheet), and how many such days there were.
+ */
+function filledHistory(layouts: ColumnLayout[], date: string, isOffDay?: (date: string) => boolean): { days: number; filled: Set<string> } {
   const allDates = new Set<string>();
   for (const l of layouts) for (const d of l.dates) if (d.date < date && !isOffDay?.(d.date)) allDates.add(d.date);
-  const recent = [...allDates].sort().reverse().slice(0, HISTORY_DAYS);
-  const cols = recent.map((d) => sheetForDate(layouts, d)).filter((x): x is { layout: ColumnLayout; cols: number[] } => x !== null);
-
-  const stats = new Map<string, { seen: number; filled: number }>();
-  for (const { layout, cols: cs } of cols) {
-    for (const row of layout.rows) {
-      const s = stats.get(row.key) ?? { seen: 0, filled: 0 };
-      s.seen++;
-      if (cs.some((c) => !isBlank(cell(layout.sheet, row.index, c)))) s.filled++;
-      stats.set(row.key, s);
-    }
+  const recent = [...allDates].sort().reverse().slice(0, BOX_HISTORY_DAYS);
+  const filled = new Set<string>();
+  let days = 0;
+  for (const d of recent) {
+    const owner = sheetForDate(layouts, d);
+    if (!owner) continue;
+    days++;
+    for (const row of owner.layout.rows) if (owner.cols.some((c) => !isBlank(cell(owner.layout.sheet, row.index, c)))) filled.add(row.key);
   }
-  const required = new Map<string, boolean>();
-  for (const [k, s] of stats) required.set(k, s.seen > 0 && s.filled / s.seen >= REQUIRED_FILL_RATIO);
-  return required;
+  return { days, filled };
 }
+
+/** "NIL", "N/A", "-", "no case" … written on a section heading = nothing to report for the whole section. */
+const SECTION_NIL = /^(nil+|na|n\/a|n\.a\.?|none|no|-+|not applicable|no (work|case|cases|request|requests|query|queries|application|applications|pendency|pending))$/i;
 
 /** Rows the staff member doesn't fill themselves (manager approval / remarks / replies) — never required automatically. */
 const NOT_STAFF_ROWS = /approved\s*by|approval|\bremarks?\b|\breply\b|\bcomments?\b/i;
@@ -448,45 +465,55 @@ export function findCopiedDay(
 function checkColumns(layouts: ColumnLayout[], opts: MisCheckOptions): MisCheckResult | null {
   const owner = sheetForDate(layouts, opts.date);
   if (!owner) return null;
-  const todays = [owner.layout];
+  const l = owner.layout;
+  const cols = owner.cols;
+  const filledToday = (r: number) => cols.some((c) => !isBlank(cell(l.sheet, r, c)));
 
   const configured = opts.requiredColumns?.length ? opts.requiredColumns : null;
-  const learned = configured ? null : learnRequired(layouts, opts.date, opts.isOffDay);
-  const hasHistory = !!learned && learned.size > 0;
+  const history = configured ? null : filledHistory(layouts, opts.date, opts.isOffDay);
+  const knowsLabels = !!history && history.days >= BOX_MIN_HISTORY;
 
   const blanks: MisBlank[] = [];
   const missing = new Set<string>();
   const fields: MisField[] = [];
   let filled = 0;
-  for (const l of todays) {
-    const cols = owner.cols;
-    for (const row of l.rows) {
-      const required = configured
-        ? matchesConfigured(row.label, configured)
-        : NOT_STAFF_ROWS.test(row.label)
-        ? false
-        : hasHistory
-        ? learned!.get(row.key) === true
-        : !looksLikeHeading(row.label);
-      fields.push({ name: row.label, required });
-      if (!required) continue;
-      if (cols.some((c) => !isBlank(cell(l.sheet, row.index, c)))) {
-        filled++;
-      } else {
-        missing.add(row.label);
-        blanks.push({ sheet: l.sheet.name, cell: a1(l.sheet, row.index, cols[cols.length - 1]), field: row.label });
-      }
+  let sectionNil = false; // the current section's heading says NIL for today
+  for (const row of l.rows) {
+    const heading = looksLikeHeading(row.label);
+    const value = cols.map((c) => cell(l.sheet, row.index, c)).find((v) => !isBlank(v));
+    if (heading) sectionNil = value !== undefined && SECTION_NIL.test(String(value).trim());
+    const isBox = configured
+      ? matchesConfigured(row.label, configured)
+      : NOT_STAFF_ROWS.test(row.label)
+      ? false
+      : value !== undefined
+      ? true // anything filled today is a box
+      : heading
+      ? !!history && history.filled.has(row.key) // a heading only when it is normally filled
+      : knowsLabels
+      ? history!.filled.has(row.key) // never filled in 40 working days = a label, not a box
+      : true;
+    fields.push({ name: row.label, required: isBox });
+    if (!isBox) continue;
+    if (filledToday(row.index) || (!heading && sectionNil)) {
+      filled++;
+    } else {
+      missing.add(row.label);
+      blanks.push({ sheet: l.sheet.name, cell: a1(l.sheet, row.index, cols[cols.length - 1]), field: row.label });
     }
   }
+  const boxes = filled + blanks.length;
+  const complete = meetsCompletePercent(filled, boxes);
+  const share = `${filled} of ${boxes} boxes filled (${percentOf(filled, boxes)}%)`;
 
   // Entries copied from an earlier day don't count as filling in the MIS.
-  if (filled > 0 && blanks.length < NOT_FILLED_BLANKS && opts.detectCopies !== false) {
+  if (complete && opts.detectCopies !== false) {
     const copy = findCopiedDay(layouts, opts.date, opts.isOffDay);
     if (copy) {
       return {
         status: "MISSING",
         layout: "DAY_COLUMNS",
-        sheet: todays[0].sheet.name,
+        sheet: l.sheet.name,
         filledCount: filled,
         missingFields: [],
         blanks: [],
@@ -501,35 +528,31 @@ function checkColumns(layouts: ColumnLayout[], opts: MisCheckOptions): MisCheckR
     }
   }
 
-  // Nothing filled, or NOT_FILLED_BLANKS+ of the usual particulars left
-  // empty: that's an unfilled MIS, not a nearly-done one — report it as not
-  // submitted instead of listing dozens of blanks.
-  if (filled === 0 || blanks.length >= NOT_FILLED_BLANKS) {
+  if (filled === 0) {
     return {
       status: "MISSING",
       layout: "DAY_COLUMNS",
-      sheet: todays[0].sheet.name,
-      filledCount: filled,
+      sheet: l.sheet.name,
+      filledCount: 0,
       missingFields: [],
       blanks: [],
       blankCount: blanks.length,
       fields,
-      note:
-        filled === 0 && missing.size === 0
-          ? "The day's column exists but no required fields were found."
-          : `Not filled for ${fmt(opts.date)} — ${blanks.length} of ${filled + blanks.length} usual entries are blank.`,
+      note: boxes === 0 ? "The day's column exists but no boxes to fill were found." : `Not filled for ${fmt(opts.date)} — all ${boxes} boxes are blank.`,
     };
   }
   return {
-    status: missing.size > 0 ? "INCOMPLETE" : "COMPLETE",
+    status: complete ? "COMPLETE" : "INCOMPLETE",
     layout: "DAY_COLUMNS",
-    sheet: todays[0].sheet.name,
+    sheet: l.sheet.name,
     filledCount: filled,
     missingFields: [...missing],
     blanks: blanks.slice(0, 50),
     blankCount: blanks.length,
     fields,
-    note: !configured && !hasHistory ? "No earlier days to learn from — every particular is required." : null,
+    note: complete
+      ? `${share}.`
+      : `Incomplete — ${share}; at least ${COMPLETE_PERCENT}% (${boxesNeeded(boxes)} of ${boxes}) is needed.`,
   };
 }
 
@@ -581,6 +604,7 @@ function checkRows(layouts: RowLayout[], opts: MisCheckOptions): MisCheckResult 
   const missing = new Set<string>();
   const fields = new Map<string, boolean>();
   let rowsToday = 0;
+  let boxes = 0;
   let sheet: string | null = null;
 
   for (const l of layouts) {
@@ -608,6 +632,7 @@ function checkRows(layouts: RowLayout[], opts: MisCheckOptions): MisCheckResult 
       rowsToday++;
       sheet ??= l.sheet.name;
       for (const c of required) {
+        boxes++;
         if (isBlank(cell(l.sheet, r, c.idx))) {
           missing.add(c.name);
           blanks.push({ sheet: l.sheet.name, cell: a1(l.sheet, r, c.idx), field: c.name });
@@ -616,15 +641,20 @@ function checkRows(layouts: RowLayout[], opts: MisCheckOptions): MisCheckResult 
     }
   }
   if (rowsToday === 0) return null;
+  // Same rule as the day-column layout: at least COMPLETE_PERCENT of the day's boxes filled.
+  const filledBoxes = boxes - blanks.length;
+  const complete = boxes === 0 || meetsCompletePercent(filledBoxes, boxes);
+  const share = `${filledBoxes} of ${boxes} boxes filled (${percentOf(filledBoxes, boxes)}%)`;
   return {
-    status: missing.size ? "INCOMPLETE" : "COMPLETE",
+    status: complete ? "COMPLETE" : "INCOMPLETE",
     layout: "DAY_ROWS",
     sheet,
     filledCount: rowsToday,
     missingFields: [...missing],
     blanks: blanks.slice(0, 50),
+    blankCount: blanks.length,
     fields: [...fields].map(([name, required]) => ({ name, required })),
-    note: null,
+    note: boxes === 0 ? null : complete ? `${share}.` : `Incomplete — ${share}; at least ${COMPLETE_PERCENT}% (${boxesNeeded(boxes)} of ${boxes}) is needed.`,
   };
 }
 
@@ -667,8 +697,13 @@ export function checkMisWorkbook(sheets: MisSheetInput[], opts: MisCheckOptions)
   }
   // Show the fields of the newest sheet so admins can still pick required ones.
   const newest = colLayouts.slice().sort((a, b) => (a.dates.at(-1)!.date < b.dates.at(-1)!.date ? 1 : -1))[0];
-  const learned = newest ? learnRequired(colLayouts, opts.date, opts.isOffDay) : null;
-  const fields = newest ? newest.rows.map((r) => ({ name: r.label, required: learned?.get(r.key) === true })) : [];
+  const hist = newest ? filledHistory(colLayouts, opts.date, opts.isOffDay) : null;
+  const fields = newest
+    ? newest.rows.map((r) => ({
+        name: r.label,
+        required: !NOT_STAFF_ROWS.test(r.label) && (hist!.days >= BOX_MIN_HISTORY ? hist!.filled.has(r.key) : !looksLikeHeading(r.label)),
+      }))
+    : [];
   return empty(`No entry dated ${fmt(opts.date)} yet.`, fields);
 }
 

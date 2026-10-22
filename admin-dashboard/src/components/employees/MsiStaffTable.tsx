@@ -166,7 +166,7 @@ export function MsiStaffTable() {
             {days[0] ? ` (${shortDay(days[0])})` : ''}:
           </span>
           {chip('green', 'Submitted', counts.green, 'text-emerald-700 dark:text-emerald-400')}
-          {chip('amber', 'Incomplete', counts.amber, 'text-amber-700 dark:text-amber-400')}
+          {chip('amber', 'Below 80%', counts.amber, 'text-red-600 dark:text-red-400')}
           {chip('red', 'Not submitted', counts.red, 'text-red-600 dark:text-red-400')}
           {chip('unlinked', 'No MIS linked', counts.unlinked, 'text-gray-500')}
         </div>
@@ -246,7 +246,7 @@ export function MsiStaffTable() {
                                 title={(i === 0 ? ey : ed)!.reason}
                                 className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-300"
                               >
-                                {(i === 0 ? ey : ed)!.code === 'EL' ? 'Emergency leave' : (i === 0 ? ey : ed)!.code === 'OL' ? 'On leave' : `Excused (${(i === 0 ? ey : ed)!.code})`}
+                                {(i === 0 ? ey : ed)!.code === 'EL' ? 'Emergency leave' : (i === 0 ? ey : ed)!.code === 'OL' ? 'On leave' : (i === 0 ? ey : ed)!.code === 'SO' ? 'Saturday off' : `Excused (${(i === 0 ? ey : ed)!.code})`}
                               </span>
                             ) : x ? (
                               <button onClick={() => setOpenMis(open ? null : s.id)} title="See why">

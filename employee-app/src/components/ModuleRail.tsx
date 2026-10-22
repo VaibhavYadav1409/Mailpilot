@@ -35,11 +35,10 @@ export function ModuleRail() {
     >
       {items.map((item) => {
         const Icon = item.icon;
-        // MIS staff: green when yesterday's MIS is complete (amber = some blanks).
+        // MIS staff: green when the last working day's MIS is submitted (80%+ of boxes), red otherwise.
         const misY = today.data?.misDays?.[0]?.mis.status;
         const onLeave = !!today.data?.misDays?.[0]?.excused;
         const submitted = misY ? misY === "COMPLETE" || misY === "OFF" || onLeave : today.data?.submitted;
-        const amber = misY === "INCOMPLETE";
         return (
           <Link
             key={item.href}
@@ -54,9 +53,9 @@ export function ModuleRail() {
               {item.msi && today.data && (
                 <span
                   className={`absolute -right-1.5 -top-1 h-2.5 w-2.5 rounded-full ring-2 ring-card ${
-                    submitted ? "bg-green-500" : amber ? "bg-amber-500" : "bg-red-500"
+                    submitted ? "bg-green-500" : "bg-red-500"
                   }`}
-                  aria-label={submitted ? "MIS submitted" : amber ? "MIS has blanks" : "MIS not submitted"}
+                  aria-label={submitted ? "MIS submitted" : "MIS not done yet"}
                 />
               )}
             </span>

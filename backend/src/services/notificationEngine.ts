@@ -82,7 +82,8 @@ async function checkPendingOverflow(companyId: string, rules: Required<Notificat
   });
 
   for (const account of accounts) {
-    const pending = await prisma.email.count({ where: { gmailAccountId: account.id, isReplied: false } });
+    // Only the first To address has to reply: mail where this mailbox is a later To address isn't its backlog.
+    const pending = await prisma.email.count({ where: { gmailAccountId: account.id, isReplied: false, isSecondaryTo: false } });
     if (pending <= rules.pendingOverflowThreshold) continue;
 
     const employee = await prisma.employee.findUnique({

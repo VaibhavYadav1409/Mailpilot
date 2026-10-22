@@ -23,7 +23,7 @@ describe("calendar", () => {
 describe("autoCodeFor", () => {
   it("turns MIS results into sheet codes", () => {
     expect(c.autoCodeFor("COMPLETE", "2026-10-05")).toBe("NC");
-    expect(c.autoCodeFor("INCOMPLETE", "2026-10-05")).toBe("IN");
+    expect(c.autoCodeFor("INCOMPLETE", "2026-10-05")).toBe("CM"); // below 80% = red circle
     expect(c.autoCodeFor("MISSING", "2026-10-05")).toBe("CM");
     expect(c.autoCodeFor("MISSING", "2026-10-10")).toBe("SSO"); // not filled on a day off = no circle
     expect(c.autoCodeFor("ERROR", "2026-10-05")).toBeNull(); // never a circle for our own read failure
@@ -111,12 +111,15 @@ describe("reasons", () => {
     expect(r).toBe("Not filled for 05-10-2026 — 24 of 30 usual entries are blank");
   });
   it("lists blank cells for an incomplete day", () => {
-    const r = c.reasonFromDay({ sources: [src({ status: "INCOMPLETE", blanks: [{ sheet: "S", cell: "AA23", field: "Calls made" }] })] } as never, "2026-10-05");
-    expect(r).toBe("Filled, but 1 usual entry left blank: Calls made (AA23)");
+    const r = c.reasonFromDay(
+      { sources: [src({ status: "INCOMPLETE", note: "Incomplete — 39 of 50 boxes filled (78%); at least 80% (40 of 50) is needed.", blanks: [{ sheet: "S", cell: "AA23", field: "Calls made" }] })] } as never,
+      "2026-10-05",
+    );
+    expect(r).toBe("Incomplete — 39 of 50 boxes filled (78%); at least 80% (40 of 50) is needed. Blank: Calls made (AA23)");
   });
   it("names each file when a person has two", () => {
     const r = c.reasonFromDay({ sources: [src({ label: "Sales" }), src({ label: "Ops", status: "MISSING", note: null })] } as never, "2026-10-05");
-    expect(r).toBe("Sales: submitted — every usual entry filled (30 filled) | Ops: not filled for 05-10-2026");
+    expect(r).toBe("Sales: submitted (30 filled) | Ops: not filled for 05-10-2026");
   });
   it("says when an admin removed a circle", () => {
     const r = c.manualReason("OL", "Sick leave approved", "CM", "Not filled for 05-10-2026 — 24 of 30 usual entries are blank.");

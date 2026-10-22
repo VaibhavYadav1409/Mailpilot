@@ -31,11 +31,12 @@ import crypto from "node:crypto";
 import { prisma } from "../lib/db";
 import { Prisma } from "../generated/prisma/client";
 import { MisGraphError, getMisAccessToken, scopesAllowMail, sendGraphMail } from "./misMicrosoft";
+import { COMPLETE_PERCENT, boxesNeeded, percentOf } from "./misSheet";
 import { getMisStatusForDate, matchExistingStaff, misFocusDates, runMisChecks, type MisEmployeeDay } from "./misService";
-import { CIRCLES_PER_DEDUCTION, deductionCalculation, getCircleMonth, recordAutoMarks, redCircleEntries, type CircleCell } from "./misCircle";
+import { CIRCLES_PER_DEDUCTION, getCircleMonth, recordAutoMarks, redCircleEntries, type CircleCell } from "./misCircle";
 import { deadlineFor, fmtWhen } from "./misEvidence";
 import { businessDateString, getMsiTimezone } from "./msiService";
-import { addDaysTo, deadlineClock, getWorkCalendar, shortDate } from "./workCalendar";
+import { addDaysTo, deadlineClock, forPerson, getWorkCalendar, saturdaysOffSet, shortDate } from "./workCalendar";
 
 export class MisEmailError extends Error {
   constructor(
@@ -231,7 +232,8 @@ export async function listRecipients(companyId: string): Promise<Recipient[]> {
   const people = await prisma.employee.findMany({
     where: {
       companyId,
-      OR: [{ NOT: { email: { contains: "@" } }, status: { not: "SUSPENDED" } }, { misSources: { some: {} } }],
+      status: { not: "SUSPENDED" }, // people who left (suspended) get no MIS emails
+      OR: [{ NOT: { email: { contains: "@" } } }, { misSources: { some: {} } }],
     },
     select: { id: true, firstName: true, lastName: true, email: true, contactEmail: true, _count: { select: { misSources: true } } },
     orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
@@ -359,28 +361,49 @@ interface Look {
   color: string;
   bg: string;
 }
-const RED: Look = { label: "Red circle", color: "#991b1b", bg: "#fee2e2" };
-const YELLOW: Look = { label: "Incomplete — yellow", color: "#92400e", bg: "#fef3c7" };
-const GREEN: Look = { label: "Submitted — green", color: "#166534", bg: "#dcfce7" };
+const RED: Look = { label: "Red circle marked", color: "#991b1b", bg: "#fee2e2" };
+const AMBER: Look = { label: "Incomplete", color: "#92400e", bg: "#fef3c7" };
+const GREEN: Look = { label: "Submitted on time", color: "#166534", bg: "#dcfce7" };
 
-function monthLines(p: PersonData, extra = 0): string[] {
-  const left = p.untilNext;
-  const out = [
-    p.circles === 0
-      ? `No red circles in ${p.monthLabel} so far.`
-      : `${deductionCalculation(p.circles)} Salary deduction so far: ${p.deductionDays} day${p.deductionDays === 1 ? "" : "s"}.`,
-  ];
-  if (p.circleDates.length) out.push(`Red circle dates: ${p.circleDates.join(", ")}`);
-  if (extra) {
-    const after = p.circles + extra;
-    const days = Math.floor(after / CIRCLES_PER_DEDUCTION);
-    out.push(
-      days > p.deductionDays
-        ? `If this day becomes a red circle you will have ${after} — that means ${days} day${days === 1 ? "" : "s"} of salary deducted.`
-        : `If this day becomes a red circle you will have ${after} red circle${after === 1 ? "" : "s"} this month.`,
-    );
-  } else out.push(`${left} more red circle${left === 1 ? "" : "s"} = ${p.deductionDays + 1} day${p.deductionDays + 1 === 1 ? "" : "s"} of salary deducted (every ${CIRCLES_PER_DEDUCTION} red circles in a month = 1 day).`);
-  return out;
+/** "39 of 50 boxes filled (78%)" in a check note -> numbers. */
+export function boxShare(text: string | null | undefined): { filled: number; boxes: number; pct: number; needed: number } | null {
+  const m = /(\d+) of (\d+) boxes filled/.exec(text ?? "");
+  if (!m) return null;
+  const filled = Number(m[1]);
+  const boxes = Number(m[2]);
+  return { filled, boxes, pct: percentOf(filled, boxes), needed: boxesNeeded(boxes) };
+}
+
+/** "Copied from 16-10-2026" in a check note -> "Fri 16 Oct". */
+function copiedFrom(text: string | null | undefined): string | null {
+  const m = /Copied from (\d\d)-(\d\d)-(\d{4})/.exec(text ?? "");
+  return m ? shortDate(`${m[3]}-${m[2]}-${m[1]}`) : null;
+}
+
+/** The likely reason, in plain words, for the 9:30 alert (what the file shows right now). */
+export function alertReason(p: Pick<PersonData, "status" | "note" | "date">): string {
+  const day = shortDate(p.date);
+  const copy = copiedFrom(p.note);
+  if (copy) return `Your entries for ${day} are exactly the same as on ${copy}, so they look copied. A copied day counts as not filled.`;
+  const share = boxShare(p.note);
+  if (share && p.status === "INCOMPLETE")
+    return `Only ${share.filled} of ${share.boxes} boxes are filled (${share.pct}%). You need at least ${COMPLETE_PERCENT}% — ${share.needed} boxes — so please fill at least ${share.needed - share.filled} more.`;
+  if (/No entry dated|no column/i.test(p.note ?? "")) return `There is no column for ${day} in your MIS file yet.`;
+  if (/all \d+ boxes are blank|Not filled/i.test(p.note ?? "")) return `The ${day} column in your MIS file is empty.`;
+  return `Your MIS for ${day} has not been filled yet.`;
+}
+
+/** Why a red circle was marked, in 1–2 plain lines. */
+export function circleReason(p: Pick<PersonData, "reason" | "note" | "date" | "deadlineText" | "manual">): string {
+  const day = shortDate(p.date);
+  if (p.manual) return p.reason ? `Marked by HR: ${p.reason.replace(/\.$/, "")}.` : "Marked by HR.";
+  const text = `${p.reason ?? ""} ${p.note ?? ""}`;
+  const copy = copiedFrom(text);
+  if (copy) return `Your entries for ${day} were exactly the same as on ${copy} (copied), so the day counts as not filled.`;
+  const share = boxShare(p.reason) ?? boxShare(p.note);
+  if (share && share.filled > 0) return `Only ${share.filled} of ${share.boxes} boxes were filled (${share.pct}%) by ${p.deadlineText}. At least ${COMPLETE_PERCENT}% (${share.needed} boxes) is needed.`;
+  if (/No entry dated|no column/i.test(text)) return `There was no column for ${day} in your MIS file by ${p.deadlineText}.`;
+  return `Your MIS for ${day} was not filled by ${p.deadlineText}.`;
 }
 
 function layout(opts: {
@@ -390,13 +413,13 @@ function layout(opts: {
   title: string;
   look: Look;
   lines: string[];
-  monthTitle: string;
-  month: string[];
-  monthBad: boolean;
   footer: string | null;
   from: string | null;
 }): string {
-  const p = (t: string, style = "") => `<div style="font-size:13px;color:#374151;margin-top:6px;${style}">${esc(t)}</div>`;
+  const p = (t: string) =>
+    t.startsWith("• ")
+      ? `<div style="font-size:13px;color:#374151;margin-top:3px;padding-left:10px">${esc(t)}</div>`
+      : `<div style="font-size:13px;color:#374151;margin-top:8px">${esc(t)}</div>`;
   return `<!doctype html><html><body style="margin:0;background:#f6f7f9;font-family:Segoe UI,Arial,sans-serif">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f6f7f9;padding:20px 0">
     <tr><td align="center">
@@ -412,30 +435,22 @@ function layout(opts: {
             </td></tr>
           </table>
         </td></tr>
-        <tr><td style="padding:4px 0 12px 0">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:${opts.monthBad ? "#fef2f2" : "#f0fdf4"};border-radius:10px">
-            <tr><td style="padding:12px 14px;font-size:13px;color:#374151">
-              <div style="font-weight:600;color:#111827;margin-bottom:2px">${esc(opts.monthTitle)}</div>
-              ${opts.month.map((l, i) => p(l, i ? "color:#6b7280" : "")).join("")}
-            </td></tr>
-          </table>
-        </td></tr>
         ${opts.footer ? `<tr><td style="font-size:13px;color:#374151;padding-bottom:12px">${esc(opts.footer).replace(/\n/g, "<br>")}</td></tr>` : ""}
         <tr><td style="font-size:11px;color:#9ca3af;border-top:1px solid #f3f4f6;padding-top:10px">
-          Automatic email from MailPilot${opts.from ? ` (${esc(opts.from)})` : ""}. Each day's MIS must be filled by ${esc(deadlineClock())} on the next working day. Sundays, the 2nd Saturday and stock market holidays need no MIS.
+          Automatic email from MailPilot${opts.from ? ` (${esc(opts.from)})` : ""}. Each day's MIS must be filled by ${esc(deadlineClock())} on the next working day, with at least ${COMPLETE_PERCENT}% of its boxes filled. Sundays, the 2nd Saturday, holidays and approved leave need no MIS.
         </td></tr>
       </table>
     </td></tr>
   </table></body></html>`;
 }
 
-const textOf = (first: string, intro: string, title: string, look: Look, lines: string[], monthTitle: string, month: string[], footer: string | null) =>
-  [`Hi ${first},`, intro, "", `${title}: ${look.label}`, ...lines.map((l) => `  ${l}`), "", monthTitle, ...month, footer ? `\n${footer}` : ""]
+const textOf = (first: string, intro: string, title: string, look: Look, lines: string[], footer: string | null) =>
+  [`Hi ${first},`, intro, "", `${title}: ${look.label}`, ...lines.map((l) => `  ${l}`), footer ? `\n${footer}` : ""]
     .filter((l, i, a) => !(l === "" && a[i - 1] === ""))
     .join("\n")
     .trim();
 
-/** 9:30 AM: "your MIS for <day> is not submitted — fill it before 11:00 AM". */
+/** 9:30 AM MIS Alert: "your MIS for <day> is not complete yet — here is why — fill it before 11:00 AM". */
 export function buildWarningEmail(
   p: PersonData,
   settings: { intro: string | null; footer: string | null },
@@ -446,32 +461,27 @@ export function buildWarningEmail(
   const incomplete = p.status === "INCOMPLETE";
   const day = shortDate(p.date);
   const subject = incomplete
-    ? `Reminder: your MIS for ${day} is incomplete — complete it before ${deadlineClock()}`
-    : `Reminder: your MIS for ${day} is not submitted — submit it before ${deadlineClock()}`;
-  const intro = settings.intro ? fill(settings.intro, vars) : "This is a reminder from MailPilot about your MIS report.";
-  const lines: string[] = [];
-  if (incomplete) {
-    lines.push(`${p.blanks.length} usual entr${p.blanks.length === 1 ? "y is" : "ies are"} still blank:`);
-    lines.push(...p.blanks.slice(0, 15).map((b) => `• ${b}`));
-    if (p.blanks.length > 15) lines.push(`• …and ${p.blanks.length - 15} more`);
-    lines.push(`Please fill them before ${p.deadlineText}. If they are still blank then, the day is marked incomplete (yellow).`);
-  } else {
-    lines.push(p.note ?? `Your MIS for ${day} has not been filled yet.`);
-    lines.push(`Please submit it before ${p.deadlineText}. If it is not submitted by then, a red circle will be marked.`);
+    ? `MIS Alert: your MIS for ${day} is incomplete — please complete it by ${p.deadlineText}`
+    : `MIS Alert: your MIS for ${day} is not filled yet — please fill it by ${p.deadlineText}`;
+  const intro = settings.intro ? fill(settings.intro, vars) : "This is an automatic message about your daily MIS report.";
+  const lines: string[] = [`Reason: ${alertReason(p)}`];
+  if (incomplete && p.blanks.length) {
+    lines.push("Blank boxes:");
+    lines.push(...p.blanks.slice(0, 12).map((b) => `• ${b}`));
+    if (p.blanks.length > 12) lines.push(`• …and ${p.blanks.length - 12} more`);
   }
-  const look: Look = incomplete ? { ...YELLOW, label: "Incomplete" } : { ...RED, label: "Not submitted" };
+  lines.push(`Please complete it by ${p.deadlineText}. If it is not done by then, a red circle will be marked.`);
+  const look: Look = incomplete ? AMBER : { ...RED, label: "Not filled yet" };
   const title = `${p.label} · ${day}`;
-  const monthTitle = `${p.monthLabel} — red circles so far: ${p.circles}`;
-  const month = monthLines(p, incomplete ? 0 : 1);
   const footer = settings.footer ? fill(settings.footer, vars) : null;
   return {
     subject,
-    html: layout({ heading: `MIS reminder — ${day}`, first, intro, title, look, lines, monthTitle, month, monthBad: true, footer, from }),
-    text: textOf(first, intro, title, look, lines, monthTitle, month, footer),
+    html: layout({ heading: `MIS Alert — ${day}`, first, intro, title, look, lines, footer, from }),
+    text: textOf(first, intro, title, look, lines, footer),
   };
 }
 
-/** 11:00 AM: red circle marked / yellow / green for <day>. Null = nothing to report (leave, holiday, unreadable file). */
+/** 11:00 AM MIS Status: red circle (with the reason) or submitted. Null = nothing to report (leave, holiday, unreadable file). */
 export function buildResultEmail(
   p: PersonData,
   settings: { intro: string | null; footer: string | null },
@@ -487,46 +497,51 @@ export function buildResultEmail(
   if (p.code === "CM") {
     look = RED;
     outcome = "RED";
-    subject = `MIS ${day}: not submitted — red circle marked`;
-    lines.push(`Your MIS for ${day} was not submitted by ${p.deadlineText}, so a red circle has been marked.`);
-    if (p.reason) lines.push(`Why: ${p.reason}`);
-    if (p.manual) lines.push("This was marked by HR.");
+    subject = `MIS Status for ${day}: red circle marked`;
+    lines.push(`A red circle has been marked for ${day}.`);
+    lines.push(`Reason: ${circleReason(p)}`);
   } else if (p.code === "IN") {
-    look = YELLOW;
+    // Only set by hand now (before 22 Oct 2026 this was the "a few blanks" result).
+    look = AMBER;
     outcome = "YELLOW";
-    subject = `MIS ${day}: incomplete — marked yellow (no red circle)`;
-    lines.push(`Your MIS for ${day} was submitted, but some usual entries were still blank at ${p.deadlineText}.`);
-    if (p.reason) lines.push(p.reason);
-    lines.push("It is not a red circle, but please fill every entry you usually fill.");
+    subject = `MIS Status for ${day}: incomplete`;
+    lines.push(`Your MIS for ${day} was marked incomplete. No red circle.`);
+    if (p.reason) lines.push(`Note: ${p.reason}`);
   } else if (p.code === "NC") {
     look = GREEN;
     outcome = "GREEN";
-    subject = `MIS ${day}: submitted — green (no circle)`;
-    lines.push(`Thank you — your MIS for ${day} was submitted on time. No circle.`);
+    subject = `MIS Status for ${day}: submitted on time`;
+    const share = boxShare(p.reason) ?? boxShare(p.note);
+    lines.push(`Your MIS for ${day} was submitted on time${share ? ` (${share.filled} of ${share.boxes} boxes filled)` : ""}. Thank you.`);
   } else return null;
-  const intro = settings.intro ? fill(settings.intro, vars) : "Here is the result of your MIS check from MailPilot.";
+  const intro = settings.intro ? fill(settings.intro, vars) : "This is your daily MIS status from MailPilot.";
   const title = `${p.label} · ${day} · checked at ${deadlineClock()}`;
-  const monthTitle = `${p.monthLabel} — red circles: ${p.circles}`;
-  const month = monthLines(p);
   const footer = settings.footer ? fill(settings.footer, vars) : null;
   return {
     subject,
     outcome,
-    html: layout({ heading: `MIS result — ${day}`, first, intro, title, look, lines, monthTitle, month, monthBad: p.circles > 0 || outcome === "RED", footer, from }),
-    text: textOf(first, intro, title, look, lines, monthTitle, month, footer),
+    html: layout({ heading: `MIS Status — ${day}`, first, intro, title, look, lines, footer, from }),
+    text: textOf(first, intro, title, look, lines, footer),
   };
 }
 
+/** The staff wording for HR: "your MIS file" -> "their MIS file". */
+const theirs = (t: string) => t.replace(/\bYour\b/g, "Their").replace(/\byour\b/g, "their");
+
 /** One table for HR after the 11:00 AM check. */
 export function buildHrSummary(people: PersonData[], from: string | null): { subject: string; html: string; text: string } {
-  const day = people[0] ? shortDate(people[0].date) : "";
+  // The day most people are about; anyone on a personal calendar (Saturday off) shows their own day.
+  const counts = new Map<string, number>();
+  for (const p of people) counts.set(p.date, (counts.get(p.date) ?? 0) + 1);
+  const mainDate = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+  const day = mainDate ? shortDate(mainDate) : "";
   const res = (p: PersonData) =>
     p.code === "CM"
       ? { t: "Red circle", c: "#b91c1c" }
       : p.code === "IN"
-        ? { t: "Incomplete (yellow)", c: "#b45309" }
+        ? { t: "Incomplete (marked by HR)", c: "#b45309" }
         : p.code === "NC"
-          ? { t: "Submitted (green)", c: "#15803d" }
+          ? { t: "Submitted", c: "#15803d" }
           : p.code === "OL"
             ? { t: "On leave (planned)", c: "#1d4ed8" }
             : p.code === "EL"
@@ -541,7 +556,9 @@ export function buildHrSummary(people: PersonData[], from: string | null): { sub
     .map((p) => {
       const r = res(p);
       return `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6">${esc(p.name)}${p.email ? "" : ' <span style="color:#b45309">(no email)</span>'}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6">${esc(p.name)}${p.date !== mainDate ? ` <span style="color:#6b7280">(for ${esc(shortDate(p.date))})</span>` : ""}${p.email ? "" : ' <span style="color:#b45309">(no email)</span>'}${
+          p.code === "CM" ? `<div style="font-size:12px;color:#6b7280;margin-top:2px">${esc(theirs(circleReason(p)))}</div>` : ""
+        }</td>
         <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;color:${r.c};font-weight:600">${esc(r.t)}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;text-align:center;font-weight:700;color:${p.circles ? "#b91c1c" : "#15803d"}">${p.circles}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;text-align:center;font-weight:700;color:${p.deductionDays ? "#b91c1c" : "#6b7280"}">${p.deductionDays}</td>
@@ -550,8 +567,8 @@ export function buildHrSummary(people: PersonData[], from: string | null): { sub
     .join("");
   const html = `<!doctype html><html><body style="font-family:Segoe UI,Arial,sans-serif;background:#f6f7f9;margin:0;padding:20px">
     <div style="max-width:720px;margin:0 auto;background:#fff;border-radius:12px;padding:22px">
-      <div style="font-size:18px;font-weight:700;color:#111827">MIS result — ${esc(day)} (checked at ${esc(deadlineClock())})</div>
-      <div style="font-size:13px;color:#6b7280;margin:4px 0 14px">${red} red circle${red === 1 ? "" : "s"} · ${yellow} incomplete · ${green} submitted${onLeave ? ` · ${onLeave} on leave` : ""} · ${people.reduce((n, p) => n + p.deductionDays, 0)} salary day(s) to deduct this month so far.</div>
+      <div style="font-size:18px;font-weight:700;color:#111827">MIS Status Report — ${esc(day)} (checked at ${esc(deadlineClock())})</div>
+      <div style="font-size:13px;color:#6b7280;margin:4px 0 14px">${red} red circle${red === 1 ? "" : "s"}${yellow ? ` · ${yellow} incomplete` : ""} · ${green} submitted${onLeave ? ` · ${onLeave} on leave` : ""} · ${people.reduce((n, p) => n + p.deductionDays, 0)} salary day(s) to deduct this month so far.</div>
       <table width="100%" cellspacing="0" cellpadding="0" style="font-size:13px;color:#374151;border-collapse:collapse">
         <tr style="background:#f9fafb;color:#6b7280;font-size:12px;text-align:left">
           <th style="padding:6px 8px">Name</th><th style="padding:6px 8px">${esc(day)}</th><th style="padding:6px 8px">Red circles (month)</th><th style="padding:6px 8px">Salary days</th>
@@ -560,8 +577,11 @@ export function buildHrSummary(people: PersonData[], from: string | null): { sub
       </table>
       <div style="font-size:11px;color:#9ca3af;margin-top:14px">Automatic email from MailPilot${from ? ` (${esc(from)})` : ""}. Reasons and evidence: MailPilot → MIS Circle Report → Download Excel.</div>
     </div></body></html>`;
-  const text = [`MIS result — ${day}: ${red} red, ${yellow} incomplete, ${green} submitted`, ...people.map((p) => `${p.name}: ${res(p).t} · red circles ${p.circles} · salary days ${p.deductionDays}`)].join("\n");
-  return { subject: `MIS result ${day} — ${red} red circle${red === 1 ? "" : "s"}, ${yellow} incomplete, ${green} submitted`, html, text };
+  const text = [
+    `MIS Status Report — ${day}: ${red} red circle${red === 1 ? "" : "s"}, ${green} submitted`,
+    ...people.map((p) => `${p.name}: ${res(p).t}${p.code === "CM" ? ` (${theirs(circleReason(p))})` : ""} · red circles ${p.circles} · salary days ${p.deductionDays}`),
+  ].join("\n");
+  return { subject: `MIS Status Report ${day} — ${red} red circle${red === 1 ? "" : "s"}, ${green} submitted${onLeave ? `, ${onLeave} on leave` : ""}`, html, text };
 }
 
 /** The day the emails are about: the last working day, whose deadline is today at 11:00 AM (if today is a working day). */
@@ -572,41 +592,54 @@ async function target(companyId: string, now: Date) {
   return { cal, today: f.today, date: f.yesterday, label: f.labels.last, deadline: dl, deadlineIsToday: dl.day === f.today };
 }
 
-/** Everyone's MIS for the target day. `refresh` re-reads the files and records the circle marks first. */
-async function collect(companyId: string, now: Date, opts: { employeeId?: string; refresh?: boolean } = {}) {
+/**
+ * Everyone's MIS for the target day. `refresh` re-reads the files and records the circle marks first.
+ * People with a personal calendar (every Saturday off) are about THEIR last working day, and only on
+ * the day its deadline falls (e.g. on a Monday: Friday's MIS, whose deadline moved from Saturday to Monday).
+ */
+async function collect(companyId: string, now: Date, opts: { employeeId?: string; refresh?: boolean; includeNotDue?: boolean } = {}) {
   const t = await target(companyId, now);
+  const satOff = await saturdaysOffSet(companyId);
+  const recipients = (await listRecipients(companyId)).filter((r) => !opts.employeeId || r.employeeId === opts.employeeId);
+  // Each person's day and deadline.
+  const plan = recipients.map((r) => {
+    if (!satOff.has(r.employeeId)) return { r, date: t.date, label: t.label, deadline: t.deadline, due: true };
+    const pcal = forPerson(t.cal, { misSaturdaysOff: true });
+    const f = misFocusDates(now, pcal);
+    const dl = deadlineFor(f.yesterday, pcal);
+    return { r, date: f.yesterday, label: f.labels.last, deadline: dl, due: dl.day === t.today };
+  });
+  const dates = [...new Set(plan.map((x) => x.date))];
   if (opts.refresh) {
     await Promise.race([runMisChecks(companyId, { employeeId: opts.employeeId }).catch(() => undefined), new Promise((r) => setTimeout(r, 120_000))]);
-    await recordAutoMarks(companyId, [t.date], now).catch((e) => console.error("[MIS email] recording marks failed:", e instanceof Error ? e.message : e));
+    await recordAutoMarks(companyId, dates, now).catch((e) => console.error("[MIS email] recording marks failed:", e instanceof Error ? e.message : e));
   }
-  const [recipients, statuses, month] = await Promise.all([
-    listRecipients(companyId),
-    getMisStatusForDate(companyId, t.date, opts.employeeId),
-    getCircleMonth(companyId, t.date.slice(0, 7), { employeeId: opts.employeeId, now }),
-  ]);
-  const deadlineText = `${shortDate(t.deadline.day)}, ${deadlineClock()}`;
-  const monthLabel = new Date(`${month.month}-01T00:00:00Z`).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+  const statusBy = new Map(await Promise.all(dates.map(async (d) => [d, await getMisStatusForDate(companyId, d, opts.employeeId)] as const)));
+  const months = [...new Set(dates.map((d) => d.slice(0, 7)))];
+  const monthBy = new Map(await Promise.all(months.map(async (m) => [m, await getCircleMonth(companyId, m, { employeeId: opts.employeeId, now })] as const)));
   const people: PersonData[] = [];
-  for (const r of recipients) {
-    if (opts.employeeId && r.employeeId !== opts.employeeId) continue;
+  for (const { r, date, label, deadline, due } of plan) {
+    if (!due && !opts.includeNotDue) continue; // nothing of theirs is due today (e.g. Saturday off: Friday's MIS is due on Monday)
+    const month = monthBy.get(date.slice(0, 7))!;
+    const monthLabel = new Date(`${month.month}-01T00:00:00Z`).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
     const row = month.rows.find((x) => x.employeeId === r.employeeId);
-    const cell: CircleCell | null = row?.cells[t.date] ?? null;
-    const mis = statuses.get(r.employeeId) ?? null;
+    const cell: CircleCell | null = row?.cells[date] ?? null;
+    const mis = statusBy.get(date)?.get(r.employeeId) ?? null;
     const entries = row ? redCircleEntries(row, month.days.map((d) => d.date)).filter((e) => !e.pending) : [];
     people.push({
       employeeId: r.employeeId,
       name: r.name,
       email: r.email,
       hasMis: r.hasMis,
-      date: t.date,
-      label: t.label,
-      deadlineText,
+      date,
+      label,
+      deadlineText: `${shortDate(deadline.day)}, ${deadlineClock()}`,
       status: mis?.status ?? "NOT_CHECKED",
-      blanks: (mis?.sources ?? []).flatMap((s) => s.blanks.map((b) => `${b.cell} — ${b.field}`)),
+      blanks: (mis?.sources ?? []).flatMap((s) => s.blanks.map((b) => `${b.field} (cell ${b.cell})`)),
       note: mis?.sources.find((s) => s.note)?.note ?? null,
       code: cell?.code ?? null,
       manual: cell?.source === "MANUAL",
-      leave: cell?.source === "LEAVE",
+      leave: cell?.source === "LEAVE" || cell?.source === "CALENDAR",
       reason: cell?.reason ?? null,
       circles: row?.summary.circles ?? 0,
       pendingCircles: row?.summary.pendingCircles ?? 0,
@@ -627,7 +660,7 @@ export const needsWarning = (p: PersonData) =>
 export async function previewEmail(companyId: string, kind: EmailKind, employeeId: string | undefined, now = new Date()) {
   const settings = await getEmailSettings(companyId);
   const sender = await senderStatus(companyId);
-  const { people } = await collect(companyId, now, { employeeId });
+  const { people } = await collect(companyId, now, { employeeId, includeNotDue: true });
   const p = people.find((x) => x.hasMis) ?? people[0];
   if (!p) throw new MisEmailError(404, "Nobody to preview — add MIS staff first.");
   if (kind === "WARN") {

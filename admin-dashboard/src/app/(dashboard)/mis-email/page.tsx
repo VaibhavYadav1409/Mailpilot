@@ -123,7 +123,7 @@ export default function MisEmailPage() {
       <PageHeader
         eyebrow="MIS"
         title="MIS Emails"
-        subtitle="Two emails every working day about yesterday's MIS: a warning in the morning to people who haven't submitted, and the result at the 11:00 AM deadline — red circle, yellow or green — for everyone, plus a summary for HR."
+        subtitle="Two emails every working day about the last working day's MIS: an MIS Alert in the morning (with the likely reason) to people who aren't done yet, and the MIS Status at the 11:00 AM deadline — red circle with the reason, or submitted — plus a status report for HR."
       />
 
       {flash && <div className={cn('glass-card px-5 py-3 text-sm', flash.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600')}>{flash.text}</div>}
@@ -268,13 +268,12 @@ function SettingsCard({ data }: { data: EmailData }) {
             onChange={(e) => set('audience', e.target.value as 'ALL' | 'ISSUES')}
             className="w-full px-2 py-1.5 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent text-sm"
           >
-            <option value="ALL">To everyone (red, yellow and green)</option>
-            <option value="ISSUES">Only red and yellow</option>
+            <option value="ALL">To everyone (red circles and submitted)</option>
+            <option value="ISSUES">Only red circles</option>
           </select>
           <p className="text-xs text-gray-600 dark:text-gray-400">
-            MailPilot re-reads every MIS at {deadline} and tells each person: <span className="text-red-600 font-medium">not submitted — red circle marked</span>,{' '}
-            <span className="text-amber-600 font-medium">incomplete — yellow</span> or <span className="text-emerald-600 font-medium">submitted — green</span>, with their red circles and
-            salary deduction this month.
+            MailPilot re-reads every MIS at {deadline} and tells each person: <span className="text-red-600 font-medium">red circle marked</span> (with the reason in 1–2 lines) or{' '}
+            <span className="text-emerald-600 font-medium">submitted on time</span>. At least 80% of the day&apos;s boxes must be filled.
           </p>
         </div>
       </div>

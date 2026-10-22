@@ -1,6 +1,27 @@
 import { prisma } from "./db";
 
 /**
+ * Existing mail: mark copies where the mailbox is in To but not first.
+ * Only rows synced before this feature (new ones are set at sync time), only
+ * well-formed JSON lists, and only where the mailbox really is a later To
+ * address — so running it on every boot changes nothing after the first time.
+ */
+const BACKFILL_SECONDARY_TO = `UPDATE "Email" SET "isSecondaryTo" = true WHERE "id" IN (
+  SELECT e."id" FROM "Email" e
+  JOIN "GmailAccount" a ON a."id" = e."gmailAccountId"
+  CROSS JOIN LATERAL (SELECT CASE WHEN e."toAddresses" LIKE '[%]' THEN e."toAddresses"::jsonb END AS j) x
+  CROSS JOIN LATERAL (SELECT CASE WHEN jsonb_typeof(x.j) = 'array' THEN x.j ELSE '[]'::jsonb END AS arr) y
+  WHERE e."isSecondaryTo" = false
+    AND e."createdAt" < TIMESTAMP '2026-10-24 00:00:00'
+    AND jsonb_array_length(y.arr) > 1
+    AND lower(trim(y.arr->>0)) NOT IN (lower(a."emailAddress"), lower(COALESCE(a."imapUser", a."emailAddress")))
+    AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(y.arr) AS t(addr)
+      WHERE lower(trim(t.addr)) IN (lower(a."emailAddress"), lower(COALESCE(a."imapUser", a."emailAddress")))
+    )
+)`;
+
+/**
  * Applies small, additive schema changes at boot, so a deploy works even when
  * `prisma migrate deploy` can't be run from a developer PC (e.g. the office
  * network blocks the database port). Every statement is idempotent and
@@ -182,6 +203,12 @@ const STATEMENTS: { migration: string; sql: string }[] = [
   },
   { migration: "20261012120000_mis_leave", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisLeaveSettings_companyId_key" ON "MisLeaveSettings"("companyId")` },
   { migration: "20261012120000_mis_leave", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisLeaveSettings_token_key" ON "MisLeaveSettings"("token")` },
+  // Every Saturday off for chosen MIS staff (personal calendar).
+  { migration: "20261022120000_mis_saturdays_off", sql: `ALTER TABLE "Employee" ADD COLUMN IF NOT EXISTS "misSaturdaysOff" BOOLEAN NOT NULL DEFAULT false` },
+  // Only the first To address has to reply.
+  { migration: "20261022130000_email_first_to_replies", sql: `ALTER TABLE "Email" ADD COLUMN IF NOT EXISTS "isSecondaryTo" BOOLEAN NOT NULL DEFAULT false` },
+  { migration: "20261022130000_email_first_to_replies", sql: `CREATE INDEX IF NOT EXISTS "Email_gmailAccountId_isSecondaryTo_idx" ON "Email"("gmailAccountId", "isSecondaryTo")` },
+  { migration: "20261022130000_email_first_to_replies", sql: BACKFILL_SECONDARY_TO },
 ];
 
 export async function ensureSchema(): Promise<void> {

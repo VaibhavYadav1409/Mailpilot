@@ -79,6 +79,7 @@ model Employee {
   employeeCode    String         // company-assigned ID, e.g. "EMP-0042"
   email           String         @unique // login email, distinct from the Gmail account they work from
   contactEmail    String?        // where MIS emails go (MIS staff log in with a username, not an email)
+  misSaturdaysOff Boolean        @default(false) // every Saturday off for this person (no MIS, no circle)
   password        String
   firstName       String
   lastName        String
@@ -212,6 +213,7 @@ model Email {
   // correct even when the Groq breaker is open. Drives the "CC" filter in the
   // employee app; CC'd mail deliberately still appears in All/Inbox too.
   isCc            Boolean        @default(false)
+  isSecondaryTo   Boolean        @default(false) // in To but not the first address — only the first To address has to reply
   subject         String?
   receivedAt      DateTime
   isRead          Boolean        @default(false)
@@ -289,6 +291,7 @@ model Email {
   // degrades to a scan once a mailbox has any real volume.
   @@index([gmailAccountId, isReplied, requiresReply])
   @@index([gmailAccountId, isCc])
+  @@index([gmailAccountId, isSecondaryTo])
 }
 
 // Inbound attachment metadata. The bytes themselves live in attachmentStorage

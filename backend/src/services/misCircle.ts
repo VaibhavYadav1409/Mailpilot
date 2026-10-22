@@ -18,7 +18,7 @@ import { Prisma } from "../generated/prisma/client";
 import { emitToCompany } from "../sockets";
 import { buildWorkbook, colName, type XlsxCell, type XlsxStyle } from "../lib/xlsx";
 import { getMisStatusForDate, misFocusDates, type MisEmployeeDay, type MisSourceStatus } from "./misService";
-import { DEFAULT_CALENDAR, deadlineClock, getWorkCalendar, offDay, type WorkCalendar } from "./workCalendar";
+import { DEFAULT_CALENDAR, deadlineClock, forPerson, getWorkCalendar, offDay, saturdaysOffSet, type WorkCalendar } from "./workCalendar";
 import { leaveMap } from "./misLeave";
 import {
   buildEvidence,
@@ -50,9 +50,9 @@ export interface CircleCode {
 
 /** Every code that can appear in a cell — the legend of the sheet. */
 export const CIRCLE_CODES: CircleCode[] = [
-  { code: "CM", label: "Circle marked", meaning: "MIS not submitted for the day (red circle). Counts towards salary deduction.", isCircle: true, tone: "red", manual: true },
-  { code: "NC", label: "No circle", meaning: "MIS submitted — every usual entry filled.", isCircle: false, tone: "green", manual: true },
-  { code: "IN", label: "Incomplete", meaning: "MIS filled but a few usual entries (fewer than 20) were blank. Shown as a warning; not a red circle.", isCircle: false, tone: "amber", manual: true },
+  { code: "CM", label: "Circle marked", meaning: "Red circle: the day's MIS was not filled, or less than 80% of its boxes were filled, by the deadline. Counts towards salary deduction.", isCircle: true, tone: "red", manual: true },
+  { code: "NC", label: "No circle", meaning: "MIS submitted on time — at least 80% of the boxes filled.", isCircle: false, tone: "green", manual: true },
+  { code: "IN", label: "Incomplete (old rule)", meaning: "Used before 22 Oct 2026 for a day with a few blanks; not a red circle. Now a day below 80% is a red circle (CM). HR can still set it by hand.", isCircle: false, tone: "amber", manual: true },
   { code: "OL", label: "On leave", meaning: "Planned leave — asked for in advance (leave form), no MIS needed, no circle.", isCircle: false, tone: "blue", manual: true },
   { code: "EL", label: "Emergency leave", meaning: "Emergency leave — asked for late or after the leave (leave form), approved, no MIS needed, no circle.", isCircle: false, tone: "blue", manual: true },
   { code: "A", label: "Absent", meaning: "Absent — handled by attendance, not counted as an MIS circle.", isCircle: false, tone: "purple", manual: true },
@@ -105,8 +105,7 @@ export function autoCodeFor(status: MisSourceStatus | string | null | undefined,
   switch (status) {
     case "COMPLETE":
       return "NC";
-    case "INCOMPLETE":
-      return "IN";
+    case "INCOMPLETE": // less than 80% of the boxes filled — a red circle (since 22 Oct 2026)
     case "MISSING":
       return "CM";
     case "OFF":
@@ -135,12 +134,12 @@ export function reasonFromDay(day: Pick<MisEmployeeDay, "sources">, date: string
     let text: string;
     switch (s.status) {
       case "COMPLETE":
-        text = `submitted — every usual entry filled (${s.rowCount} filled)`;
+        text = s.note && /boxes filled/.test(s.note) ? `submitted — ${s.note.replace(/\.$/, "")}` : `submitted (${s.rowCount} filled)`;
         break;
       case "INCOMPLETE": {
         const b = s.blanks ?? [];
         const list = b.slice(0, 6).map((x) => `${x.field} (${x.cell})`).join(", ");
-        text = `filled, but ${b.length || "some"} usual entr${b.length === 1 ? "y" : "ies"} left blank${list ? `: ${list}` : ""}${b.length > 6 ? `, +${b.length - 6} more` : ""}`;
+        text = `${(s.note ?? "Incomplete — less than 80% of the boxes filled").replace(/\.$/, "")}${list ? `. Blank: ${list}` : ""}${b.length > 6 ? `, +${b.length - 6} more` : ""}`;
         break;
       }
       case "MISSING":
@@ -205,14 +204,17 @@ export function summarize(finalCircles: number, pendingCircles = 0): CircleSumma
  * Manual marks are never touched (only their remembered autoCode / evidence).
  */
 export async function recordAutoMarks(companyId: string, dates: string[], now: Date = new Date()): Promise<void> {
-  const cal = await getWorkCalendar(companyId);
+  const companyCal = await getWorkCalendar(companyId);
+  const satOff = await saturdaysOffSet(companyId);
   const events = await loadEvents(companyId, dates).catch(() => new Map<string, never[]>());
   for (const date of dates) {
     const byEmployee = await getMisStatusForDate(companyId, date);
-    const off = calendarCode(date, cal);
-    const deadline = deadlineFor(date, cal);
-    const past = now >= deadline.at;
     for (const [employeeId, day] of byEmployee) {
+      // Each person's own calendar (e.g. every Saturday off moves Friday's deadline to Monday).
+      const cal = forPerson(companyCal, { misSaturdaysOff: satOff.has(employeeId) });
+      const off = calendarCode(date, cal);
+      const deadline = deadlineFor(date, cal);
+      const past = now >= deadline.at;
       const where = { employeeId_date: { employeeId, date: dateColumnValue(date) } };
       const existing = await prisma.misCircleMark.findUnique({ where });
       const evidence = off ? null : buildEvidence(events.get(`${employeeId}|${date}`) ?? [], deadline, undefined, now);
@@ -327,7 +329,7 @@ export interface CircleMonth {
 
 export function circleRules(): string[] {
   return [
-    `A red circle (CM) means the MIS for that day was not submitted: no column for the day, nothing filled, or 20 or more of the person's usual entries left blank.`,
+    `A red circle (CM) means the day's MIS was not done by the deadline: no column for the day, nothing filled, a day copied from an earlier day, or less than 80% of its boxes filled (e.g. 39 of 50). Every box in the day's column counts; 80% or more (40 of 50) is submitted.`,
     `Every ${CIRCLES_PER_DEDUCTION} red circles in a calendar month = 1 day's salary deducted. They do not need to be on consecutive days. ${CIRCLES_PER_DEDUCTION * 2} circles = 2 days, ${CIRCLES_PER_DEDUCTION * 3} = 3 days, and so on.`,
     `The count starts again from zero on the 1st of every month.`,
     `MIS is needed only on working days. Sundays, the 2nd Saturday, stock market (NSE) trading holidays and company holidays are off: no MIS is needed and they are never red circles.`,
@@ -374,13 +376,14 @@ export async function getCircleMonth(
       where: {
         companyId,
         ...(opts.employeeId ? { id: opts.employeeId } : {}),
+        status: { not: "SUSPENDED" }, // people who left (suspended) are off the report; their data is kept
         OR: [
-          { NOT: { email: { contains: "@" } }, status: { not: "SUSPENDED" } },
+          { NOT: { email: { contains: "@" } } },
           { misSources: { some: {} } },
           { misCircleMarks: { some: { date: { gte: first, lte: last } } } },
         ],
       },
-      select: { id: true, firstName: true, lastName: true, email: true, _count: { select: { misSources: true } } },
+      select: { id: true, firstName: true, lastName: true, email: true, misSaturdaysOff: true, _count: { select: { misSources: true } } },
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
     }),
     prisma.misCircleMark.findMany({
@@ -415,13 +418,14 @@ export async function getCircleMonth(
 
   const AUTO_BY = "MIS check (automatic)";
   const rows: CircleRow[] = employees.map((e) => {
+    const pcal = forPerson(cal, e); // e.g. every Saturday off for this person
     const cells: Record<string, CircleCell> = {};
     let finalCircles = 0;
     let pendingCircles = 0;
     for (const date of dates) {
       const k = `${e.id}|${date}`;
       const m = markOf.get(k);
-      const off = offDay(date, cal);
+      const off = offDay(date, pcal);
       let cell: CircleCell;
       const leave = leaves.get(k);
       if (off && m?.source !== "MANUAL") {
@@ -458,7 +462,7 @@ export async function getCircleMonth(
         cell = { code: null, source: null, note: null, pending: false, autoCode: null, reason: null, markedBy: null, evidence: null };
       }
       // An automatic result can still change until its deadline (11:00 AM on the next working day).
-      cell.pending = cell.source === "AUTO" && now < deadlineFor(date, cal).at;
+      cell.pending = cell.source === "AUTO" && now < deadlineFor(date, pcal).at;
       if (isCircleCode(cell.code)) {
         if (cell.pending) pendingCircles++;
         else finalCircles++;
@@ -527,7 +531,7 @@ function genericReason(code: string): string {
     case "NC":
       return "The MIS check found the day's MIS submitted.";
     case "IN":
-      return "The MIS check found the day's MIS filled with a few usual entries blank.";
+      return "Marked incomplete (old rule: a few boxes blank, no red circle).";
     default:
       return BY_CODE.get(code)?.meaning ?? code;
   }
@@ -905,7 +909,7 @@ export function circleWorkbook(data: CircleMonth, opts: { generatedAt?: Date; pe
       statusRow,
       [
         {
-          v: `A day is a red circle when its MIS was not filled by the deadline (${deadlineClock()} on the next working day): no column for the date, nothing filled, or 20 or more of the person's usual entries blank — or an admin marked it CM. Save times come from OneDrive / SharePoint. Full log: "Evidence Log" tab.`,
+          v: `A day is a red circle when its MIS was not filled by the deadline (${deadlineClock()} on the next working day): no column for the date, nothing filled, a copied day, or less than 80% of the day's boxes filled — or an admin marked it CM. Save times come from OneDrive / SharePoint. Full log: "Evidence Log" tab.`,
           s: sub,
         },
       ],
@@ -960,7 +964,7 @@ export function circleWorkbook(data: CircleMonth, opts: { generatedAt?: Date; pe
       "Saved by",
       "What the file showed",
       "Filled",
-      "Blank (usual entries)",
+      "Blank boxes",
       "Before / after the deadline",
       "File",
       "Details",

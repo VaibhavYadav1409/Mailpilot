@@ -78,7 +78,7 @@ employeesRouter.get("/", requireAuth, async (req, res) => {
   // in a single pass, instead of issuing a second query per bucket.
   const counts = accountIds.length
     ? await prisma.email.groupBy({
-        by: ["gmailAccountId", "isReplied", "requiresReply", "isCc"],
+        by: ["gmailAccountId", "isReplied", "requiresReply", "isCc", "isSecondaryTo"],
         where: { gmailAccountId: { in: accountIds }, isTrashed: false },
         _count: { _all: true },
       })
@@ -90,7 +90,8 @@ employeesRouter.get("/", requireAuth, async (req, res) => {
     const entry = countsByAccount.get(row.gmailAccountId) ?? emptyCounts();
     if (row.isReplied) {
       entry.replied += row._count._all;
-    } else if (row.requiresReply === false || row.isCc) {
+    } else if (row.requiresReply === false || row.isCc || row.isSecondaryTo) {
+      // (isSecondaryTo: in To but not first — only the first To address has to reply.)
       // Either the AI judged no reply is warranted, or this person was merely
       // copied in and the message was addressed to someone else. Neither is
       // their backlog.

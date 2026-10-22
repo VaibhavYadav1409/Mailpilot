@@ -105,3 +105,22 @@ describe("evidence", () => {
     expect(ev.fmtWhen("2026-10-05T12:32:00Z", "Asia/Kolkata")).toBe("05-10-2026 06:02 PM");
   });
 });
+
+describe("personal calendar: every Saturday off", () => {
+  it("makes every Saturday an off day (SO) for that person only", async () => {
+    const w = await import("../src/services/workCalendar");
+    const mine = w.forPerson(w.DEFAULT_CALENDAR, { misSaturdaysOff: true });
+    expect(w.offDay("2026-10-24", mine)?.code).toBe("SO"); // 4th Saturday
+    expect(w.offDay("2026-10-24", w.DEFAULT_CALENDAR)).toBeNull(); // a working day for everyone else
+    expect(w.offDay("2026-10-10", mine)?.code).toBe("SSO"); // 2nd Saturday stays the company weekly off
+    expect(w.forPerson(w.DEFAULT_CALENDAR, { misSaturdaysOff: false })).toBe(w.DEFAULT_CALENDAR);
+  });
+  it("moves Friday's deadline to Monday 11:00 AM and Monday looks back at Friday", async () => {
+    const w = await import("../src/services/workCalendar");
+    const ev = await import("../src/services/misEvidence");
+    const mine = w.forPerson(w.DEFAULT_CALENDAR, { misSaturdaysOff: true });
+    expect(ev.deadlineFor("2026-10-23", w.DEFAULT_CALENDAR).day).toBe("2026-10-24"); // everyone: Saturday
+    expect(ev.deadlineFor("2026-10-23", mine).day).toBe("2026-10-26"); // Saturday off: Monday
+    expect(w.previousWorkingDay("2026-10-26", mine)).toBe("2026-10-23");
+  });
+});

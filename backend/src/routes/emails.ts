@@ -91,12 +91,13 @@ function replyStatusFilter(status: "unreplied" | "replied" | "no_reply_needed" |
       return {
         isReplied: false,
         isCc: false,
+        isSecondaryTo: false, // only the first To address has to reply
         OR: [{ requiresReply: true }, { requiresReply: null }],
       };
     case "no_reply_needed":
       return {
         isReplied: false,
-        OR: [{ requiresReply: false }, { isCc: true }],
+        OR: [{ requiresReply: false }, { isCc: true }, { isSecondaryTo: true }],
       };
     default:
       return {};

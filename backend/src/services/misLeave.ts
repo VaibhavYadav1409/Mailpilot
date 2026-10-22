@@ -22,7 +22,7 @@ import crypto from "node:crypto";
 import { prisma } from "../lib/db";
 import { Prisma } from "../generated/prisma/client";
 import { parseMisDate } from "./misSheet";
-import { addDaysTo, getWorkCalendar, isWorkingDay, shortDate, type WorkCalendar } from "./workCalendar";
+import { addDaysTo, forPerson, getWorkCalendar, isWorkingDay, shortDate, type WorkCalendar } from "./workCalendar";
 
 export class LeaveError extends Error {
   constructor(
@@ -405,12 +405,13 @@ export async function listLeaves(companyId: string, opts: { from?: string; to?: 
     prisma.misLeave.findMany({ where, orderBy: [{ fromDate: "desc" }, { createdAt: "desc" }], take: 1000 }),
     prisma.employee.findMany({
       where: { companyId, status: { not: "SUSPENDED" } },
-      select: { id: true, firstName: true, lastName: true, email: true },
+      select: { id: true, firstName: true, lastName: true, email: true, misSaturdaysOff: true },
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
     }),
     getLeaveSettings(companyId),
   ]);
   const nameOf = new Map(staff.map((s) => [s.id, `${s.firstName} ${s.lastName}`.trim()]));
+  const satOff = new Set(staff.filter((s) => s.misSaturdaysOff).map((s) => s.id));
   return {
     leaves: rows.map((r) => {
       const from = isoOf(r.fromDate);
@@ -424,7 +425,7 @@ export async function listLeaves(companyId: string, opts: { from?: string; to?: 
         email: r.email,
         from,
         to,
-        workingDays: workingDaysIn(from, to, cal),
+        workingDays: workingDaysIn(from, to, forPerson(cal, { misSaturdaysOff: !!r.employeeId && satOff.has(r.employeeId) })),
         type: r.type as LeaveType,
         status: r.status as LeaveStatus,
         leaveKind: r.leaveKind,
@@ -436,9 +437,18 @@ export async function listLeaves(companyId: string, opts: { from?: string; to?: 
         editedInApp: r.editedInApp,
       };
     }),
-    people: staff.map((s) => ({ employeeId: s.id, name: `${s.firstName} ${s.lastName}`.trim(), username: s.email })),
+    people: staff.map((s) => ({ employeeId: s.id, name: `${s.firstName} ${s.lastName}`.trim(), username: s.email, saturdaysOff: s.misSaturdaysOff })),
     settings: { noticeDays: settings.noticeDays, lastReceivedAt: settings.lastReceivedAt?.toISOString() ?? null, lastSummary: settings.lastSummary },
   };
+}
+
+/** Every Saturday off (or not) for one person — their personal MIS calendar. */
+export async function setSaturdaysOff(companyId: string, actorId: string, employeeId: string, off: boolean) {
+  const e = await checkPerson(companyId, employeeId);
+  await prisma.employee.update({ where: { id: e!.id }, data: { misSaturdaysOff: off } });
+  await prisma.auditLog
+    .create({ data: { companyId, employeeId: actorId, action: "MIS_SATURDAYS_OFF", metadata: { employeeId, name: `${e!.firstName} ${e!.lastName}`.trim(), off } } })
+    .catch(() => undefined);
 }
 
 // ---------------------------------------------------------------------------

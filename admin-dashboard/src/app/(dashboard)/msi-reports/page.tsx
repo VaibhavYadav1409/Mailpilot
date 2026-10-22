@@ -371,7 +371,7 @@ export default function MisReportsPage() {
             <PeopleSection
               tone="red"
               title="Not submitted"
-              hint="No column for this date, or 20+ of their usual entries are blank."
+              hint="No column for this date, nothing filled, or a copied day — a red circle at the deadline."
               rows={notFilled}
               date={data.date}
               empty="Nobody is in red for this day."
@@ -382,12 +382,12 @@ export default function MisReportsPage() {
 
           {show('incomplete') && (
             <PeopleSection
-              tone="amber"
-              title="Incomplete"
-              hint="Filled, but some usual entries are blank — the exact cells are listed."
+              tone="red"
+              title="Incomplete (below 80%)"
+              hint="Less than 80% of the boxes filled — a red circle at the deadline. The blank cells are listed."
               rows={incomplete}
               date={data.date}
-              empty="Nobody has partly-filled MIS for this day."
+              empty="Nobody is below 80% for this day."
               tz={data.timezone}
               circleOf={circleOf}
             />
@@ -397,7 +397,7 @@ export default function MisReportsPage() {
             <PeopleSection
               tone="green"
               title="Submitted"
-              hint="Every usual entry filled."
+              hint="At least 80% of the boxes filled."
               rows={submitted}
               date={data.date}
               empty="Nobody has fully submitted for this day yet."

@@ -34,7 +34,7 @@ describe("email helpers", () => {
   });
 });
 
-describe("warning (9:30) and result (11:00) emails", () => {
+describe("MIS Alert (9:30) and MIS Status (11:00) emails", () => {
   const base = {
     employeeId: "e1",
     name: "Mamta Sharma",
@@ -45,7 +45,7 @@ describe("warning (9:30) and result (11:00) emails", () => {
     deadlineText: "Tue 6 Oct, 11:00 AM",
     status: "MISSING",
     blanks: [] as string[],
-    note: "Not filled for 05-10-2026 — 24 of 30 usual entries are blank.",
+    note: "No entry dated 05-10-2026 yet.",
     code: null as string | null,
     manual: false,
     reason: null as string | null,
@@ -57,18 +57,31 @@ describe("warning (9:30) and result (11:00) emails", () => {
     monthLabel: "October 2026",
   };
   const settings = { intro: null, footer: "Contact HR: {first}" };
-  it("warns about a missing MIS and what a red circle would mean", async () => {
+  it("MIS Alert: a missing MIS, with the likely reason and no red-circle box", async () => {
     const e = m.buildWarningEmail(base, settings, "contactus@farsightshares.com");
-    expect(e.subject).toBe("Reminder: your MIS for Mon 5 Oct is not submitted — submit it before 11:00 AM");
-    expect(e.html).toContain("Please submit it before Tue 6 Oct, 11:00 AM. If it is not submitted by then, a red circle will be marked.");
-    expect(e.html).toContain("you will have 3 — that means 1 day of salary deducted");
+    expect(e.subject).toBe("MIS Alert: your MIS for Mon 5 Oct is not filled yet — please fill it by Tue 6 Oct, 11:00 AM");
+    expect(e.html).toContain("MIS Alert — Mon 5 Oct");
+    expect(e.html).toContain("Reason: There is no column for Mon 5 Oct in your MIS file yet.");
+    expect(e.html).toContain("Please complete it by Tue 6 Oct, 11:00 AM. If it is not done by then, a red circle will be marked.");
+    expect(e.html).not.toContain("red circles so far");
+    expect(e.html).not.toContain("salary");
     expect(e.text).toContain("Contact HR: Mamta");
     if (process.env.MIS_EMAIL_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_EMAIL_HTML_OUT, e.html);
   });
-  it("lists the blank cells for an incomplete MIS (escaped)", () => {
-    const e = m.buildWarningEmail({ ...base, status: "INCOMPLETE", blanks: ["AA23 — Calls made <today>"] }, settings, null);
-    expect(e.subject).toContain("is incomplete");
-    expect(e.html).toContain("AA23 — Calls made &lt;today&gt;");
+  it("MIS Alert: below 80% says how many boxes are missing and lists them (escaped)", async () => {
+    const e = m.buildWarningEmail(
+      { ...base, status: "INCOMPLETE", note: "Incomplete — 39 of 50 boxes filled (78%); at least 80% (40 of 50) is needed.", blanks: ["Calls made <today> (cell AA23)"] },
+      settings,
+      null,
+    );
+    expect(e.subject).toBe("MIS Alert: your MIS for Mon 5 Oct is incomplete — please complete it by Tue 6 Oct, 11:00 AM");
+    expect(e.html).toContain("Reason: Only 39 of 50 boxes are filled (78%). You need at least 80% — 40 boxes — so please fill at least 1 more.");
+    expect(e.html).toContain("Calls made &lt;today&gt; (cell AA23)");
+    if (process.env.MIS_ALERT2_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_ALERT2_HTML_OUT, e.html);
+  });
+  it("MIS Alert: a copied day", () => {
+    const e = m.buildWarningEmail({ ...base, note: "Copied from 02-10-2026 — all 9 entries are exactly the same as on 02-10-2026 …" }, settings, null);
+    expect(e.html).toContain("Reason: Your entries for Mon 5 Oct are exactly the same as on Fri 2 Oct, so they look copied.");
   });
   it("only warns people who haven't submitted (and not people on leave)", () => {
     expect(m.needsWarning(base)).toBe(true);
@@ -77,25 +90,38 @@ describe("warning (9:30) and result (11:00) emails", () => {
     expect(m.needsWarning({ ...base, manual: true, code: "OL" })).toBe(false);
     expect(m.needsWarning({ ...base, hasMis: false })).toBe(false);
   });
-  it("result: red / yellow / green", async () => {
-    const red = m.buildResultEmail({ ...base, code: "CM", circles: 3, deductionDays: 1, untilNext: 3, reason: "Not filled — still the case at the deadline." }, settings, null)!;
+  it("MIS Status: red circle with a 1–2 line reason, no red-circle box", async () => {
+    const red = m.buildResultEmail(
+      { ...base, code: "CM", circles: 3, deductionDays: 1, untilNext: 3, reason: "Incomplete — only 39 of 50 boxes filled (78%) at the deadline; at least 80% is needed." },
+      settings,
+      null,
+    )!;
     expect(red.outcome).toBe("RED");
-    expect(red.subject).toBe("MIS Mon 5 Oct: not submitted — red circle marked");
-    expect(red.html).toContain("was not submitted by Tue 6 Oct, 11:00 AM, so a red circle has been marked.");
-    expect(red.html).toContain("3 red circles ÷ 3 = 1 day.");
-    const yellow = m.buildResultEmail({ ...base, code: "IN" }, settings, null)!;
-    expect(yellow.outcome).toBe("YELLOW");
-    expect(yellow.subject).toContain("incomplete — marked yellow");
-    const green = m.buildResultEmail({ ...base, code: "NC" }, settings, null)!;
+    expect(red.subject).toBe("MIS Status for Mon 5 Oct: red circle marked");
+    expect(red.html).toContain("MIS Status — Mon 5 Oct");
+    expect(red.html).toContain("A red circle has been marked for Mon 5 Oct.");
+    expect(red.html).toContain("Reason: Only 39 of 50 boxes were filled (78%) by Tue 6 Oct, 11:00 AM. At least 80% (40 boxes) is needed.");
+    expect(red.html).not.toContain("red circles:");
+    expect(red.html).not.toContain("salary");
+    const notFilled = m.buildResultEmail({ ...base, code: "CM", reason: "No entry dated 05-10-2026 yet — still the case at the deadline." }, settings, null)!;
+    expect(notFilled.html).toContain("Reason: There was no column for Mon 5 Oct in your MIS file by Tue 6 Oct, 11:00 AM.");
+    const hr = m.buildResultEmail({ ...base, code: "CM", manual: true, reason: "Absent without leave" }, settings, null)!;
+    expect(hr.html).toContain("Reason: Marked by HR: Absent without leave.");
+    const green = m.buildResultEmail({ ...base, code: "NC", reason: "Submitted before the deadline — 48 of 50 boxes filled (96%)." }, settings, null)!;
     expect(green.outcome).toBe("GREEN");
-    expect(green.subject).toBe("MIS Mon 5 Oct: submitted — green (no circle)");
+    expect(green.subject).toBe("MIS Status for Mon 5 Oct: submitted on time");
+    expect(green.html).toContain("Your MIS for Mon 5 Oct was submitted on time (48 of 50 boxes filled). Thank you.");
+    expect(m.buildResultEmail({ ...base, code: "IN" }, settings, null)!.outcome).toBe("YELLOW"); // only set by hand now
     expect(m.buildResultEmail({ ...base, code: "OL", manual: true }, settings, null)).toBeNull();
     if (process.env.MIS_RESULT_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_RESULT_HTML_OUT, red.html);
+    if (process.env.MIS_GREEN_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_GREEN_HTML_OUT, green.html);
   });
-  it("HR summary lists red first", () => {
-    const hr = m.buildHrSummary([{ ...base, name: "Zed", code: "NC" }, { ...base, code: "CM" }], null);
-    expect(hr.subject).toBe("MIS result Mon 5 Oct — 1 red circle, 0 incomplete, 1 submitted");
+  it("HR status report lists red first, with the reason", async () => {
+    const hr = m.buildHrSummary([{ ...base, name: "Zed", code: "NC" }, { ...base, code: "CM", reason: "No entry dated 05-10-2026 yet — still the case at the deadline." }], null);
+    expect(hr.subject).toBe("MIS Status Report Mon 5 Oct — 1 red circle, 1 submitted");
     expect(hr.html.indexOf("Mamta Sharma")).toBeLessThan(hr.html.indexOf("Zed"));
+    expect(hr.html).toContain("There was no column for Mon 5 Oct in their MIS file by Tue 6 Oct, 11:00 AM.");
+    if (process.env.MIS_HR_HTML_OUT) (await import("node:fs")).writeFileSync(process.env.MIS_HR_HTML_OUT, hr.html);
   });
 });
 

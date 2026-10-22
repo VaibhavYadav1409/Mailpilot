@@ -60,7 +60,7 @@ export async function getCompanyOverview(companyId: string) {
       where: { gmailAccount: { companyId }, receivedAt: { gte: start, lt: end }, isRead: false },
     }),
     prisma.email.count({
-      where: { gmailAccount: { companyId }, receivedAt: { gte: start, lt: end }, isReplied: false },
+      where: { gmailAccount: { companyId }, receivedAt: { gte: start, lt: end }, isReplied: false, isSecondaryTo: false },
     }),
     prisma.aIAction.count({
       where: { employee: { companyId }, createdAt: { gte: start, lt: end } },
@@ -279,6 +279,7 @@ export async function getEmployeeOverview(employeeId: string) {
     isTrashed: false,
     isReplied: false,
     isCc: false,
+    isSecondaryTo: false, // only the first To address has to reply
     OR: [{ requiresReply: true }, { requiresReply: null }],
   };
 
@@ -307,7 +308,7 @@ export async function getEmployeeOverview(employeeId: string) {
         gmailAccountId: account.id,
         isTrashed: false,
         isReplied: false,
-        OR: [{ requiresReply: false }, { isCc: true }],
+        OR: [{ requiresReply: false }, { isCc: true }, { isSecondaryTo: true }],
       },
     }),
     prisma.email.count({ where: { gmailAccountId: account.id, isRead: false } }),
@@ -400,10 +401,11 @@ export async function getEmployeeEmailList(
     status === "replied"
       ? { isReplied: true }
       : status === "no_reply_needed"
-        ? { isReplied: false, OR: [{ requiresReply: false }, { isCc: true }] }
+        ? { isReplied: false, OR: [{ requiresReply: false }, { isCc: true }, { isSecondaryTo: true }] }
         : {
             isReplied: false,
             isCc: false,
+            isSecondaryTo: false,
             OR: [{ requiresReply: true }, { requiresReply: null }],
           };
 

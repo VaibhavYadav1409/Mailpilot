@@ -17,6 +17,7 @@
  * the last save), otherwise the read time. So even if MailPilot only read the
  * file later, a file saved before the deadline counts as on time.
  */
+import { COMPLETE_PERCENT, percentOf } from "./misSheet";
 import { prisma } from "../lib/db";
 import { getMsiTimezone, startOfBusinessDay } from "./msiService";
 import { MIS_DEADLINE_TIME, nextWorkingDay, shortDate, type WorkCalendar } from "./workCalendar";
@@ -109,8 +110,8 @@ export function fmtWhen(d: Date | string | null | undefined, tz: string = getMsi
 const effective = (e: RawEvent) => (e.fileModifiedAt && e.fileModifiedAt <= e.at ? e.fileModifiedAt : e.at);
 
 const STATUS_TEXT: Record<string, string> = {
-  COMPLETE: "submitted (every usual entry filled)",
-  INCOMPLETE: "filled with a few usual entries blank",
+  COMPLETE: "submitted (at least 80% of boxes filled)",
+  INCOMPLETE: "incomplete (less than 80% of boxes filled)",
   MISSING: "not filled",
   ERROR: "file couldn't be read",
   OFF: "day off",
@@ -211,7 +212,7 @@ export function evidenceLines(ev: CircleEvidence, tz: string = getMsiTimezone(),
   const lines = [`Deadline: ${shortDate(ev.deadlineDay)}, ${f(ev.deadline).slice(11)} (${f(ev.deadline)}).`];
   const d = ev.atDeadline;
   if (d) {
-    const counts = d.status === "COMPLETE" ? `${d.filled} entries filled` : `${d.filled} filled, ${d.blanks} usual entr${d.blanks === 1 ? "y" : "ies"} blank`;
+    const counts = `${d.filled} of ${d.filled + d.blanks} boxes filled (${percentOf(d.filled, d.filled + d.blanks)}%)`;
     lines.push(
       `${passed ? "At the deadline" : "So far"}: ${statusText(d.status)} — ${counts}. MailPilot read the file at ${f(d.checkedAt)}${
         d.savedAt ? `; the Excel file had last been saved at ${f(d.savedAt)}${d.savedBy ? ` by ${d.savedBy}` : ""}` : ""
@@ -222,7 +223,7 @@ export function evidenceLines(ev: CircleEvidence, tz: string = getMsiTimezone(),
   }
   if (ev.firstFilledAt) lines.push(`Entries for this day first appeared: ${f(ev.firstFilledAt)}.`);
   else lines.push("No entries for this day were ever seen in the file.");
-  if (ev.completedAt) lines.push(`Every usual entry filled: ${f(ev.completedAt)}.`);
+  if (ev.completedAt) lines.push(`Reached 80% (submitted): ${f(ev.completedAt)}.`);
   if (ev.filledLateAt) lines.push(`Filled late: ${f(ev.filledLateAt)} — after the deadline, so the red circle stays.`);
   if (ev.lastSavedAt) lines.push(`Excel file last saved (latest known): ${f(ev.lastSavedAt)}${ev.lastSavedBy ? ` by ${ev.lastSavedBy}` : ""}.`);
   return lines;
@@ -265,9 +266,9 @@ export function reasonAtDeadline(d: DeadlineState): string {
     case "MISSING":
       return `${(d.note ?? "Not filled").replace(/\.$/, "")} — still the case at the deadline.`;
     case "INCOMPLETE":
-      return `Filled, but ${d.blanks} usual entr${d.blanks === 1 ? "y was" : "ies were"} still blank at the deadline.`;
+      return `Incomplete — only ${d.filled} of ${d.filled + d.blanks} boxes filled (${percentOf(d.filled, d.filled + d.blanks)}%) at the deadline; at least ${COMPLETE_PERCENT}% is needed.`;
     case "COMPLETE":
-      return `Submitted before the deadline — every usual entry filled (${d.filled}).`;
+      return `Submitted before the deadline — ${d.filled} of ${d.filled + d.blanks} boxes filled (${percentOf(d.filled, d.filled + d.blanks)}%).`;
     default:
       return statusText(d.status);
   }

@@ -17,7 +17,7 @@ import {
 import { MisGraphError, buildMisAuthUrl } from "../services/misMicrosoft";
 import { getMisDaysForEmployee } from "../services/msiService";
 import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../services/misCircle";
-import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, MIS_DEADLINE_TIME, listHolidays, setHoliday } from "../services/workCalendar";
+import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, MIS_DEADLINE_TIME, invalidateWorkCalendar, listHolidays, setHoliday } from "../services/workCalendar";
 import { emitToCompany } from "../sockets";
 import {
   LeaveError,
@@ -28,6 +28,7 @@ import {
   listLeaves,
   receiveFormRows,
   rotateLeaveToken,
+  setSaturdaysOff,
   updateLeave,
   updateLeaveSettings,
 } from "../services/misLeave";
@@ -82,6 +83,7 @@ import {
  *   PATCH  /leaves/:id              edit (person, dates, type, status, reason)   (Admin+)
  *   DELETE /leaves/:id                                                           (Admin+)
  *   PUT    /leaves/settings         { noticeDays }                               (Admin+)
+ *   PUT    /leaves/saturdays-off    { employeeId, off } every Saturday off       (Admin+)
  *   POST   /leaves/token            new secret form link                         (Admin+)
  *   POST   /leaves/form/:token      { mode, rows } from the Google form script — no login
  */
@@ -583,6 +585,19 @@ misRouter.put("/leaves/settings", requireAuth, requireMinRole("ADMIN"), async (r
   if (!body.success) return res.status(400).json({ error: "Notice days must be a whole number from 0 to 30." });
   try {
     await updateLeaveSettings(req.user!.companyId, body.data);
+    leaveChanged(req.user!.companyId);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.put("/leaves/saturdays-off", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z.object({ employeeId: z.string().uuid(), off: z.boolean() }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid request." });
+  try {
+    await setSaturdaysOff(req.user!.companyId, req.user!.employeeId, body.data.employeeId, body.data.off);
+    invalidateWorkCalendar(req.user!.companyId);
     leaveChanged(req.user!.companyId);
     return res.json({ success: true });
   } catch (e) {

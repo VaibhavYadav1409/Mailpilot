@@ -5,7 +5,7 @@ import { deleteMsiFiles, getMsiFile, makeMsiStorageKey, putMsiFile, sweepOrphanM
 import { getMailDayTimezone } from "./retentionEngine";
 import { emitToCompany } from "../sockets";
 import { ensureMisFresh, getMisStatusForDate, misCheckDates, misFocusDates, type MisEmployeeDay } from "./misService";
-import { getWorkCalendar, offDay, shortDate } from "./workCalendar";
+import { getWorkCalendar, isSaturday, isWorkingDay, offDay, saturdaysOffSet, shortDate } from "./workCalendar";
 import { leaveMap } from "./misLeave";
 
 /**
@@ -551,6 +551,10 @@ export async function excusedOn(companyId: string, date: string): Promise<Map<st
     leaveMap(companyId, date, date),
     prisma.misCircleMark.findMany({ where: { companyId, date: dateColumnValue(date), source: "MANUAL", code: { in: EXCUSE_CODES } } }).catch(() => []),
   ]);
+  // Every Saturday off for some people (a company working Saturday only).
+  if (isSaturday(date) && isWorkingDay(date, await getWorkCalendar(companyId))) {
+    for (const id of await saturdaysOffSet(companyId)) out.set(id, { code: "SO", reason: "Saturday off — every Saturday is off for this person, so no MIS is needed." });
+  }
   for (const [k, l] of leaves) out.set(k.split("|")[0], { code: l.code, reason: l.reason });
   // An HR mark on the Circle Report wins over the leave record.
   for (const m of marks) out.set(m.employeeId, { code: m.code, reason: m.note ? `Marked ${m.code} by HR: ${m.note}` : `Marked ${m.code} by HR.` });

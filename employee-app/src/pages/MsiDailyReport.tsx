@@ -47,7 +47,17 @@ function formatLongDate(dateStr: string) {
   });
 }
 
-const NOT_FILLED_BLANKS = 20;
+/** A day counts as submitted when at least this % of its boxes are filled. */
+const COMPLETE_PERCENT = 80;
+
+/** "39 of 50 boxes filled (78%)" from the check notes. */
+function boxShare(mis: MsiMis): { filled: number; boxes: number; pct: number } | null {
+  for (const s of mis.sources) {
+    const m = /(\d+) of (\d+) boxes filled \((\d+)%\)/.exec(s.note ?? "");
+    if (m) return { filled: Number(m[1]), boxes: Number(m[2]), pct: Number(m[3]) };
+  }
+  return null;
+}
 
 function dmy(date: string) {
   return date.split("-").reverse().join("-");
@@ -58,13 +68,19 @@ function explain(mis: MsiMis, date: string): { tone: "green" | "amber" | "red" |
   const d = dmy(date);
   switch (mis.status) {
     case "COMPLETE":
-      return { tone: "green", title: "Submitted ✓", text: `Every entry you usually fill has something for ${d}.` };
-    case "INCOMPLETE":
+    {
+      const share = boxShare(mis);
+      return { tone: "green", title: "Submitted ✓", text: share ? `${share.filled} of ${share.boxes} boxes filled for ${d} (${share.pct}%).` : `Your MIS for ${d} is submitted.` };
+    }
+    case "INCOMPLETE": {
+      const share = boxShare(mis);
+      const need = share ? Math.ceil((share.boxes * COMPLETE_PERCENT) / 100) - share.filled : null;
       return {
-        tone: "amber",
-        title: `Incomplete — ${mis.missingColumns.length} blank`,
-        text: `Almost done. Fill the blank cells listed below in the ${d} column, then press "Check again".`,
+        tone: "red",
+        title: share ? `Incomplete — ${share.filled} of ${share.boxes} boxes (${share.pct}%)` : "Incomplete",
+        text: `You need at least ${COMPLETE_PERCENT}% of the boxes filled${need && need > 0 ? ` — fill at least ${need} more` : ""}. Otherwise it is a red circle at the deadline. The blank cells are listed below; fill them in the ${d} column, then press "Check again".`,
       };
+    }
     case "MISSING": {
       const notes = mis.sources.map((s) => s.note).filter((n): n is string => !!n);
       const copied = notes.find((n) => n.startsWith("Copied from"));
@@ -75,10 +91,10 @@ function explain(mis: MsiMis, date: string): { tone: "green" | "amber" | "red" |
         tone: "red",
         title: "Not submitted",
         text: note
-          ? `${note} ${NOT_FILLED_BLANKS} or more blanks counts as not filled — please fill the ${d} column.`
+          ? `${note} Please fill the ${d} column.`
           : other
             ? other
-            : `There is no ${d} column in your MIS yet. Add it and fill every row you normally fill.`,
+            : `There is no ${d} column in your MIS yet. Add it and fill every box.`,
       };
     }
     case "ERROR":
@@ -130,13 +146,13 @@ function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string
       <Card className="p-4 text-sm text-muted-foreground space-y-1">
         <p>
           <span className="font-medium text-foreground">How it works:</span> fill your MIS in Excel as usual. MailPilot reads it every 10
-          minutes. A day counts as <span className="text-green-700 font-medium">submitted</span> when every entry you usually fill has
-          something in it (nil / NA / done all count). A few blanks = <span className="text-amber-700 font-medium">incomplete</span>;{" "}
-          {NOT_FILLED_BLANKS}+ blanks or no column for the day = <span className="text-red-700 font-medium">not submitted</span>.
+          minutes. A day counts as <span className="text-green-700 font-medium">submitted</span> when at least {COMPLETE_PERCENT}% of the boxes in
+          that day&apos;s column are filled (e.g. 40 of 50 — nil / NA / done all count). Less than {COMPLETE_PERCENT}%, nothing filled or no column
+          for the day = <span className="text-red-700 font-medium">red circle</span>.
         </p>
         <p>
           You get until 11:00 AM on the next working day to fill each day, so you are checked for the last two working days. Sundays, the 2nd
-          Saturday and stock market holidays need no MIS. MailPilot also records when you last saved the Excel file.
+          Saturday, holidays and approved leave need no MIS. MailPilot also records when you last saved the Excel file.
         </p>
       </Card>
 
@@ -145,7 +161,7 @@ function MisDaysPanel({ days, tz, onUpdate }: { days: MisDayResult[]; tz: string
           d.excused && d.mis.status !== "COMPLETE"
             ? {
                 tone: "gray" as const,
-                title: d.excused.code === "EL" ? "Emergency leave — no MIS needed" : d.excused.code === "OL" ? "On leave — no MIS needed" : "Excused — no MIS needed",
+                title: d.excused.code === "EL" ? "Emergency leave — no MIS needed" : d.excused.code === "OL" ? "On leave — no MIS needed" : d.excused.code === "SO" ? "Saturday off — no MIS needed" : "Excused — no MIS needed",
                 text: d.excused.reason,
               }
             : explain(d.mis, d.date);

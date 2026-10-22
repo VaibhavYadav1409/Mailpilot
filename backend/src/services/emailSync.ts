@@ -167,6 +167,19 @@ export function parseAddressList(raw: string | null | undefined): string[] {
  * list, or alias delivery) — "not visibly addressed at all" is not the same
  * claim as "was CC'd", and only the latter belongs in the CC view.
  */
+/**
+ * Only the FIRST address in To has to reply (Farsight rule): when a mail is
+ * sent To risk_mgm@ and accounts@, it waits on risk_mgm@ only. True when this
+ * mailbox is in To but not first — then it is not this person's backlog.
+ * False when the owner isn't visibly in To at all (bcc / alias), as before.
+ */
+export function computeIsSecondaryTo(ownerEmail: string, toAddresses: string[]): boolean {
+  const owner = ownerEmail.trim().toLowerCase();
+  if (!owner || toAddresses.length < 2) return false;
+  const i = toAddresses.findIndex((a) => a.trim().toLowerCase() === owner);
+  return i > 0;
+}
+
 export function computeIsCc(ownerEmail: string, toAddresses: string[], ccAddresses: string[]): boolean {
   const owner = ownerEmail.trim().toLowerCase();
   if (!owner) return false;
@@ -507,6 +520,7 @@ async function persistParsedMessage(
       toAddresses: parsed.toAddresses.length ? JSON.stringify(parsed.toAddresses) : null,
       ccAddresses: parsed.ccAddresses.length ? JSON.stringify(parsed.ccAddresses) : null,
       isCc: computeIsCc(ownerEmail, parsed.toAddresses, parsed.ccAddresses),
+      isSecondaryTo: computeIsSecondaryTo(ownerEmail, parsed.toAddresses),
       subject: parsed.subject,
       receivedAt: parsed.internalDate,
       isRead: parsed.isRead,
