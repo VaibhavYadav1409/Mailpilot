@@ -50,7 +50,10 @@ export async function removeEmployee(
   const blobKeys = emailIds.length
     ? (await prisma.attachment.findMany({ where: { emailId: { in: emailIds } }, select: { storageKey: true } })).map((b) => b.storageKey)
     : [];
-  const reports = await prisma.msiDailyReport.findMany({ where: { employeeId: e.id }, select: { storageReference: true } });
+  const reports = [
+    ...(await prisma.msiDailyReport.findMany({ where: { employeeId: e.id }, select: { storageReference: true } })),
+    ...(await prisma.misWeeklyReport.findMany({ where: { employeeId: e.id }, select: { storageReference: true } }).catch(() => [])),
+  ];
   const misFiles = await prisma.misSource.count({ where: { employeeId: e.id } });
 
   await prisma.$transaction(
@@ -79,6 +82,7 @@ export async function removeEmployee(
       await tx.misCircleMark.deleteMany({ where: { employeeId: e.id } });
       await tx.misEmailLog.deleteMany({ where: { employeeId: e.id } });
       await tx.misLeave.deleteMany({ where: { employeeId: e.id } });
+      await tx.misWeeklyReport.deleteMany({ where: { employeeId: e.id } });
       // Keep the history, unlinked
       await tx.auditLog.updateMany({ where: { employeeId: e.id }, data: { employeeId: null } });
       await tx.department.updateMany({ where: { managerId: e.id }, data: { managerId: null } });

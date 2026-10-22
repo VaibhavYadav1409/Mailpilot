@@ -555,6 +555,9 @@ export async function excusedOn(companyId: string, date: string): Promise<Map<st
   if (isSaturday(date) && isWorkingDay(date, await getWorkCalendar(companyId))) {
     for (const id of await saturdaysOffSet(companyId)) out.set(id, { code: "SO", reason: "Saturday off — every Saturday is off for this person, so no MIS is needed." });
   }
+  // Weekly reporters send one report a week instead of a daily one.
+  const weekly = await prisma.employee.findMany({ where: { companyId, misWeeklySince: { not: null, lte: dateColumnValue(date) } }, select: { id: true } }).catch(() => []);
+  for (const w of weekly) out.set(w.id, { code: "WK", reason: "Weekly reporter — sends one report a week (MIS Circle Report → Weekly reports), no daily report needed." });
   for (const [k, l] of leaves) out.set(k.split("|")[0], { code: l.code, reason: l.reason });
   // An HR mark on the Circle Report wins over the leave record.
   for (const m of marks) out.set(m.employeeId, { code: m.code, reason: m.note ? `Marked ${m.code} by HR: ${m.note}` : `Marked ${m.code} by HR.` });
@@ -757,7 +760,11 @@ export async function purgeExpiredMsiReports(now = new Date()): Promise<MsiPurge
     }
 
     // Backstop: files with no report row (crash mid-upload, failed delete above).
-    const live = await prisma.msiDailyReport.findMany({ select: { storageReference: true } });
+    const live = [
+      ...(await prisma.msiDailyReport.findMany({ select: { storageReference: true } })),
+      // Weekly reports share the file store and are kept permanently — never orphans.
+      ...(await prisma.misWeeklyReport.findMany({ select: { storageReference: true } })),
+    ];
     result.orphanFilesDeleted = await sweepOrphanMsiFiles(
       new Set(live.map((r) => r.storageReference)),
       new Date(now.getTime() - 60 * 60 * 1000),

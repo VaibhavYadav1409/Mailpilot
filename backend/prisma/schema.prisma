@@ -80,6 +80,7 @@ model Employee {
   email           String         @unique // login email, distinct from the Gmail account they work from
   contactEmail    String?        // where MIS emails go (MIS staff log in with a username, not an email)
   misSaturdaysOff Boolean        @default(false) // every Saturday off for this person (no MIS, no circle)
+  misWeeklySince  DateTime?      @db.Date // weekly reporter since this date (uploads a weekly PDF instead of a daily MIS); null = not weekly
   password        String
   firstName       String
   lastName        String
@@ -441,6 +442,28 @@ model Report {
 //
 // Both relations cascade: MSI data is disposable, and it must never block
 // deleting an employee or company.
+// A weekly reporter's weekly report (PDF etc.). Kept permanently (unlike
+// daily reports): uploaded by Saturday night = the whole week counts as
+// submitted on the MIS Circle Report. File bytes via lib/msiStorage.ts.
+model MisWeeklyReport {
+  id               String   @id @default(uuid())
+  companyId        String
+  employeeId       String
+  weekStart        DateTime @db.Date // Monday of the week
+  fileName         String
+  fileType         String
+  fileSize         Int
+  storageReference String   @unique
+  submittedAt      DateTime @default(now())
+  uploadedById     String?
+  note             String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([employeeId, weekStart])
+  @@index([companyId, weekStart])
+}
+
 model MsiDailyReport {
   id               String   @id @default(uuid())
   companyId        String

@@ -19,6 +19,7 @@ import { getMisDaysForEmployee } from "../services/msiService";
 import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../services/misCircle";
 import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, MIS_DEADLINE_TIME, invalidateWorkCalendar, listHolidays, setHoliday } from "../services/workCalendar";
 import { emitToCompany } from "../sockets";
+import { WeeklyError, deleteWeeklyReport, listWeekly, setWeekly, uploadWeeklyReport, weeklyReportFile } from "../services/misWeekly";
 import {
   LeaveError,
   createLeave,
@@ -86,13 +87,17 @@ import {
  *   PUT    /leaves/saturdays-off    { employeeId, off } every Saturday off       (Admin+)
  *   POST   /leaves/token            new secret form link                         (Admin+)
  *   POST   /leaves/form/:token      { mode, rows } from the Google form script — no login
+ *   GET    /weekly                  weekly reporters + their weekly reports       (Admin+)
+ *   PUT    /weekly/person           { employeeId, on } make someone a weekly reporter (Admin+)
+ *   POST   /weekly/upload           { employeeId, file } this week's report       (Admin+)
+ *   DELETE /weekly/:id · GET /weekly/:id/download                                 (Admin+)
  */
 export const misRouter = Router();
 
 const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET as string;
 
 function handle(res: Response, e: unknown) {
-  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError || e instanceof HolidayError || e instanceof MisEmailError || e instanceof LeaveError)
+  if (e instanceof MisError || e instanceof MisGraphError || e instanceof CircleError || e instanceof HolidayError || e instanceof MisEmailError || e instanceof LeaveError || e instanceof WeeklyError)
     return res.status(e.status).json({ error: e.message });
   console.error("[MIS] request failed:", e);
   return res.status(500).json({ error: "Something went wrong. Please try again." });
@@ -609,6 +614,63 @@ misRouter.post("/leaves/token", requireAuth, requireMinRole("ADMIN"), async (req
   try {
     await rotateLeaveToken(req.user!.companyId);
     return res.json({ formUrl: await leaveFormUrl(req, req.user!.companyId) });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Weekly reporters (a weekly PDF instead of a daily MIS)
+// ---------------------------------------------------------------------------
+
+misRouter.get("/weekly", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    return res.json(await listWeekly(req.user!.companyId));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.put("/weekly/person", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z.object({ employeeId: z.string().uuid(), on: z.boolean() }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Invalid request." });
+  try {
+    await setWeekly(req.user!.companyId, req.user!.employeeId, body.data.employeeId, body.data.on);
+    leaveChanged(req.user!.companyId);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/weekly/upload", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z.object({ employeeId: z.string().uuid(), file: z.object({ fileName: z.string().min(1).max(500), dataBase64: z.string().min(1) }) }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Choose the person and the file." });
+  try {
+    const r = await uploadWeeklyReport(req.user!.companyId, req.user!.employeeId, body.data);
+    leaveChanged(req.user!.companyId);
+    return res.status(201).json(r);
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.delete("/weekly/:id", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    await deleteWeeklyReport(req.user!.companyId, req.user!.employeeId, String(req.params.id));
+    leaveChanged(req.user!.companyId);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.get("/weekly/:id/download", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    const f = await weeklyReportFile(req.user!.companyId, String(req.params.id));
+    res.setHeader("Content-Type", f.fileType);
+    res.setHeader("Content-Disposition", `attachment; filename="${f.fileName.replace(/[^\w.\- ()]/g, "_")}"`);
+    return res.send(f.data);
   } catch (e) {
     return handle(res, e);
   }

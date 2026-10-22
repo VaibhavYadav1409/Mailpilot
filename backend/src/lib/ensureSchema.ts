@@ -209,6 +209,29 @@ const STATEMENTS: { migration: string; sql: string }[] = [
   { migration: "20261022130000_email_first_to_replies", sql: `ALTER TABLE "Email" ADD COLUMN IF NOT EXISTS "isSecondaryTo" BOOLEAN NOT NULL DEFAULT false` },
   { migration: "20261022130000_email_first_to_replies", sql: `CREATE INDEX IF NOT EXISTS "Email_gmailAccountId_isSecondaryTo_idx" ON "Email"("gmailAccountId", "isSecondaryTo")` },
   { migration: "20261022130000_email_first_to_replies", sql: BACKFILL_SECONDARY_TO },
+  // Weekly reporters (a weekly PDF instead of a daily MIS).
+  { migration: "20261022140000_mis_weekly", sql: `ALTER TABLE "Employee" ADD COLUMN IF NOT EXISTS "misWeeklySince" DATE` },
+  {
+    migration: "20261022140000_mis_weekly",
+    sql: `CREATE TABLE IF NOT EXISTS "MisWeeklyReport" (
+      "id" TEXT NOT NULL,
+      "companyId" TEXT NOT NULL,
+      "employeeId" TEXT NOT NULL,
+      "weekStart" DATE NOT NULL,
+      "fileName" TEXT NOT NULL,
+      "fileType" TEXT NOT NULL,
+      "fileSize" INTEGER NOT NULL,
+      "storageReference" TEXT NOT NULL,
+      "submittedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "uploadedById" TEXT,
+      "note" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL,
+      CONSTRAINT "MisWeeklyReport_pkey" PRIMARY KEY ("id"))`,
+  },
+  { migration: "20261022140000_mis_weekly", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisWeeklyReport_storageReference_key" ON "MisWeeklyReport"("storageReference")` },
+  { migration: "20261022140000_mis_weekly", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisWeeklyReport_employeeId_weekStart_key" ON "MisWeeklyReport"("employeeId", "weekStart")` },
+  { migration: "20261022140000_mis_weekly", sql: `CREATE INDEX IF NOT EXISTS "MisWeeklyReport_companyId_weekStart_idx" ON "MisWeeklyReport"("companyId", "weekStart")` },
 ];
 
 export async function ensureSchema(): Promise<void> {

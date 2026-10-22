@@ -57,6 +57,7 @@ export const CIRCLE_CODES: CircleCode[] = [
   { code: "EL", label: "Emergency leave", meaning: "Emergency leave — asked for late or after the leave (leave form), approved, no MIS needed, no circle.", isCircle: false, tone: "blue", manual: true },
   { code: "A", label: "Absent", meaning: "Absent — handled by attendance, not counted as an MIS circle.", isCircle: false, tone: "purple", manual: true },
   { code: "ON", label: "On duty", meaning: "On official duty outside — no MIS expected, no circle.", isCircle: false, tone: "blue", manual: true },
+  { code: "WK", label: "Weekly reporter", meaning: "This person sends a weekly report instead of a daily MIS. The week's days are green when it is uploaded by Saturday night; if it is missed, only the week's last working day is a red circle.", isCircle: false, tone: "grey", manual: false },
   { code: "SO", label: "Saturday off", meaning: "Saturday off for this person — no circle.", isCircle: false, tone: "grey", manual: true },
   { code: "SSO", label: "Second Saturday off", meaning: "Second Saturday of the month — off for everyone, no circle.", isCircle: false, tone: "grey", manual: true },
   { code: "SU", label: "Sunday", meaning: "Sunday — off, no circle.", isCircle: false, tone: "grey", manual: false },
@@ -206,10 +207,15 @@ export function summarize(finalCircles: number, pendingCircles = 0): CircleSumma
 export async function recordAutoMarks(companyId: string, dates: string[], now: Date = new Date()): Promise<void> {
   const companyCal = await getWorkCalendar(companyId);
   const satOff = await saturdaysOffSet(companyId);
+  // Weekly reporters are marked by misWeekly (their weekly report), not by daily MIS files.
+  const weekly = new Set(
+    (await prisma.employee.findMany({ where: { companyId, misWeeklySince: { not: null } }, select: { id: true } }).catch(() => [])).map((e) => e.id),
+  );
   const events = await loadEvents(companyId, dates).catch(() => new Map<string, never[]>());
   for (const date of dates) {
     const byEmployee = await getMisStatusForDate(companyId, date);
     for (const [employeeId, day] of byEmployee) {
+      if (weekly.has(employeeId)) continue;
       // Each person's own calendar (e.g. every Saturday off moves Friday's deadline to Monday).
       const cal = forPerson(companyCal, { misSaturdaysOff: satOff.has(employeeId) });
       const off = calendarCode(date, cal);
@@ -380,6 +386,7 @@ export async function getCircleMonth(
         OR: [
           { NOT: { email: { contains: "@" } } },
           { misSources: { some: {} } },
+          { misWeeklySince: { not: null } }, // weekly reporters
           { misCircleMarks: { some: { date: { gte: first, lte: last } } } },
         ],
       },

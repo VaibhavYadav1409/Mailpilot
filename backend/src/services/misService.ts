@@ -627,6 +627,9 @@ export async function ensureMisFresh(companyId: string, opts: { employeeId?: str
 export async function runAllMisChecks() {
   const conns = await prisma.misConnection.findMany({ where: { status: "CONNECTED" }, select: { companyId: true } });
   for (const c of conns) await runMisChecks(c.companyId).catch((e) => console.error("[MIS] scheduled check failed:", e));
+  // Weekly reporters: a missed weekly report becomes a red circle after Saturday night.
+  const { recordAllWeeklyMarks } = await import("./misWeekly");
+  await recordAllWeeklyMarks().catch((e) => console.error("[MIS weekly] scheduled marks failed:", e));
 }
 
 export async function purgeOldMisChecks(now = new Date()) {

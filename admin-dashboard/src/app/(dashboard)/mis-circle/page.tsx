@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { HolidaysCard } from '@/components/mis/HolidaysCard';
+import { WeeklyReportsCard } from '@/components/mis/WeeklyReportsCard';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Clock, Download, FileSpreadsheet, IndianRupee, Loader2, Search, ShieldCheck, Users, X } from 'lucide-react';
 import api from '@/services/api';
@@ -100,6 +101,8 @@ export default function MisCirclePage() {
       )}
 
       {data && <RulesCard data={data} />}
+      <WeeklyReportsCard canEdit={canEdit} />
+
       {data && <HolidaysCard year={Number(data.month.slice(0, 4))} canEdit={canEdit} />}
 
       {isLoading && <div className="glass-card h-64 animate-pulse" />}
