@@ -268,6 +268,24 @@ const STATEMENTS: { migration: string; sql: string }[] = [
   },
   { migration: "20261024130000_company_email", sql: `CREATE INDEX IF NOT EXISTS "CompanyEmail_companyId_createdAt_idx" ON "CompanyEmail"("companyId", "createdAt")` },
   { migration: "20261024130000_company_email", sql: `CREATE INDEX IF NOT EXISTS "CompanyEmail_status_sendAt_idx" ON "CompanyEmail"("status", "sendAt")` },
+  // Daily intimation reports (photo → leave records).
+  {
+    migration: "20261026120000_mis_intimation",
+    sql: `CREATE TABLE IF NOT EXISTS "MisIntimationReport" (
+      "id" TEXT NOT NULL,
+      "companyId" TEXT NOT NULL,
+      "reportDate" DATE NOT NULL,
+      "fileName" TEXT NOT NULL,
+      "fileType" TEXT NOT NULL,
+      "storageReference" TEXT NOT NULL,
+      "uploadedById" TEXT,
+      "rows" JSONB NOT NULL,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL,
+      CONSTRAINT "MisIntimationReport_pkey" PRIMARY KEY ("id"))`,
+  },
+  { migration: "20261026120000_mis_intimation", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisIntimationReport_storageReference_key" ON "MisIntimationReport"("storageReference")` },
+  { migration: "20261026120000_mis_intimation", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisIntimationReport_companyId_reportDate_key" ON "MisIntimationReport"("companyId", "reportDate")` },
 ];
 
 export async function ensureSchema(): Promise<void> {

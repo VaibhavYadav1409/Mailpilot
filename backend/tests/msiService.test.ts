@@ -11,9 +11,10 @@ const msiDailyReport = {
 const msiReportFile = { deleteMany: vi.fn() };
 // Weekly reports share the file store: the purge may only READ their keys (to keep those files).
 const misWeeklyReport = { findMany: vi.fn().mockResolvedValue([{ storageReference: "msi/weekly-key" }]) };
+const misIntimationReport = { findMany: vi.fn().mockResolvedValue([{ storageReference: "msi/intimation-key" }]) };
 vi.mock("../src/lib/db", () => ({
   prisma: new Proxy(
-    { msiDailyReport, msiReportFile, misWeeklyReport, auditLog: { create: vi.fn().mockResolvedValue({}) } },
+    { msiDailyReport, msiReportFile, misWeeklyReport, misIntimationReport, auditLog: { create: vi.fn().mockResolvedValue({}) } },
     {
       get(target, prop: string) {
         if (!(prop in target)) throw new Error(`MSI code touched non-MSI model: ${prop}`);
@@ -160,6 +161,7 @@ describe("purgeExpiredMsiReports", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     misWeeklyReport.findMany.mockResolvedValue([{ storageReference: "msi/weekly-key" }]);
+    misIntimationReport.findMany.mockResolvedValue([{ storageReference: "msi/intimation-key" }]);
   });
 
   it("deletes only expired MSI rows and their files, and never touches other models", async () => {
@@ -179,6 +181,7 @@ describe("purgeExpiredMsiReports", () => {
     expect(r).toMatchObject({ reportsDeleted: 1, filesDeleted: 1, orphanFilesDeleted: 0 });
     // The orphan sweep keeps weekly report files.
     expect(JSON.stringify(msiReportFile.deleteMany.mock.calls[1][0])).toContain("msi/weekly-key");
+    expect(JSON.stringify(msiReportFile.deleteMany.mock.calls[1][0])).toContain("msi/intimation-key");
     expect(Object.keys(misWeeklyReport.findMany.mock.calls[0][0] ?? {})).toEqual(["select"]);
   });
 

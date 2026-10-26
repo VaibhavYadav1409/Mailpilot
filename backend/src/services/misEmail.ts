@@ -533,7 +533,11 @@ export function buildHrSummary(people: PersonData[], from: string | null): { sub
         ? { t: "Incomplete (marked by HR)", c: "#b45309" }
         : p.code === "NC"
           ? { t: "Complete — green", c: "#15803d" }
-          : p.code === "OL"
+          : p.code === "A"
+            ? { t: "Absent", c: "#7c3aed" }
+            : p.code === "SO"
+              ? { t: "Saturday off", c: "#6b7280" }
+              : p.code === "OL"
             ? { t: "On leave (planned)", c: "#1d4ed8" }
             : p.code === "EL"
               ? { t: "Emergency leave", c: "#1d4ed8" }

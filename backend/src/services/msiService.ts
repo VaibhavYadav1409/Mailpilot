@@ -764,6 +764,8 @@ export async function purgeExpiredMsiReports(now = new Date()): Promise<MsiPurge
       ...(await prisma.msiDailyReport.findMany({ select: { storageReference: true } })),
       // Weekly reports share the file store and are kept permanently — never orphans.
       ...(await prisma.misWeeklyReport.findMany({ select: { storageReference: true } })),
+      // Intimation report photos too.
+      ...(await prisma.misIntimationReport.findMany({ select: { storageReference: true } })),
     ];
     result.orphanFilesDeleted = await sweepOrphanMsiFiles(
       new Set(live.map((r) => r.storageReference)),

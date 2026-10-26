@@ -7,7 +7,10 @@
 // fallback, same pattern as the old code used for Google credentials.
 
 export type Role = "system" | "user" | "assistant";
-export type Message = { role: Role; content: string };
+export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+export type Message = { role: Role; content: string | ContentPart[] };
+/** Groq model that can read images (see console.groq.com/docs/vision). Overridable without a code change. */
+export const VISION_MODEL = process.env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b";
 export type InvokeParams = {
   messages: Message[];
   model?: string;

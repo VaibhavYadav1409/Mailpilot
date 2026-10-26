@@ -6,11 +6,12 @@ import { AlertTriangle, CalendarCheck, CheckCircle2, ChevronLeft, ChevronRight, 
 import api from '@/services/api';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { HolidaysCard } from '@/components/mis/HolidaysCard';
+import { IntimationReportCard } from '@/components/mis/IntimationReportCard';
 import { dmy, monthLabel, shiftMonth } from '@/components/mis/circleApi';
 import { useAuthStore } from '@/store/authStore';
 import { cn } from '@/utils/cn';
 
-type LeaveType = 'PLANNED' | 'EMERGENCY';
+type LeaveType = 'PLANNED' | 'EMERGENCY' | 'ABSENT' | 'SATURDAY_OFF';
 type LeaveStatus = 'APPROVED' | 'REJECTED';
 
 interface Leave {
@@ -29,7 +30,7 @@ interface Leave {
   note: string | null;
   submittedAt: string | null;
   noticeDays: number | null;
-  source: 'FORM' | 'MANUAL';
+  source: 'FORM' | 'MANUAL' | 'REPORT';
   editedInApp: boolean;
 }
 
@@ -101,6 +102,8 @@ export default function MisLeavePage() {
       />
 
       <RulesCard noticeDays={data?.settings.noticeDays ?? 2} canEdit={canEdit} />
+
+      <IntimationReportCard canEdit={canEdit} />
 
       {data && <ConnectCard data={data} gid={gid} setGid={setGid} />}
 
@@ -416,6 +419,8 @@ function LeaveTable({ rows, people, canEdit }: { rows: Leave[]; people: LeaveDat
                     >
                       <option value="PLANNED">Planned (OL)</option>
                       <option value="EMERGENCY">Emergency (EL)</option>
+                      <option value="ABSENT">Absent (A)</option>
+                      <option value="SATURDAY_OFF">Saturday off (SO)</option>
                     </select>
                   </td>
                   <td className="px-2 py-2">
@@ -447,7 +452,7 @@ function LeaveTable({ rows, people, canEdit }: { rows: Leave[]; people: LeaveDat
                       <div>{l.noticeDays > 0 ? `${l.noticeDays} day${l.noticeDays === 1 ? '' : 's'} before` : l.noticeDays === 0 ? 'same day' : `${-l.noticeDays} day${l.noticeDays === -1 ? '' : 's'} after`}</div>
                     )}
                     <div>
-                      {l.source === 'FORM' ? 'Google form' : 'Added here'}
+                      {l.source === 'FORM' ? 'Google form' : l.source === 'REPORT' ? 'Intimation report' : 'Added here'}
                       {l.editedInApp && l.source === 'FORM' ? ' · edited' : ''}
                     </div>
                   </td>
@@ -519,6 +524,8 @@ function AddLeave({ people }: { people: LeaveData['people'] }) {
       <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as LeaveType })} className={input}>
         <option value="PLANNED">Planned (OL)</option>
         <option value="EMERGENCY">Emergency (EL)</option>
+        <option value="ABSENT">Absent (A)</option>
+        <option value="SATURDAY_OFF">Saturday off (SO)</option>
       </select>
       <input value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="Reason (optional)" className={cn(input, 'w-60')} />
       <button type="submit" disabled={add.isPending || !form.employeeId || !form.from} className="btn-primary flex items-center gap-2">

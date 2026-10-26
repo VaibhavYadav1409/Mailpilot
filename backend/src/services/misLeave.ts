@@ -33,9 +33,11 @@ export class LeaveError extends Error {
   }
 }
 
-export type LeaveType = "PLANNED" | "EMERGENCY";
+export type LeaveType = "PLANNED" | "EMERGENCY" | "ABSENT" | "SATURDAY_OFF";
+export const LEAVE_TYPES: LeaveType[] = ["PLANNED", "EMERGENCY", "ABSENT", "SATURDAY_OFF"];
+const LEAVE_LABEL: Record<LeaveType, string> = { PLANNED: "Planned leave", EMERGENCY: "Emergency leave", ABSENT: "Absent", SATURDAY_OFF: "Saturday off" };
 export type LeaveStatus = "APPROVED" | "REJECTED";
-export const LEAVE_CODE: Record<LeaveType, "OL" | "EL"> = { PLANNED: "OL", EMERGENCY: "EL" };
+export const LEAVE_CODE: Record<LeaveType, "OL" | "EL" | "A" | "SO"> = { PLANNED: "OL", EMERGENCY: "EL", ABSENT: "A", SATURDAY_OFF: "SO" };
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const dateValue = (d: string) => new Date(`${d}T00:00:00.000Z`);
@@ -99,7 +101,7 @@ export async function rotateLeaveToken(companyId: string) {
 }
 
 /** India date of an instant. */
-function istDate(d: Date): string {
+export function istDate(d: Date): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 }
 
@@ -210,7 +212,7 @@ export function parseLeaveRow(row: Record<string, unknown>, map: Partial<Record<
 // Receiving from the form
 // ---------------------------------------------------------------------------
 
-async function people(companyId: string) {
+export async function people(companyId: string) {
   const list = await prisma.employee.findMany({
     where: { companyId, status: { not: "SUSPENDED" } },
     select: { id: true, firstName: true, lastName: true, email: true, contactEmail: true },
@@ -372,7 +374,7 @@ export async function updateLeave(companyId: string, actorId: string, id: string
   const from = input.from ?? isoOf(existing.fromDate);
   const to = input.to ?? isoOf(existing.toDate);
   checkDates(from, to);
-  if (input.type && !["PLANNED", "EMERGENCY"].includes(input.type)) throw new LeaveError(400, "Unknown leave type.");
+  if (input.type && !LEAVE_TYPES.includes(input.type)) throw new LeaveError(400, "Unknown leave type.");
   if (input.status && !["APPROVED", "REJECTED"].includes(input.status)) throw new LeaveError(400, "Unknown status.");
   if (input.employeeId !== undefined) await checkPerson(companyId, input.employeeId);
   return prisma.misLeave.update({
@@ -458,7 +460,7 @@ export async function setSaturdaysOff(companyId: string, actorId: string, employ
 export interface LeaveDay {
   leaveId: string;
   type: LeaveType;
-  code: "OL" | "EL";
+  code: "OL" | "EL" | "A" | "SO";
   reason: string;
 }
 
@@ -478,11 +480,15 @@ export async function leaveMap(companyId: string, from: string, to: string, empl
     })
     .catch(() => []);
   for (const r of rows) {
-    const type = (r.type === "EMERGENCY" ? "EMERGENCY" : "PLANNED") as LeaveType;
+    const type = (LEAVE_TYPES.includes(r.type as LeaveType) ? r.type : "PLANNED") as LeaveType;
     const lf = isoOf(r.fromDate);
     const lt = isoOf(r.toDate);
-    const asked = r.submittedAt ? ` — asked on ${shortDate(istDate(r.submittedAt))}` : r.source === "MANUAL" ? " — added in MailPilot" : "";
-    const reason = `${type === "PLANNED" ? "Planned leave" : "Emergency leave"} ${lf === lt ? shortDate(lf) : `${shortDate(lf)} – ${shortDate(lt)}`}${asked}${r.reason ? `: ${r.reason.slice(0, 120)}` : ""}.`;
+    const asked = r.submittedAt
+      ? ` — ${r.source === "REPORT" ? "intimation report of" : "asked on"} ${shortDate(istDate(r.submittedAt))}`
+      : r.source === "MANUAL"
+        ? " — added in MailPilot"
+        : "";
+    const reason = `${LEAVE_LABEL[type]} ${lf === lt ? shortDate(lf) : `${shortDate(lf)} – ${shortDate(lt)}`}${asked}${r.reason ? `: ${r.reason.slice(0, 120)}` : ""}.`;
     for (const d of expandDates(lf < from ? from : lf, lt > to ? to : lt)) {
       // An emergency leave over a planned one (or the other way round): the first record wins.
       if (!out.has(`${r.employeeId}|${d}`)) out.set(`${r.employeeId}|${d}`, { leaveId: r.id, type, code: LEAVE_CODE[type], reason });

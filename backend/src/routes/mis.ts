@@ -19,6 +19,7 @@ import { getMisDaysForEmployee } from "../services/msiService";
 import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../services/misCircle";
 import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, MIS_DEADLINE_TIME, invalidateWorkCalendar, listHolidays, setHoliday } from "../services/workCalendar";
 import { emitToCompany } from "../sockets";
+import { deleteIntimationReport, intimationImage, listIntimationReports, uploadIntimationReport } from "../services/misIntimation";
 import { cancelCompanyEmail, createCompanyEmail, listCompanyEmails, sendCompanyEmailTest } from "../services/companyEmail";
 import { WeeklyError, deleteWeeklyReport, listWeekly, setWeekly, uploadWeeklyReport, weeklyReportFile } from "../services/misWeekly";
 import {
@@ -544,7 +545,7 @@ const leaveSchema = z.object({
   employeeId: z.string().uuid().nullable().optional(),
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  type: z.enum(["PLANNED", "EMERGENCY"]).optional(),
+  type: z.enum(["PLANNED", "EMERGENCY", "ABSENT", "SATURDAY_OFF"]).optional(),
   status: z.enum(["APPROVED", "REJECTED"]).optional(),
   reason: z.string().max(2000).nullable().optional(),
   note: z.string().max(1000).nullable().optional(),
@@ -615,6 +616,53 @@ misRouter.post("/leaves/token", requireAuth, requireMinRole("ADMIN"), async (req
   try {
     await rotateLeaveToken(req.user!.companyId);
     return res.json({ formUrl: await leaveFormUrl(req, req.user!.companyId) });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Daily intimation report (photo → leave records)
+// ---------------------------------------------------------------------------
+
+misRouter.get("/leaves/intimation", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    return res.json({ reports: await listIntimationReports(req.user!.companyId) });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/leaves/intimation", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = z
+    .object({ file: z.object({ fileName: z.string().min(1).max(500), dataBase64: z.string().min(1) }), reportDate: z.string().max(10).nullish() })
+    .safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Choose the photo of the report." });
+  try {
+    const r = await uploadIntimationReport(req.user!.companyId, req.user!.employeeId, body.data);
+    leaveChanged(req.user!.companyId);
+    return res.status(201).json(r);
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.delete("/leaves/intimation/:id", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    await deleteIntimationReport(req.user!.companyId, String(req.params.id));
+    leaveChanged(req.user!.companyId);
+    return res.json({ success: true });
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.get("/leaves/intimation/:id/image", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  try {
+    const f = await intimationImage(req.user!.companyId, String(req.params.id));
+    res.setHeader("Content-Type", f.fileType);
+    res.setHeader("Content-Disposition", `inline; filename="${f.fileName.replace(/[^\w.\- ()]/g, "_")}"`);
+    return res.send(f.data);
   } catch (e) {
     return handle(res, e);
   }

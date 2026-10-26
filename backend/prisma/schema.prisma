@@ -680,6 +680,25 @@ model CompanyEmail {
   @@index([status, sendAt])
 }
 
+// The daily "Intimation Report" (late / leave / Saturday off / no intimation +
+// advance leave applications) uploaded as a photo or screenshot. MailPilot reads
+// it (AI, cells copied verbatim) and turns leave rows into MisLeave records
+// (source REPORT). One per company and date; uploading again replaces it.
+model MisIntimationReport {
+  id               String   @id @default(uuid())
+  companyId        String
+  reportDate       DateTime @db.Date
+  fileName         String
+  fileType         String
+  storageReference String   @unique
+  uploadedById     String?
+  rows             Json     // what was read + what MailPilot did with each row
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([companyId, reportDate])
+}
+
 model MisEmailLog {
   id         String   @id @default(uuid())
   companyId  String
