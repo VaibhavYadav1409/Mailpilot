@@ -554,6 +554,16 @@ export async function excusedOn(companyId: string, date: string): Promise<Map<st
   // Every Saturday off for some people (a company working Saturday only).
   if (isSaturday(date) && isWorkingDay(date, await getWorkCalendar(companyId))) {
     for (const id of await saturdaysOffSet(companyId)) out.set(id, { code: "SO", reason: "Saturday off — every Saturday is off for this person, so no MIS is needed." });
+    // 2 Saturdays off a month: this Saturday may be the person's extra one (decided on the Circle Report).
+    const extra = await prisma.employee.findMany({ where: { companyId, misExtraSaturdayOff: true }, select: { id: true } }).catch(() => []);
+    if (extra.length) {
+      const { getCircleMonth } = await import("./misCircle");
+      const month = await getCircleMonth(companyId, date.slice(0, 7)).catch(() => null);
+      for (const row of month?.rows ?? []) {
+        const c = row.cells[date];
+        if (extra.some((x) => x.id === row.employeeId) && c?.code === "SO" && c.source === "CALENDAR") out.set(row.employeeId, { code: "SO", reason: c.reason ?? "Saturday off." });
+      }
+    }
   }
   // Weekly reporters send one report a week instead of a daily one.
   const weekly = await prisma.employee.findMany({ where: { companyId, misWeeklySince: { not: null, lte: dateColumnValue(date) } }, select: { id: true } }).catch(() => []);

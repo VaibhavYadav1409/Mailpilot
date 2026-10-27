@@ -20,6 +20,7 @@ import { CircleError, circleWorkbook, getCircleMonth, setCircleMark } from "../s
 import { HolidayError, MARKET_HOLIDAYS, MARKET_HOLIDAY_SOURCE, MIS_DEADLINE_TIME, invalidateWorkCalendar, listHolidays, setHoliday } from "../services/workCalendar";
 import { emitToCompany } from "../sockets";
 import { deleteIntimationReport, intimationImage, listIntimationReports, uploadIntimationReport } from "../services/misIntimation";
+import { applyMasterList, parseMasterList, planMasterList } from "../services/misMasterList";
 import { cancelCompanyEmail, createCompanyEmail, listCompanyEmails, sendCompanyEmailTest } from "../services/companyEmail";
 import { WeeklyError, deleteWeeklyReport, listWeekly, setWeekly, uploadWeeklyReport, weeklyReportFile } from "../services/misWeekly";
 import {
@@ -32,6 +33,7 @@ import {
   receiveFormRows,
   rotateLeaveToken,
   setSaturdaysOff,
+  setSaturdayRule,
   updateLeave,
   updateLeaveSettings,
 } from "../services/misLeave";
@@ -61,6 +63,8 @@ import {
  *   PATCH  /sources/:id             same fields, all optional; requiredColumns: [] = automatic
  *   DELETE /sources/:id
  *   POST   /import                  { rows: [{ name, url, checkedBy?, approvedBy?, username? }] } (Admin+)
+ *   POST   /master-list/preview     { file: { fileName, dataBase64 } } — what the master list Excel would change (Admin+)
+ *   POST   /master-list/apply       { file, removeOldFiles? } — apply it (Admin+)
  *   POST   /check                   { employeeId? } re-read now                  (Admin+)
  *   POST   /me/check                re-read the caller's own MIS now             (any employee)
  *   GET    /circle?month=YYYY-MM    monthly Circle Report (red circles, salary deduction)  (Admin+)
@@ -86,7 +90,7 @@ import {
  *   PATCH  /leaves/:id              edit (person, dates, type, status, reason)   (Admin+)
  *   DELETE /leaves/:id                                                           (Admin+)
  *   PUT    /leaves/settings         { noticeDays }                               (Admin+)
- *   PUT    /leaves/saturdays-off    { employeeId, off } every Saturday off       (Admin+)
+ *   PUT    /leaves/saturdays-off    { employeeId, rule: SECOND|TWO|ALL } (or { off }) Saturday rule (Admin+)
  *   POST   /leaves/token            new secret form link                         (Admin+)
  *   POST   /leaves/form/:token      { mode, rows } from the Google form script — no login
  *   GET    /weekly                  weekly reporters + their weekly reports       (Admin+)
@@ -600,10 +604,14 @@ misRouter.put("/leaves/settings", requireAuth, requireMinRole("ADMIN"), async (r
 });
 
 misRouter.put("/leaves/saturdays-off", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
-  const body = z.object({ employeeId: z.string().uuid(), off: z.boolean() }).safeParse(req.body);
+  const body = z
+    .object({ employeeId: z.string().uuid(), off: z.boolean().optional(), rule: z.enum(["SECOND", "TWO", "ALL"]).optional() })
+    .refine((b) => b.off !== undefined || b.rule !== undefined)
+    .safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: "Invalid request." });
   try {
-    await setSaturdaysOff(req.user!.companyId, req.user!.employeeId, body.data.employeeId, body.data.off);
+    if (body.data.rule) await setSaturdayRule(req.user!.companyId, req.user!.employeeId, body.data.employeeId, body.data.rule);
+    else await setSaturdaysOff(req.user!.companyId, req.user!.employeeId, body.data.employeeId, body.data.off!);
     invalidateWorkCalendar(req.user!.companyId);
     leaveChanged(req.user!.companyId);
     return res.json({ success: true });
@@ -780,6 +788,43 @@ misRouter.post("/leaves/form/:token", async (req, res) => {
   if (!body.success) return res.status(400).json({ error: "Expected { rows: [...] }." });
   try {
     const r = await receiveFormRows(String(req.params.token), body.data.rows, body.data.mode ?? "submit");
+    return res.json(r);
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Master list (the company's Excel list of every employee's MIS file)
+// ---------------------------------------------------------------------------
+
+const masterBody = z.object({
+  file: z.object({ fileName: z.string().min(1).max(500), dataBase64: z.string().min(1).max(20_000_000) }),
+  removeOldFiles: z.boolean().optional(),
+});
+
+function masterFile(data: { fileName: string; dataBase64: string }) {
+  if (!/\.xlsx$/i.test(data.fileName)) throw new MisError(400, "Choose the Excel file (.xlsx).");
+  return parseMasterList(Buffer.from(data.dataBase64.replace(/^data:[^,]*,/, ""), "base64"));
+}
+
+misRouter.post("/master-list/preview", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = masterBody.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Choose the Excel file." });
+  try {
+    return res.json(await planMasterList(req.user!.companyId, masterFile(body.data.file)));
+  } catch (e) {
+    return handle(res, e);
+  }
+});
+
+misRouter.post("/master-list/apply", requireAuth, requireMinRole("ADMIN"), async (req, res) => {
+  const body = masterBody.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Choose the Excel file." });
+  try {
+    const r = await applyMasterList(req.user!.companyId, req.user!.employeeId, masterFile(body.data.file), { removeOldFiles: body.data.removeOldFiles !== false });
+    invalidateWorkCalendar(req.user!.companyId);
+    leaveChanged(req.user!.companyId);
     return res.json(r);
   } catch (e) {
     return handle(res, e);

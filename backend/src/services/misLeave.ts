@@ -407,7 +407,7 @@ export async function listLeaves(companyId: string, opts: { from?: string; to?: 
     prisma.misLeave.findMany({ where, orderBy: [{ fromDate: "desc" }, { createdAt: "desc" }], take: 1000 }),
     prisma.employee.findMany({
       where: { companyId, status: { not: "SUSPENDED" } },
-      select: { id: true, firstName: true, lastName: true, email: true, misSaturdaysOff: true },
+      select: { id: true, firstName: true, lastName: true, email: true, misSaturdaysOff: true, misExtraSaturdayOff: true },
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
     }),
     getLeaveSettings(companyId),
@@ -439,18 +439,37 @@ export async function listLeaves(companyId: string, opts: { from?: string; to?: 
         editedInApp: r.editedInApp,
       };
     }),
-    people: staff.map((s) => ({ employeeId: s.id, name: `${s.firstName} ${s.lastName}`.trim(), username: s.email, saturdaysOff: s.misSaturdaysOff })),
+    people: staff.map((s) => ({
+      employeeId: s.id,
+      name: `${s.firstName} ${s.lastName}`.trim(),
+      username: s.email,
+      saturdaysOff: s.misSaturdaysOff,
+      saturdayRule: saturdayRuleOf(s),
+    })),
     settings: { noticeDays: settings.noticeDays, lastReceivedAt: settings.lastReceivedAt?.toISOString() ?? null, lastSummary: settings.lastSummary },
   };
 }
 
-/** Every Saturday off (or not) for one person — their personal MIS calendar. */
-export async function setSaturdaysOff(companyId: string, actorId: string, employeeId: string, off: boolean) {
+/** Which Saturdays a person has off: SECOND = the 2nd Saturday (everyone), TWO = the 2nd + one more each month, ALL = every Saturday. */
+export type SaturdayRule = "SECOND" | "TWO" | "ALL";
+export const SATURDAY_RULES: SaturdayRule[] = ["SECOND", "TWO", "ALL"];
+
+export function saturdayRuleOf(e: { misSaturdaysOff: boolean; misExtraSaturdayOff?: boolean | null }): SaturdayRule {
+  return e.misSaturdaysOff ? "ALL" : e.misExtraSaturdayOff ? "TWO" : "SECOND";
+}
+
+/** Set one person's Saturday rule (their personal MIS calendar). */
+export async function setSaturdayRule(companyId: string, actorId: string, employeeId: string, rule: SaturdayRule) {
   const e = await checkPerson(companyId, employeeId);
-  await prisma.employee.update({ where: { id: e!.id }, data: { misSaturdaysOff: off } });
+  await prisma.employee.update({ where: { id: e!.id }, data: { misSaturdaysOff: rule === "ALL", misExtraSaturdayOff: rule === "TWO" } });
   await prisma.auditLog
-    .create({ data: { companyId, employeeId: actorId, action: "MIS_SATURDAYS_OFF", metadata: { employeeId, name: `${e!.firstName} ${e!.lastName}`.trim(), off } } })
+    .create({ data: { companyId, employeeId: actorId, action: "MIS_SATURDAYS_OFF", metadata: { employeeId, name: `${e!.firstName} ${e!.lastName}`.trim(), rule } } })
     .catch(() => undefined);
+}
+
+/** Every Saturday off (or back to the 2nd Saturday only) — kept for older screens. */
+export async function setSaturdaysOff(companyId: string, actorId: string, employeeId: string, off: boolean) {
+  await setSaturdayRule(companyId, actorId, employeeId, off ? "ALL" : "SECOND");
 }
 
 // ---------------------------------------------------------------------------

@@ -36,7 +36,7 @@ interface Leave {
 
 interface LeaveData {
   leaves: Leave[];
-  people: { employeeId: string; name: string; username: string; saturdaysOff?: boolean }[];
+  people: { employeeId: string; name: string; username: string; saturdaysOff?: boolean; saturdayRule?: 'SECOND' | 'TWO' | 'ALL' }[];
   settings: {
     noticeDays: number;
     lastReceivedAt: string | null;
@@ -538,32 +538,48 @@ function AddLeave({ people }: { people: LeaveData['people'] }) {
 
 // ---------------------------------------------------------------------------
 
-/** People whose every Saturday is off (not only the 2nd): no MIS, no circle, Friday's deadline moves to Monday. */
+type SaturdayRule = 'SECOND' | 'TWO' | 'ALL';
+const SATURDAY_RULES: { value: SaturdayRule; label: string }[] = [
+  { value: 'SECOND', label: '2nd Saturday off' },
+  { value: 'TWO', label: '2 Saturdays off a month' },
+  { value: 'ALL', label: 'Every Saturday off' },
+];
+
+/**
+ * Which Saturdays each person has off. 2nd Saturday = everyone (default). 2 Saturdays a month = the
+ * 2nd + one more: the first other Saturday whose MIS isn't done becomes SO (no circle). Every Saturday =
+ * no MIS on any Saturday; Friday's MIS is due by 12:00 PM on Monday.
+ */
 function SaturdaysOffCard({ people, canEdit }: { people: LeaveData['people']; canEdit: boolean }) {
   const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [err, setErr] = useState('');
-  const toggle = useMutation({
-    mutationFn: (v: { employeeId: string; off: boolean }) => api.put('/mis/leaves/saturdays-off', v),
+  const save = useMutation({
+    mutationFn: (v: { employeeId: string; rule: SaturdayRule }) => api.put('/mis/leaves/saturdays-off', v),
     onSuccess: () => {
       setErr('');
       for (const k of ['mis-leaves', 'mis-circle', 'msi-admin', 'mis-sources']) qc.invalidateQueries({ queryKey: [k] });
     },
     onError: (e) => setErr(errText(e, 'Could not save.')),
   });
-  const on = people.filter((p) => p.saturdaysOff);
+  const ruleOf = (p: LeaveData['people'][number]): SaturdayRule => p.saturdayRule ?? (p.saturdaysOff ? 'ALL' : 'SECOND');
+  const two = people.filter((p) => ruleOf(p) === 'TWO');
+  const all = people.filter((p) => ruleOf(p) === 'ALL');
   const shown = people.filter((p) => p.name.toLowerCase().includes(q.trim().toLowerCase()));
   return (
     <div className="glass-card p-5 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <CalendarCheck className="w-4 h-4 text-gray-500" />
-        <h2 className="text-sm font-semibold">Every Saturday off</h2>
+        <h2 className="text-sm font-semibold">Saturdays off</h2>
         <span className="text-xs text-gray-500">
-          {on.length ? `On for: ${on.map((p) => p.name).join(', ')}` : 'Nobody yet — everyone works the 1st, 3rd, 4th and 5th Saturday.'}
+          {two.length ? `2 a month: ${two.map((p) => p.name).join(', ')}. ` : ''}
+          {all.length ? `Every Saturday: ${all.map((p) => p.name).join(', ')}.` : ''}
+          {!two.length && !all.length ? 'Everyone: 2nd Saturday off.' : ''}
         </span>
       </div>
       <p className="text-xs text-gray-600 dark:text-gray-400">
-        For people whose every Saturday is off: no MIS is needed on any Saturday and it is never a red circle (shown as SO). Their Friday MIS is due by 12:00 PM on Monday. Past Saturdays update too.
+        2nd Saturday off is the default. <b>2 Saturdays off a month</b>: the 2nd Saturday plus one more — the first other Saturday whose MIS is not done is shown as SO (no red circle).{' '}
+        <b>Every Saturday off</b>: no MIS on any Saturday; Friday&apos;s MIS is due by 12:00 PM on Monday. Past days update too.
       </p>
       {canEdit && (
         <>
@@ -573,17 +589,28 @@ function SaturdaysOffCard({ people, canEdit }: { people: LeaveData['people']; ca
             placeholder="Find a person"
             className="px-3 py-1.5 w-60 border border-gray-200 dark:border-gray-800 rounded-lg bg-transparent text-sm"
           />
-          <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-64 overflow-y-auto">
             {shown.map((p) => (
               <label
                 key={p.employeeId}
                 className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs cursor-pointer',
-                  p.saturdaysOff ? 'border-sky-300 bg-sky-50 text-sky-800 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800' : 'border-gray-200 dark:border-gray-800',
+                  'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border text-xs',
+                  ruleOf(p) !== 'SECOND' ? 'border-sky-300 bg-sky-50 text-sky-800 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800' : 'border-gray-200 dark:border-gray-800',
                 )}
               >
-                <input type="checkbox" checked={!!p.saturdaysOff} disabled={toggle.isPending} onChange={(e) => toggle.mutate({ employeeId: p.employeeId, off: e.target.checked })} />
-                {p.name}
+                <span className="truncate">{p.name}</span>
+                <select
+                  value={ruleOf(p)}
+                  disabled={save.isPending}
+                  onChange={(e) => save.mutate({ employeeId: p.employeeId, rule: e.target.value as SaturdayRule })}
+                  className="bg-transparent border border-gray-200 dark:border-gray-700 rounded px-1 py-0.5"
+                >
+                  {SATURDAY_RULES.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
               </label>
             ))}
           </div>

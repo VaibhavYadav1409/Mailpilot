@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
 const state = {
   satOff: false,
+  extraSat: false,
   leaves: [] as any[],
   marks: [
     { employeeId: "e1", date: D("2026-10-05"), code: "CM", source: "AUTO", note: null, autoCode: "CM", reason: "Not filled", updatedById: null, evidence: null },
@@ -12,7 +13,7 @@ const state = {
 };
 vi.mock("../src/lib/db", () => ({
   prisma: {
-    employee: { findMany: async () => [{ id: "e1", firstName: "Mamta", lastName: "", email: "mamta", misSaturdaysOff: state.satOff, _count: { misSources: 1 } }] },
+    employee: { findMany: async () => [{ id: "e1", firstName: "Mamta", lastName: "", email: "mamta", misSaturdaysOff: state.satOff, misExtraSaturdayOff: state.extraSat, _count: { misSources: 1 } }] },
     misCircleMark: { findMany: async () => state.marks },
     misHoliday: { findMany: async () => [] },
     misSource: { findMany: async () => [] },
@@ -77,5 +78,32 @@ describe("every Saturday off for one person", () => {
     expect(r.cells["2026-10-05"].code).toBe("CM");
     expect(r.summary.circles).toBe(1);
     state.satOff = false;
+  });
+});
+
+describe("2 Saturdays off a month (2nd Saturday + one more)", () => {
+  const cm = (d: string, source = "AUTO", code = "CM") => ({ employeeId: "e1", date: D(d), code, source, note: null, autoCode: "CM", reason: "Not filled", updatedById: null, evidence: null });
+  it("the first other Saturday whose MIS wasn't done is SO; the next one stays a red circle", async () => {
+    state.leaves = [];
+    state.marks = [cm("2026-10-03"), cm("2026-10-17"), cm("2026-10-05")]; // 1st and 3rd Saturday + a Monday
+    state.extraSat = true;
+    const r = (await c.getCircleMonth("co", "2026-10", { now: new Date("2026-10-27T08:00:00Z") })).rows[0];
+    expect(r.cells["2026-10-03"]).toMatchObject({ code: "SO", source: "CALENDAR", autoCode: "CM", reason: c.EXTRA_SATURDAY_REASON });
+    expect(r.cells["2026-10-10"].code).toBe("SSO"); // the 2nd Saturday, as for everyone
+    expect(r.cells["2026-10-17"].code).toBe("CM");
+    expect(r.summary.circles).toBe(2);
+  });
+  it("a Saturday the person filled doesn't use it up", async () => {
+    state.marks = [cm("2026-10-03", "AUTO", "NC"), cm("2026-10-17")];
+    const r = (await c.getCircleMonth("co", "2026-10", { now: new Date("2026-10-27T08:00:00Z") })).rows[0];
+    expect(r.cells["2026-10-17"].code).toBe("SO");
+    expect(r.summary.circles).toBe(0);
+  });
+  it("a Saturday HR marked SO is the extra one", async () => {
+    state.marks = [cm("2026-10-24", "MANUAL", "SO"), cm("2026-10-03")];
+    const r = (await c.getCircleMonth("co", "2026-10", { now: new Date("2026-10-27T08:00:00Z") })).rows[0];
+    expect(r.cells["2026-10-03"].code).toBe("CM");
+    expect(r.cells["2026-10-24"]).toMatchObject({ code: "SO", source: "MANUAL" });
+    state.extraSat = false;
   });
 });

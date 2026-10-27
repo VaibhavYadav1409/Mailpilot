@@ -17,10 +17,44 @@ describe("parseMisDate", () => {
     ["2026-09-29", TODAY],
     ["13/08/2026 - leave ", "2026-08-13"],
     ["31/02/2026", null],
+    // How staff really type dates — all must read as the same day.
+    ["29th September 2026", TODAY],
+    ["Tuesday, 29th September 2026", TODAY],
+    ["29 th Sep 2026", TODAY],
+    ["29th of September, 2026", TODAY],
+    ["September 29th, 2026", TODAY],
+    ["Septmber 29 2026", TODAY],
+    ["29 Setpember 2026", TODAY],
+    ["29Sep2026", TODAY],
+    ["29 Sep'26", TODAY],
+    ["Date: 29/09/2026 (Tue)", TODAY],
+    ["Tue 29.09.26", TODAY],
+    ["29..09.2026", TODAY],
+    ["29 / 09 / 2026", TODAY],
+    ["29,09,2026", TODAY],
+    ["29092026", TODAY],
+    ["09/29/2026", TODAY],
+    ["29-09-2026 10:30 AM", TODAY],
+    ["29 Sep", TODAY],
+    ["29/09", TODAY],
+    ["Remarks", null],
+    ["May", null],
+    ["12 34 56", null],
+    // Notes that mention a date are not dates.
+    ["MIS pending of 01.09.2026", null],
+    ["Updated 20-06-2026", null],
+    ["Jun-26 Qtr", null],
+    ["Feb'26 submitted", null],
+    ["Jun 26", null],
     ["Total", null],
     ["", null],
   ])("%s -> %s", (input, want) => {
-    expect(parseMisDate(input)).toBe(want);
+    expect(parseMisDate(input, TODAY)).toBe(want);
+  });
+  it("reads 29092026 typed as a number, but not amounts", () => {
+    expect(parseMisDate(29092026)).toBe(TODAY);
+    expect(parseMisDate(12345678)).toBeNull();
+    expect(parseMisDate(15000000)).toBeNull();
   });
   it("reads Excel serials", () => {
     expect(parseMisDate(serial(TODAY))).toBe(TODAY);
@@ -36,6 +70,21 @@ describe("readDateRow", () => {
   it("uses the previous date as the reference", () => {
     const row = ["x", "31-08-2026", serial("2026-01-09")];
     expect(readDateRow(row, 1).map((d) => d.date)).toEqual(["2026-08-31", "2026-09-01"]);
+  });
+  it("fixes a wrong year or month among its neighbours", () => {
+    expect(readDateRow(["x", "21/10/2026", "22/10/2025", "23/10/2026"], 1).map((d) => d.date)).toEqual(["2026-10-21", "2026-10-22", "2026-10-23"]);
+    expect(readDateRow(["x", "21/10/2026", "22/11/2026", "23/10/2026"], 1).map((d) => d.date)).toEqual(["2026-10-21", "2026-10-22", "2026-10-23"]);
+  });
+  it("fills in a missing year from the row", () => {
+    expect(readDateRow(["x", "21 Oct", "22 Oct", "23/10/2026"], 1).map((d) => d.date)).toEqual(["2026-10-21", "2026-10-22", "2026-10-23"]);
+  });
+  it("a date typed twice where the next day is missing becomes that day (skipping Sunday)", () => {
+    const row = ["x", "1/10/2026", "2/10/2026", "3/10/2026", "3/10/2026", "6/10/2026", "7/10/2026", "8/10/2026", "9/10/2026", "10/10/2026", "12/10/2026"];
+    expect(readDateRow(row, 1).map((d) => d.date)[3]).toBe("2026-10-05");
+  });
+  it("leaves rows with two columns per day alone", () => {
+    const row = ["x", "1/10/2026", "1/10/2026", "2/10/2026", "2/10/2026", "3/10/2026", "3/10/2026"];
+    expect(readDateRow(row, 1).map((d) => d.date)).toEqual(["2026-10-01", "2026-10-01", "2026-10-02", "2026-10-02", "2026-10-03", "2026-10-03"]);
   });
   it("keeps real dates that are not ambiguous", () => {
     const row = ["x", serial("2026-09-14"), serial("2026-09-15")];
@@ -193,6 +242,30 @@ describe("checkMisWorkbook — one row per entry with a Date column", () => {
 
   it("MISSING when nothing is dated today", () => {
     expect(checkMisWorkbook([sheet([[1, "28/09/2026", "A", "X", 1, ""]])], { date: TODAY }).status).toBe("MISSING");
+  });
+  it("reads written-out dates and fixes a wrong year typed in the row", () => {
+    const rows = [
+      [1, "Monday, 28th September 2026", "A", "X", 1, ""],
+      [2, "29th Sept, 2025", "B", "Y", 2, ""],
+      [3, "30 Sep 2026", "C", "Z", 3, ""],
+    ];
+    const r = checkMisWorkbook([sheet(rows)], { date: TODAY });
+    expect(r.status).toBe("COMPLETE");
+  });
+});
+
+describe("checkMisWorkbook — written-out dates in the header row", () => {
+  it("'28th September 2026', 'Tuesday 29th Sep' etc. are read as the days", () => {
+    const sheet = {
+      name: "Sep",
+      values: [
+        ["SL", "Particulars", "Saturday, 26th September 2026", "28th Sept 2026", "Tuesday 29th Sep"],
+        [1, "Accounts received", 1, 2, 3],
+        [2, "Accounts activated", 1, 2, 3],
+      ],
+    };
+    const r = checkMisWorkbook([sheet], { date: TODAY });
+    expect(r.status).toBe("COMPLETE");
   });
 });
 

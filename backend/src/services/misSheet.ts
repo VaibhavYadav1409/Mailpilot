@@ -111,7 +111,7 @@ function cell(sheet: MisSheetInput, r: number, c: number): unknown {
 }
 
 function isBlank(v: unknown): boolean {
-  return v === null || v === undefined || String(v).trim() === "";
+  return v === null || v === undefined || String(v).replace(/[\u200b-\u200d\u2060]/g, "").trim() === "";
 }
 
 function colLetter(n: number): string {
@@ -142,25 +142,139 @@ export function excelSerialToDate(serial: number): string | null {
   return new Date(Math.round((Math.floor(serial) - 25569) * DAY_MS)).toISOString().slice(0, 10);
 }
 
-/** Parses a typed date, day first. Leading date only ("13/08/2026 - leave" works). */
-export function parseTextDate(input: string): string | null {
-  const s = input.trim().toLowerCase().replace(/(\d)(st|nd|rd|th)\b/g, "$1").replace(/,/g, " ");
-  let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)/.exec(s);
-  if (m) return ymd(+m[1], +m[2], +m[3]);
-  m = /^(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4}|\d{2})(?!\d)/.exec(s);
-  if (m) return ymd(+m[3], +m[2], +m[1]);
-  m = /^(\d{1,2})[-/. ]+([a-z]{3,9})\.?[-/. ]+(\d{4}|\d{2})(?!\d)/.exec(s);
-  if (m && MONTHS[m[2].slice(0, 3)]) return ymd(+m[3], MONTHS[m[2].slice(0, 3)], +m[1]);
-  m = /^([a-z]{3,9})\.?[-/. ]+(\d{1,2})[-/. ]+(\d{4}|\d{2})(?!\d)/.exec(s);
-  if (m && MONTHS[m[1].slice(0, 3)]) return ymd(+m[3], MONTHS[m[1].slice(0, 3)], +m[2]);
+// ---------------------------------------------------------------------------
+// Typed dates — forgiving: staff type dates in many ways and make small slips.
+// ---------------------------------------------------------------------------
+
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const MONTH_SHORT: Record<string, number> = { ...MONTHS, sept: 9, june: 6, july: 7 };
+
+function editDist(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1); // swapped letters
+    }
+  return d[a.length][b.length];
+}
+
+/** "Oct", "October", "Octobar", "Ocotber", "Sept", "Septmber", "Agust" … -> month number; null if not a month. */
+export function monthOf(word: string): number | null {
+  const w = word.toLowerCase().replace(/[^a-z]/g, "");
+  if (w.length < 3) return null;
+  if (MONTH_SHORT[w]) return MONTH_SHORT[w];
+  const exactPrefix = MONTH_NAMES.findIndex((n) => w.length >= 4 && n.startsWith(w));
+  if (exactPrefix >= 0) return exactPrefix + 1;
+  if (w.length === 3) {
+    // "Okt", "Spe" -> one letter off a 3-letter month, same first letter, and only one such month.
+    const near3 = Object.keys(MONTHS).filter((k) => k[0] === w[0] && editDist(w, k) === 1);
+    return near3.length === 1 ? MONTHS[near3[0]] : null;
+  }
+  const hits = MONTH_NAMES.map((n, i) => ({ i, d: Math.min(editDist(w, n), w.length < n.length ? editDist(w, n.slice(0, w.length)) : 99) })).filter(
+    (h) => h.d <= (w.length >= 6 ? 2 : 1) && MONTH_NAMES[h.i][0] === w[0],
+  );
+  const best = hits.sort((x, y) => x.d - y.d);
+  return best.length && (best.length === 1 || best[0].d < best[1].d) ? best[0].i + 1 : null;
+}
+
+const WEEKDAYS = /\b(mon|monday|tue|tues|tuesday|wed|weds|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)\b/g;
+
+interface DateParts {
+  y: number | null;
+  m: number;
+  d: number;
+  /** Numeric day/month that could also be read the other way round (both ≤ 12). */
+  ambiguous?: boolean;
+}
+
+/**
+ * Reads a typed date in any common form, day first (India): 21/10/2026,
+ * 21.10.26, 21-10-2026, 21 10 2026, 21..10.2026, 21 / 10 / 2026, 21st October
+ * 2026, 21 st Oct'26, 21-Oct, Tuesday, 21st of October 2026, October 21st,
+ * 2026, Oct 21, 21October2026, 21102026, 2026-10-21, 10/21/2026 (US, when
+ * the second number can only be a day), "Date: 21/10/2026 (Tue)", misspelt
+ * months ("Octobar", "Septmber") … The year may be missing (filled in from
+ * the other dates around it). Returns null for anything that isn't a date.
+ */
+export function parseDateParts(input: string): DateParts | null {
+  let s = ` ${input.toLowerCase().replace(/[\u200b-\u200d\u2060\ufeff]/g, "")} `
+    .replace(/[–—−]/g, "-")
+    .replace(/(\d)\s*(st|nd|rd|th)\b/g, "$1")
+    .replace(WEEKDAYS, " ")
+    .replace(/\b(date|dated|dt|day|on|of|the|for)\b\.?/g, " ")
+    .replace(/[(),:;_]/g, " ")
+    .replace(/'\s?(\d{2})\b/g, " 20$1") // Oct'26 -> Oct 2026 (the apostrophe marks a year)
+    .replace(/\s*([./-])[\s./-]*/g, "$1") // "21..10.2026", "21 / 10 / 2026" -> one separator
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[./-]+|[./-]+$/g, "");
+  if (!s) return null;
+  const yr = (t: string | undefined) => (t ? (t.length === 2 ? 2000 + Number(t) : Number(t)) : null);
+  const ok = (p: DateParts | null) => (p && (p.y === null ? ymd(2024, p.m, p.d) : ymd(p.y, p.m, p.d)) ? p : null); // 2024: leap year, so 29 Feb passes without a year
+  // The date must come first: only words like "Date", "dated", a weekday … may come before it (already removed),
+  // so notes such as "MIS pending of 01.09.2026" or "Updated 20-06-2026" are not read as dates.
+  const early = (idx: number) => idx === 0;
+  // A date without a year must be the whole cell ("21 Oct"), so "Jun-26 Qtr" (a month and year) isn't a date.
+  const whole = (m: RegExpExecArray) => m.index === 0 && m[0].length === s.length;
+
+  let m = /^(\d{2})(\d{2})(\d{4})$/.exec(s); // 21102026 — only for a plausible year, so amounts aren't read as dates
+  if (m) return +m[3] >= 2020 && +m[3] <= 2040 ? ok({ d: +m[1], m: +m[2], y: +m[3] }) : null;
+
+  m = /(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?!\d)/.exec(s);
+  if (m && early(m.index)) return ok({ y: +m[1], m: +m[2], d: +m[3] });
+
+  m = /(\d{1,2})[./ -](\d{1,2})[./ -](\d{4}|\d{2})(?!\d)(?![./-]\d)/.exec(s);
+  if (m && early(m.index)) {
+    const a = +m[1];
+    const b = +m[2];
+    if (a <= 12 && b > 12) return ok({ d: b, m: a, y: yr(m[3]) }); // 10/21/2026 — can only be US style
+    return ok({ d: a, m: b, y: yr(m[3]), ambiguous: a <= 12 && b <= 12 && a !== b });
+  }
+
+  m = /(\d{1,2})[./ -]?([a-z]{3,})\.?(?:[./ -]?(\d{4}|\d{2}))?(?![\d])/.exec(s);
+  if (m && early(m.index) && (m[3] || whole(m))) {
+    const mo = monthOf(m[2]);
+    if (mo) return ok({ d: +m[1], m: mo, y: yr(m[3]) });
+  }
+
+  m = /([a-z]{3,})\.?[./ -]?(\d{1,2})(?:[./ -](\d{4}|\d{2}))?(?![\d])/.exec(s);
+  // "October 21, 2026", "Oct 21" — but not "Jun-26" / "Jun 26" alone, which is how a month and year is written.
+  const looksLikeYear = (n: number) => n >= 20 && n <= 40 && !/\d\s*(st|nd|rd|th)\b/i.test(input); // "Jun 26" vs "Jun 26th"
+  if (m && early(m.index) && (m[3] || (whole(m) && !looksLikeYear(+m[2])))) {
+    const mo = monthOf(m[1]);
+    if (mo) return ok({ d: +m[2], m: mo, y: yr(m[3]) });
+  }
+
+  m = /^(\d{1,2})[./-](\d{1,2})$/.exec(s); // "21/10" — no year
+  if (m) return ok({ d: +m[1], m: +m[2], y: null, ambiguous: +m[1] <= 12 && +m[2] <= 12 && m[1] !== m[2] });
   return null;
 }
 
-/** Any single cell -> date, no context. */
-export function parseMisDate(raw: unknown): string | null {
-  if (typeof raw === "number") return excelSerialToDate(raw);
+/** Year for a date typed without one: the year that puts it closest to `near` (default: today). */
+function withYear(p: DateParts, near: string): string | null {
+  if (p.y !== null) return ymd(p.y, p.m, p.d);
+  const y0 = Number(near.slice(0, 4));
+  const options = [y0 - 1, y0, y0 + 1].map((y) => ymd(y, p.m, p.d)).filter((x): x is string => !!x);
+  return options.sort((a, b) => Math.abs(toMs(a) - toMs(near)) - Math.abs(toMs(b) - toMs(near)))[0] ?? null;
+}
+
+/** Parses a typed date, day first (see parseDateParts). A missing year is taken from `near` (default today). */
+export function parseTextDate(input: string, near?: string): string | null {
+  const p = parseDateParts(input);
+  return p ? withYear(p, near ?? new Date().toISOString().slice(0, 10)) : null;
+}
+
+/** Any single cell -> date. `near` = a date it should be close to (for a missing year). */
+export function parseMisDate(raw: unknown, near?: string): string | null {
+  if (typeof raw === "number") {
+    const d = excelSerialToDate(raw);
+    if (d) return d;
+    return Number.isInteger(raw) && raw >= 1012000 && raw <= 31129999 ? parseTextDate(String(raw).padStart(8, "0"), near) : null; // 21102026 typed as a number
+  }
   if (typeof raw !== "string" || !raw.trim()) return null;
-  const t = parseTextDate(raw);
+  const t = parseTextDate(raw, near);
   if (t) return t;
   if (/^\d{5}(\.\d+)?$/.test(raw.trim())) return excelSerialToDate(Number(raw));
   return null;
@@ -171,52 +285,161 @@ interface DateCell {
   date: string;
 }
 
+const addDay = (iso: string, n: number) => new Date(toMs(iso) + n * DAY_MS).toISOString().slice(0, 10);
+const isSunday = (iso: string) => new Date(toMs(iso)).getUTCDay() === 0;
+
 /**
- * Reads a header row of dates. Excel serials whose day is ≤ 12 may be
- * month/day-swapped; each is resolved to whichever reading sits closest to
- * its neighbours, since the dates run left to right in order.
+ * Reads a header row of dates (left to right, in order) and repairs slips
+ * using the dates around each one:
+ *   - day/month that could be either way (Excel's US-locale swap, 05/10) →
+ *     the reading closest to its neighbours;
+ *   - a date typed without a year → the year of the row;
+ *   - a wrong year or month (21/10/2025 or 21/11/2026 among October 2026) →
+ *     corrected when the corrected date fits between its neighbours;
+ *   - the same date typed twice in a row while the next day is missing →
+ *     the second one is the next working day (only in rows where dates are
+ *     otherwise unique, so sheets with two columns per day are left alone).
  */
 export function readDateRow(row: unknown[], fromCol = 0): DateCell[] {
   type Raw = { col: number; options: string[] };
-  const raws: Raw[] = [];
+  const parsed: { col: number; parts: DateParts | null; serial: string | null }[] = [];
   for (let c = fromCol; c < row.length; c++) {
     const v = row[c];
     if (typeof v === "number") {
       const d = excelSerialToDate(v);
-      if (!d) continue;
-      const [y, m, day] = d.split("-").map(Number);
-      const swapped = day <= 12 && day !== m ? ymd(y, day, m) : null;
-      raws.push({ col: c, options: swapped ? [d, swapped] : [d] });
+      if (d) parsed.push({ col: c, parts: null, serial: d });
+      else {
+        const t = Number.isInteger(v) ? parseDateParts(String(v).padStart(8, "0")) : null;
+        if (t && /^\d{7,8}$/.test(String(v))) parsed.push({ col: c, parts: t, serial: null });
+      }
     } else if (typeof v === "string") {
-      const d = parseMisDate(v);
-      if (d) raws.push({ col: c, options: [d] });
+      const p = parseDateParts(v);
+      if (p) parsed.push({ col: c, parts: p, serial: null });
+      else if (/^\d{5}(\.\d+)?$/.test(v.trim())) {
+        const d = excelSerialToDate(Number(v));
+        if (d) parsed.push({ col: c, parts: null, serial: d });
+      }
     }
   }
-  if (raws.length === 0) return [];
+  if (parsed.length === 0) return [];
 
+  // The row's year: from the dates that have one.
+  const years = parsed.map((p) => (p.serial ? Number(p.serial.slice(0, 4)) : p.parts!.y)).filter((y): y is number => y !== null);
+  const rowYear = years.length ? mode(years) : new Date().getUTCFullYear();
+  const months = parsed.map((p) => (p.serial ? Number(p.serial.slice(5, 7)) : p.parts!.m));
+  const near = `${rowYear}-${pad(mode(months))}-15`;
+
+  const raws: Raw[] = parsed
+    .map((p) => {
+      if (p.serial) {
+        const [y, m, day] = p.serial.split("-").map(Number);
+        const swapped = day <= 12 && day !== m ? ymd(y, day, m) : null;
+        return { col: p.col, options: swapped ? [p.serial, swapped] : [p.serial] };
+      }
+      // Typed text is read day first (as staff in India write it); only Excel's stored dates can be swapped.
+      const a = withYear(p.parts!, near);
+      return a ? { col: p.col, options: [a] } : null;
+    })
+    .filter((r): r is Raw => r !== null);
+  if (!raws.length) return [];
+
+  let out: DateCell[];
   const anchors = raws.filter((r) => r.options.length === 1);
   if (anchors.length === 0) {
     // Nothing unambiguous: take the reading (as typed vs swapped) that makes the dates most sequential.
     const spread = (pick: number) =>
       raws.reduce((sum, r, i) => (i === 0 ? 0 : sum + Math.abs(toMs(r.options[Math.min(pick, r.options.length - 1)]) - toMs(raws[i - 1].options[Math.min(pick, raws[i - 1].options.length - 1)]))), 0);
     const pick = spread(1) < spread(0) ? 1 : 0;
-    return raws.map((r) => ({ col: r.col, date: r.options[Math.min(pick, r.options.length - 1)] }));
-  }
-
-  const out: DateCell[] = [];
-  let last: string | null = null;
-  for (let i = 0; i < raws.length; i++) {
-    const r = raws[i];
-    let date = r.options[0];
-    if (r.options.length > 1) {
-      const ref = last ?? raws.slice(i + 1).find((x) => x.options.length === 1)?.options[0] ?? null;
-      if (ref) {
-        const dist = (d: string) => Math.abs(toMs(d) - toMs(ref));
-        date = r.options.reduce((best, d) => (dist(d) < dist(best) ? d : best));
+    out = raws.map((r) => ({ col: r.col, date: r.options[Math.min(pick, r.options.length - 1)] }));
+  } else {
+    out = [];
+    let last: string | null = null;
+    for (let i = 0; i < raws.length; i++) {
+      const r = raws[i];
+      let date = r.options[0];
+      if (r.options.length > 1) {
+        const ref = last ?? raws.slice(i + 1).find((x) => x.options.length === 1)?.options[0] ?? null;
+        if (ref) {
+          const dist = (d: string) => Math.abs(toMs(d) - toMs(ref));
+          date = r.options.reduce((best, d) => (dist(d) < dist(best) ? d : best));
+        }
       }
+      out.push({ col: r.col, date });
+      last = date;
     }
-    out.push({ col: r.col, date });
-    last = date;
+  }
+  return repairRow(out);
+}
+
+function mode(xs: number[]): number {
+  const c = new Map<number, number>();
+  for (const x of xs) c.set(x, (c.get(x) ?? 0) + 1);
+  return [...c].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
+}
+
+/**
+ * A date out of order between two close neighbours (21/10, 22/11, 23/10 or
+ * 21/10/26, 22/10/25, 23/10/26) -> the same day in the neighbours' month/year,
+ * when that fits between them. Used for header rows and for dates down a column.
+ */
+export function fixOutOfOrder(cells: DateCell[]): DateCell[] {
+  const out = cells.map((c) => ({ ...c }));
+  for (let i = 1; i < out.length - 1; i++) {
+    const prev = out[i - 1].date;
+    const next = out[i + 1].date;
+    const x = out[i].date;
+    if ((prev <= x && x <= next) || prev > next || toMs(next) - toMs(prev) > 10 * DAY_MS) continue;
+    const d = Number(x.slice(8, 10));
+    const m = Number(x.slice(5, 7));
+    const tries = [prev, next].flatMap((n) => [ymd(Number(n.slice(0, 4)), Number(n.slice(5, 7)), d), ymd(Number(n.slice(0, 4)), Number(n.slice(5, 7)), m), ymd(Number(n.slice(0, 4)), m, d)]);
+    const fit = tries.find((t): t is string => !!t && prev <= t && t <= next);
+    if (fit) out[i].date = fit;
+  }
+  return out;
+}
+
+/** Fixes a wrong year/month and an isolated repeated date (see readDateRow). Rows with fewer than 3 dates are left alone. */
+function repairRow(cells: DateCell[]): DateCell[] {
+  if (cells.length < 3) return cells;
+  // Only rows that look like a month of MIS days (nearly all dates within ~6 weeks) are repaired —
+  // never lists of other dates (NAV dates, due dates …) that happen to be in a row.
+  const FAR = 45 * DAY_MS;
+  const ms0 = cells.map((c) => toMs(c.date)).sort((a, b) => a - b);
+  const median0 = ms0[Math.floor(ms0.length / 2)];
+  const close = ms0.filter((m) => Math.abs(m - median0) <= FAR).length;
+  if (close < cells.length - Math.max(1, Math.floor(cells.length / 5))) return cells;
+  const out = fixOutOfOrder(cells);
+  const sortedMs = out.map((c) => toMs(c.date)).sort((a, b) => a - b);
+  const median = sortedMs[Math.floor(sortedMs.length / 2)];
+  for (let i = 0; i < out.length; i++) {
+    const ms = toMs(out[i].date);
+    if (Math.abs(ms - median) <= FAR) continue;
+    const prev = out.slice(0, i).reverse().find((c) => Math.abs(toMs(c.date) - median) <= FAR)?.date ?? null;
+    const next = out.slice(i + 1).find((c) => Math.abs(toMs(c.date) - median) <= FAR)?.date ?? null;
+    const [y, m, d] = out[i].date.split("-").map(Number);
+    const my = new Date(median).getUTCFullYear();
+    const candidates = [
+      ymd(my, m, d),
+      ymd(my - 1, m, d),
+      ymd(my + 1, m, d),
+      ymd(y, d, m),
+      ymd(my, d, m),
+      ...(prev ? [ymd(Number(prev.slice(0, 4)), Number(prev.slice(5, 7)), d)] : []),
+      ...(next ? [ymd(Number(next.slice(0, 4)), Number(next.slice(5, 7)), d)] : []),
+    ].filter((x): x is string => !!x && Math.abs(toMs(x) - median) <= FAR && (!prev || x > prev) && (!next || x < next));
+    if (candidates.length) out[i].date = candidates.sort((a, b) => Math.abs(toMs(a) - median) - Math.abs(toMs(b) - median))[0];
+  }
+  // The same date typed twice while the next day is missing. Only when repeats are rare
+  // (sheets with two columns per day repeat every date and are left alone).
+  const repeats = out.filter((c, i) => i > 0 && c.date === out[i - 1].date).length;
+  if (repeats > 0 && repeats <= Math.max(1, Math.floor(out.length / 10))) {
+    for (let i = 1; i < out.length; i++) {
+      if (out[i].date !== out[i - 1].date) continue;
+      const next = out[i + 1]?.date ?? null;
+      let cand = addDay(out[i - 1].date, 1);
+      if (isSunday(cand) && (!next || addDay(cand, 1) < next)) cand = addDay(cand, 1);
+      if ((!next || cand < next) && !out.some((c) => c.date === cand)) out[i].date = cand;
+    }
   }
   return out;
 }
@@ -224,7 +447,6 @@ export function readDateRow(row: unknown[], fromCol = 0): DateCell[] {
 // ---------------------------------------------------------------------------
 // Layout 1: dates across a header row, particulars down the side
 // ---------------------------------------------------------------------------
-
 interface ColumnLayout {
   sheet: MisSheetInput;
   headerIndex: number;
@@ -617,12 +839,24 @@ function checkRows(layouts: RowLayout[], opts: MisCheckOptions): MisCheckResult 
     for (const c of l.columns) if (c.idx !== l.dateIndex) fields.set(c.name, requiredNames.has(c.name) || fields.get(c.name) === true);
     const required = l.columns.filter((c) => requiredNames.has(c.name));
 
+    // Typed dates down the column, with slips fixed from the rows around them (fixOutOfOrder).
+    const typed: DateCell[] = [];
+    for (let r = l.headerIndex + 1; r < l.sheet.values.length; r++) {
+      const raw = cell(l.sheet, r, l.dateIndex);
+      const d = isBlank(raw) ? null : parseMisDate(raw, opts.date);
+      if (d) typed.push({ col: r, date: d });
+    }
+    const fixedDate = new Map(fixOutOfOrder(typed).map((c) => [c.col, c.date]));
+
     let carried: string | null = null;
     for (let r = l.headerIndex + 1; r < l.sheet.values.length; r++) {
       const raw = cell(l.sheet, r, l.dateIndex);
       let rowDate: string | null;
       if (!isBlank(raw)) {
-        rowDate = parseMisDate(raw);
+        rowDate = fixedDate.get(r) ?? null;
+        // Wrong year typed (21/10/2025 in the October 2026 rows): same day and month, year off by one,
+        // and the row before is close to the day being checked -> it is that day.
+        if (rowDate && rowDate !== opts.date && rowDate.slice(5) === opts.date.slice(5) && Math.abs(Number(rowDate.slice(0, 4)) - Number(opts.date.slice(0, 4))) === 1 && carried && Math.abs(toMs(carried) - toMs(opts.date)) <= 45 * DAY_MS) rowDate = opts.date;
         carried = rowDate;
       } else {
         // Blank date: belongs to the day above it, but only if the row has data.

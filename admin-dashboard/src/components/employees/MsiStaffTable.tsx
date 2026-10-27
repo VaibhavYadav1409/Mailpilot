@@ -12,6 +12,7 @@ import { isMsiStaffLogin } from './staffKind';
 import { MisConnectionCard } from './MisConnectionCard';
 import { MisSourcesPanel } from './MisSourcesPanel';
 import { MisImportPanel } from './MisImportPanel';
+import { MasterListPanel } from './MasterListPanel';
 import { personStatus, useMisSources, type MisSource } from './misApi';
 import Link from 'next/link';
 import { CIRCLES_PER_DEDUCTION, useCircleMonth } from '@/components/mis/circleApi';
@@ -119,6 +120,7 @@ export function MsiStaffTable() {
     <div className="space-y-3">
       <MisConnectionCard canManage={canManage} />
       <MisLegend />
+      {canManage && showImport && <MasterListPanel />}
       {canManage && showImport && <MisImportPanel />}
 
       <div className="glass-card overflow-hidden">

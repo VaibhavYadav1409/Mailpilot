@@ -74,6 +74,9 @@ export const isCircleCode = (code: string | null | undefined) => !!code && BY_CO
 
 const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SAT"];
 
+/** Reason shown on the extra Saturday off (people with 2 Saturdays off a month). */
+export const EXTRA_SATURDAY_REASON = "Saturday off — 2 Saturdays off every month (the 2nd Saturday and this one).";
+
 export function weekday(date: string): number {
   return new Date(`${date}T00:00:00Z`).getUTCDay();
 }
@@ -390,7 +393,7 @@ export async function getCircleMonth(
           { misCircleMarks: { some: { date: { gte: first, lte: last } } } },
         ],
       },
-      select: { id: true, firstName: true, lastName: true, email: true, misSaturdaysOff: true, _count: { select: { misSources: true } } },
+      select: { id: true, firstName: true, lastName: true, email: true, misSaturdaysOff: true, misExtraSaturdayOff: true, _count: { select: { misSources: true } } },
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
     }),
     prisma.misCircleMark.findMany({
@@ -429,6 +432,11 @@ export async function getCircleMonth(
     const cells: Record<string, CircleCell> = {};
     let finalCircles = 0;
     let pendingCircles = 0;
+    // 2 Saturdays off a month: the 2nd Saturday + one more. A working Saturday HR already marked SO
+    // (or an SO leave) is that one; otherwise it is the first working Saturday whose MIS wasn't done.
+    let extraSaturdayFree =
+      e.misExtraSaturdayOff &&
+      !dates.some((d) => weekday(d) === 6 && !offDay(d, pcal) && ((markOf.get(`${e.id}|${d}`)?.source === "MANUAL" && markOf.get(`${e.id}|${d}`)?.code === "SO") || leaves.get(`${e.id}|${d}`)?.code === "SO"));
     for (const date of dates) {
       const k = `${e.id}|${date}`;
       const m = markOf.get(k);
@@ -467,6 +475,10 @@ export async function getCircleMonth(
         cell = { code: d.code, source: "AUTO", note: null, pending: false, autoCode: null, reason: d.reason, markedBy: AUTO_BY, evidence: null };
       } else {
         cell = { code: null, source: null, note: null, pending: false, autoCode: null, reason: null, markedBy: null, evidence: null };
+      }
+      if (extraSaturdayFree && weekday(date) === 6 && cell.source === "AUTO" && cell.code === "CM") {
+        extraSaturdayFree = false;
+        cell = { code: "SO", source: "CALENDAR", note: null, pending: false, autoCode: "CM", reason: EXTRA_SATURDAY_REASON, markedBy: "Calendar", evidence: cell.evidence };
       }
       // An automatic result can still change until its deadline (12:00 PM on the next working day).
       cell.pending = cell.source === "AUTO" && now < deadlineFor(date, pcal).at;

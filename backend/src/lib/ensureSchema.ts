@@ -211,6 +211,8 @@ const STATEMENTS: { migration: string; sql: string }[] = [
   { migration: "20261012120000_mis_leave", sql: `CREATE UNIQUE INDEX IF NOT EXISTS "MisLeaveSettings_token_key" ON "MisLeaveSettings"("token")` },
   // Every Saturday off for chosen MIS staff (personal calendar).
   { migration: "20261022120000_mis_saturdays_off", sql: `ALTER TABLE "Employee" ADD COLUMN IF NOT EXISTS "misSaturdaysOff" BOOLEAN NOT NULL DEFAULT false` },
+  // 2 Saturdays off a month for chosen MIS staff (the 2nd + one more).
+  { migration: "20261027120000_mis_extra_saturday", sql: `ALTER TABLE "Employee" ADD COLUMN IF NOT EXISTS "misExtraSaturdayOff" BOOLEAN NOT NULL DEFAULT false` },
   // Only the first To address has to reply.
   { migration: "20261022130000_email_first_to_replies", sql: `ALTER TABLE "Email" ADD COLUMN IF NOT EXISTS "isSecondaryTo" BOOLEAN NOT NULL DEFAULT false` },
   { migration: "20261022130000_email_first_to_replies", sql: `CREATE INDEX IF NOT EXISTS "Email_gmailAccountId_isSecondaryTo_idx" ON "Email"("gmailAccountId", "isSecondaryTo")` },
