@@ -20,7 +20,7 @@ const menuItems = [
   { icon: FileText, label: 'Reports', href: '/reports', minRole: 'ADMIN' },
   // MIS Daily Work Report — CEO/COO/ADMIN overview of employee daily submissions.
   { icon: ClipboardList, label: 'MIS Reports', href: '/msi-reports', minRole: 'ADMIN' },
-  // Monthly red-circle sheet: every 3 missed MIS = 1 day's salary deducted.
+  // Monthly red-circle sheet: every 5 missed MIS = 1 day's salary deducted.
   { icon: CircleAlert, label: 'MIS Circle Report', href: '/mis-circle', minRole: 'ADMIN' },
   // Google leave form → approved leave (no MIS needed, never a red circle) + holidays.
   { icon: CalendarCheck, label: 'Leave Records', href: '/mis-leave', minRole: 'ADMIN' },

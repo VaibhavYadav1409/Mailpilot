@@ -30,22 +30,23 @@ describe("autoCodeFor", () => {
   });
 });
 
-describe("summarize — every 3 red circles = 1 day's salary", () => {
+describe("summarize — every 5 red circles = 1 day's salary", () => {
   it.each([
-    [0, 0, 3],
-    [1, 0, 2],
-    [2, 0, 1],
-    [3, 1, 3],
-    [5, 1, 1],
-    [6, 2, 3],
-    [7, 2, 2],
+    [0, 0, 5],
+    [1, 0, 4],
+    [3, 0, 2],
+    [4, 0, 1],
+    [5, 1, 5],
+    [7, 1, 3],
+    [10, 2, 5],
+    [12, 2, 3],
   ])("%i circles → %i day(s) deducted, %i more until the next", (circles, days, next) => {
     const s = c.summarize(circles);
     expect(s.deductionDays).toBe(days);
     expect(s.untilNextDeduction).toBe(next);
   });
   it("explains a pending circle that would trigger a deduction", () => {
-    expect(c.summarize(2, 1).message).toMatch(/1 day will be deducted/);
+    expect(c.summarize(4, 1).message).toMatch(/1 day will be deducted/);
   });
 });
 
@@ -72,30 +73,32 @@ function personWith(circleDates: string[], pending?: string) {
 
 describe("red circle details — which circle cost which day", () => {
   const dates = c.monthDates("2026-10");
-  it("numbers circles in date order and marks every 3rd as a deduction", () => {
-    const cells = personWith(["2026-10-01", "2026-10-05", "2026-10-07", "2026-10-12", "2026-10-14", "2026-10-21", "2026-10-22"]);
+  it("numbers circles in date order and marks every 5th as a deduction", () => {
+    const days = ["01", "03", "05", "06", "07", "08", "09", "12", "13", "14", "15"].map((d) => `2026-10-${d}`);
+    const cells = personWith(days);
     const e = c.redCircleEntries({ cells }, dates);
-    expect(e.map((x) => x.number)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(e.filter((x) => x.triggersDeduction).map((x) => x.date)).toEqual(["2026-10-07", "2026-10-21"]);
-    expect(e[2].effect).toBe("3rd red circle → 1st day's salary deducted.");
-    expect(e[5].effect).toBe("6th red circle → 2nd day's salary deducted.");
-    expect(e[0].effect).toBe("1st red circle — 2 more = 1st day's salary deducted.");
-    expect(e[6].effect).toBe("7th red circle — 2 more = 3rd day's salary deducted.");
+    expect(e.map((x) => x.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(e.filter((x) => x.triggersDeduction).map((x) => x.date)).toEqual(["2026-10-07", "2026-10-14"]);
+    expect(e[4].effect).toBe("5th red circle → 1st day's salary deducted.");
+    expect(e[9].effect).toBe("10th red circle → 2nd day's salary deducted.");
+    expect(e[0].effect).toBe("1st red circle — 4 more = 1st day's salary deducted.");
+    expect(e[10].effect).toBe("11th red circle — 4 more = 3rd day's salary deducted.");
     expect(e[0].reason).toMatch(/24 of 30/);
-    expect(c.deductionTriggers(e)).toBe("Day 1: 3rd circle on 07-10-2026 · Day 2: 6th circle on 21-10-2026");
+    expect(c.deductionTriggers(e)).toBe("Day 1: 5th circle on 07-10-2026 · Day 2: 10th circle on 14-10-2026");
   });
   it("keeps a pending circle out of the count and says what would happen", () => {
-    const cells = personWith(["2026-10-05", "2026-10-06"], "2026-10-07");
+    const cells = personWith(["2026-10-01", "2026-10-03", "2026-10-05", "2026-10-06"], "2026-10-07");
     const e = c.redCircleEntries({ cells }, dates);
-    expect(e.map((x) => x.number)).toEqual([1, 2, null]);
-    expect(e[2].effect).toMatch(/becomes the 3rd red circle and the 1st day's salary is deducted/);
+    expect(e.map((x) => x.number)).toEqual([1, 2, 3, 4, null]);
+    expect(e[4].effect).toMatch(/becomes the 5th red circle and the 1st day's salary is deducted/);
   });
   it.each([
     [0, "0 red circles → 0 days."],
-    [2, "2 red circles ÷ 3 = 0 days — a deduction starts only at the 3rd red circle."],
-    [3, "3 red circles ÷ 3 = 1 day."],
-    [6, "6 red circles ÷ 3 = 2 days."],
-    [7, "7 red circles ÷ 3 = 2 days (1 circle left over, counting towards the next day)."],
+    [4, "4 red circles ÷ 5 = 0 days — a deduction starts only at the 5th red circle."],
+    [5, "5 red circles ÷ 5 = 1 day."],
+    [10, "10 red circles ÷ 5 = 2 days."],
+    [11, "11 red circles ÷ 5 = 2 days (1 circle left over, counting towards the next day)."],
+    [12, "12 red circles ÷ 5 = 2 days (2 circles left over, counting towards the next day)."],
   ])("writes the sum out for %i circles", (n, text) => {
     expect(c.deductionCalculation(n)).toBe(text);
   });
@@ -182,9 +185,9 @@ describe("circleWorkbook", () => {
       "Day by Day",
       "Rules &amp; Codes",
       "Anjali Jha",
-      "6th red circle → 2nd day",
+      "5th red circle → 1st day",
       "24 of 30 usual entries",
-      "2 red circles ÷ 3 = 0 days",
+      "2 red circles ÷ 5 = 0 days",
       "08-10-2026 12:00 PM", // deadline for 7 Oct = Thu 8 Oct 12:00 PM
       "07-10-2026 05:30 PM", // Excel saved before the deadline
       "09-10-2026 09:30 AM", // filled late

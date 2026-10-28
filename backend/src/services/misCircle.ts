@@ -3,7 +3,7 @@
  * staff down the side, the days of the month across the top, one code per
  * cell. A RED CIRCLE (CM) means the MIS for that day was not submitted.
  *
- *   Every 3 red circles in a calendar month = 1 day's salary deducted.
+ *   Every 5 red circles in a calendar month = 1 day's salary deducted (3 until 28 Oct 2026).
  *   They don't need to be consecutive. The count starts again each month.
  *
  * Cells fill themselves from the MIS check (CM / NC / IN) and the working
@@ -33,7 +33,7 @@ import {
 import { addDays, dateColumnValue } from "./msiService";
 
 /** How many red circles cost one day's salary. */
-export const CIRCLES_PER_DEDUCTION = 3;
+export const CIRCLES_PER_DEDUCTION = 5;
 
 export type CircleTone = "red" | "green" | "amber" | "grey" | "blue" | "purple";
 
@@ -674,7 +674,7 @@ export function redCircleEntries(row: Pick<CircleRow, "cells">, dates: string[])
   return out;
 }
 
-/** The sum written out: "7 red circles ÷ 3 = 2 days (1 left over)". */
+/** The sum written out: "12 red circles ÷ 5 = 2 days (2 left over)". */
 export function deductionCalculation(circles: number): string {
   const days = Math.floor(circles / CIRCLES_PER_DEDUCTION);
   const rest = circles % CIRCLES_PER_DEDUCTION;
@@ -716,7 +716,7 @@ type Row = (XlsxCell | string | number | null)[];
 
 /** Worked examples shown on the Rules tab. */
 export function deductionExamples(): { circles: number; days: number; why: string }[] {
-  return [0, 1, 2, 3, 4, 5, 6, 7, 9, 10].map((c) => ({ circles: c, days: Math.floor(c / CIRCLES_PER_DEDUCTION), why: deductionCalculation(c) }));
+  return [0, 1, 4, 5, 6, 9, 10, 11, 15].map((c) => ({ circles: c, days: Math.floor(c / CIRCLES_PER_DEDUCTION), why: deductionCalculation(c) }));
 }
 
 /**

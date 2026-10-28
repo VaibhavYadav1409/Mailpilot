@@ -342,8 +342,8 @@ function CircleCard({ data }: { data: MyCircle }) {
         </div>
       )}
       <p className="text-xs text-muted-foreground">
-        CM = red circle (MIS not filled by the deadline — 12:00 PM on the next working day). Every 3 red circles in a month = 1 day's salary
-        deducted — they don't need to be in a row; 1 or 2 circles means no deduction yet. The count restarts on the 1st. Leave, on duty, Sundays,
+        CM = red circle (MIS not filled by the deadline — 12:00 PM on the next working day). Every 5 red circles in a month = 1 day's salary
+        deducted — they don't need to be in a row; 1 to 4 circles means no deduction yet. The count restarts on the 1st. Leave, on duty, Sundays,
         2nd Saturdays and holidays never count. Filling after the deadline is recorded as "filled late" and the circle stays.
       </p>
     </Card>

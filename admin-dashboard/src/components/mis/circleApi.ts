@@ -89,7 +89,7 @@ export interface CircleMonth {
   status: { final: boolean; text: string };
 }
 
-export const CIRCLES_PER_DEDUCTION = 3;
+export const CIRCLES_PER_DEDUCTION = 5;
 
 export const TONE_CELL: Record<CircleTone, string> = {
   red: 'bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-300 font-bold',
@@ -178,7 +178,7 @@ export function redCircleEntries(row: CircleRow, data: CircleMonth): RedCircleEn
   return out;
 }
 
-/** "7 red circles ÷ 3 = 2 days (1 left over …)" */
+/** "12 red circles ÷ 5 = 2 days (2 left over …)" */
 export function deductionCalculation(circles: number) {
   const days = Math.floor(circles / CIRCLES_PER_DEDUCTION);
   const rest = circles % CIRCLES_PER_DEDUCTION;

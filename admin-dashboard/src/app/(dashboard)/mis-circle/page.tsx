@@ -350,7 +350,7 @@ function RulesCard({ data }: { data: CircleMonth }) {
               </li>
             </ul>
             <p className="text-xs text-gray-500 mt-3">
-              Example: CM on 3rd, 9th and 21st = 3 red circles = 1 day's salary deducted. 1 or 2 circles = no deduction yet. 5 circles = still 1 day; the 6th makes it
+              Example: CM on 3rd, 7th, 9th, 15th and 21st = 5 red circles = 1 day's salary deducted. 1 to 4 circles = no deduction yet. 9 circles = still 1 day; the 10th makes it
               2 days.
             </p>
             <p className="text-xs text-gray-500 mt-2">

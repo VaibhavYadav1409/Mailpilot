@@ -29,10 +29,10 @@ const c = await import("../src/services/misCircle");
 const now = new Date("2026-10-12T08:00:00Z");
 
 describe("leave records change the Circle Report (also for past days)", () => {
-  it("without leave: 3 red circles = 1 day's salary", async () => {
+  it("without leave: 3 red circles — no deduction yet (5 = 1 day's salary)", async () => {
     state.leaves = [];
     const m = await c.getCircleMonth("co", "2026-10", { now });
-    expect(m.rows[0].summary).toMatchObject({ circles: 3, deductionDays: 1 });
+    expect(m.rows[0].summary).toMatchObject({ circles: 3, deductionDays: 0, untilNextDeduction: 2 });
   });
   it("approved planned leave on 6–7 Oct turns those days into OL — 1 circle, no deduction", async () => {
     state.leaves = [
