@@ -74,7 +74,7 @@ export interface MisBlank {
 
 export interface MisCheckResult {
   status: MisStatus;
-  layout: "DAY_COLUMNS" | "DAY_ROWS" | null;
+  layout: "DAY_COLUMNS" | "DAY_ROWS" | "DAY_BLOCKS" | null;
   /** Sheet the day was found on. */
   sheet: string | null;
   /** DAY_COLUMNS: required fields that are filled. DAY_ROWS: rows dated that day. */
@@ -893,6 +893,236 @@ function checkRows(layouts: RowLayout[], opts: MisCheckOptions): MisCheckResult 
 }
 
 // ---------------------------------------------------------------------------
+// Layout 3: one block of rows per day, stacked down a sheet
+// ---------------------------------------------------------------------------
+//
+//            DATE:  28/10/2026            <- the day's block starts here
+//   CLIENT CODE  C5     N11    R21 …
+//   SHARES VALUE NIL    NIL    NIL
+//   MTM          -3180  2810   -42
+//   A) MARGIN FILE SENT, DATE   27 Oct 2026
+//   …
+//            DATE:  29/10/2026            <- the next day's block
+//
+// The day's boxes are learned from the day's own block compared with the
+// blocks before it: a cell is a box when it is usually filled; text that is
+// the same in every block (row labels, client codes) is a label, not a box.
+
+interface DayBlock {
+  date: string;
+  /** First and last row (inclusive) of the block. */
+  from: number;
+  to: number;
+}
+
+interface BlockLayout {
+  sheet: MisSheetInput;
+  blocks: DayBlock[];
+}
+
+/** "DATE", "Date :", "Dated -" — a cell that labels the date next to it. */
+const DATE_LABEL = /^\s*(date|dated|dt)\s*[:.\-]?\s*$/i;
+/** Answers that may be the same every day and still count as filled boxes. */
+const ANSWER_WORD = /^(nil+|n\.?\s?a\.?|ok|okay|yes|no|done|-+|0|na)$/i;
+
+/** The date a row starts a day's block with ("DATE:" + a date to its right, or "Date: 29/10/2026"), or null. */
+function blockStartDate(row: unknown[], near: string): string | null {
+  for (let c = 0; c < Math.min(row.length, 60); c++) {
+    const v = row[c];
+    if (typeof v !== "string") continue;
+    if (DATE_LABEL.test(v)) {
+      for (let k = c + 1; k <= c + 4 && k < row.length; k++) {
+        if (isBlank(row[k])) continue;
+        return parseMisDate(row[k], near);
+      }
+      return null;
+    }
+    if (/^\s*(date|dated|dt)\s*[:.\-]/i.test(v)) {
+      const d = parseMisDate(v, near);
+      if (d) return d;
+    }
+  }
+  return null;
+}
+
+/** A sheet made of day blocks: at least 2 rows that start a block, on different dates. */
+function findBlockLayout(sheet: MisSheetInput, near: string): BlockLayout | null {
+  const starts: { row: number; date: string }[] = [];
+  for (let r = 0; r < sheet.values.length; r++) {
+    const row = sheet.values[r] ?? [];
+    const d = blockStartDate(row, near);
+    if (!d) continue;
+    // A header row with many dates (dates across the top) is not a block start.
+    if (row.filter((v) => !isBlank(v) && parseMisDate(v, near)).length > 2) continue;
+    if (starts.length && r - starts[starts.length - 1].row < 3) continue;
+    starts.push({ row: r, date: d });
+  }
+  if (starts.length < 2 || new Set(starts.map((s) => s.date)).size < 2) return null;
+  // Dates typed with a slip (wrong year/month) are fixed from the blocks around them.
+  const fixed = fixOutOfOrder(starts.map((s) => ({ col: s.row, date: s.date })));
+  const lengths = starts.slice(1).map((s, i) => s.row - starts[i].row).sort((a, b) => a - b);
+  const usual = lengths[Math.floor(lengths.length / 2)];
+  const blocks = starts.map((s, i) => ({
+    date: fixed[i].date,
+    from: s.row,
+    to: i + 1 < starts.length ? starts[i + 1].row - 1 : Math.min(sheet.values.length - 1, s.row + Math.ceil(usual * 1.5)),
+  }));
+  return { sheet, blocks };
+}
+
+/** The text that names a row of a block: its first text cell that isn't a number or a date. */
+function rowLabel(row: unknown[]): string | null {
+  for (const v of row) {
+    if (typeof v !== "string" || !v.trim()) continue;
+    const t = normHeader(v);
+    if (/^[\d\s.,%₹+-]+$/.test(t) || parseMisDate(t)) return null;
+    return t;
+  }
+  return null;
+}
+
+/** Every cell of a block, keyed by its row (label, or position when unlabelled) and column. */
+function blockCells(l: BlockLayout, b: DayBlock): Map<string, { r: number; c: number; v: unknown }> {
+  const out = new Map<string, { r: number; c: number; v: unknown }>();
+  const seen = new Map<string, number>();
+  for (let r = b.from + 1; r <= b.to; r++) {
+    const row = l.sheet.values[r] ?? [];
+    const label = rowLabel(row);
+    let rk = label ? `L:${looseKey(label)}` : `@${r - b.from}`;
+    const n = (seen.get(rk) ?? 0) + 1; // the same label twice in a block
+    seen.set(rk, n);
+    if (n > 1) rk += `#${n}`;
+    for (let c = 0; c < row.length; c++) out.set(`${rk}|${c}`, { r, c, v: row[c] });
+    if (!row.length) out.set(`${rk}|0`, { r, c: 0, v: null });
+  }
+  return out;
+}
+
+const textOf = (v: unknown) => (isBlank(v) ? "" : normHeader(v));
+
+function checkBlocks(layouts: BlockLayout[], opts: MisCheckOptions): MisCheckResult | null {
+  let owner: { l: BlockLayout; b: DayBlock } | null = null;
+  for (const l of layouts) for (const b of l.blocks) if (b.date === opts.date) owner = { l, b };
+  if (!owner) return null;
+  const { l, b } = owner;
+  const today = blockCells(l, b);
+  const earlier = layouts
+    .flatMap((x) => x.blocks.map((blk) => ({ l: x, b: blk })))
+    .filter((x) => x.b.date < opts.date && !opts.isOffDay?.(x.b.date))
+    .sort((x, y) => (x.b.date < y.b.date ? 1 : -1))
+    .slice(0, 5)
+    .map((x) => blockCells(x.l, x.b));
+
+  const boxes: string[] = [];
+  if (earlier.length >= 2) {
+    const keys = new Set(earlier.flatMap((m) => [...m.keys()]));
+    for (const k of keys) {
+      const values = earlier.map((m) => textOf(m.get(k)?.v));
+      const filledIn = values.filter(Boolean).length;
+      if (filledIn * 2 < earlier.length) continue; // usually empty: not a box
+      // The same text in every block (and today) = a label (row names, client codes), not a box.
+      const t = textOf(today.get(k)?.v);
+      const same = values.every((x) => x === values[0]) && (!t || t === values[0]);
+      if (same && /[a-z]/i.test(values[0]) && !ANSWER_WORD.test(values[0])) continue;
+      if (k.includes("|") && rowIsLabelColumn(k, earlier)) continue;
+      boxes.push(k);
+    }
+  } else {
+    // No earlier blocks to learn from: every filled cell today that isn't a row name counts.
+    for (const [k, x] of today) if (!isBlank(x.v) && rowLabel([x.v]) === null) boxes.push(k);
+  }
+
+  const blanks: MisBlank[] = [];
+  let filled = 0;
+  for (const k of boxes) {
+    const x = today.get(k);
+    if (x && !isBlank(x.v)) filled++;
+    else {
+      const rk = k.split("|")[0];
+      const ref = x ?? findCellOf(l, b, k, earlier);
+      blanks.push({ sheet: l.sheet.name, cell: ref ? a1(l.sheet, ref.r, ref.c) : "", field: rk.startsWith("L:") ? labelText(l, b, rk) : "row " + rk.slice(1) });
+    }
+  }
+  const total = boxes.length;
+  if (filled === 0) {
+    return {
+      status: "MISSING",
+      layout: "DAY_BLOCKS",
+      sheet: l.sheet.name,
+      filledCount: 0,
+      missingFields: [],
+      blanks: [],
+      blankCount: total,
+      fields: [],
+      note: `Not filled for ${fmt(opts.date)} — the day's block has a date but its boxes are blank.`,
+    };
+  }
+  // Copied: every box exactly as in the day before (with enough boxes to be sure).
+  if (opts.detectCopies !== false && earlier.length && total >= 10) {
+    const prev = earlier[0];
+    const changing = boxes.filter((k) => new Set(earlier.map((m) => textOf(m.get(k)?.v))).size > 1);
+    if (changing.length >= 5 && boxes.every((k) => textOf(today.get(k)?.v) === textOf(prev.get(k)?.v))) {
+      return {
+        status: "MISSING",
+        layout: "DAY_BLOCKS",
+        sheet: l.sheet.name,
+        filledCount: filled,
+        missingFields: [],
+        blanks: [],
+        blankCount: 0,
+        copiedFrom: null,
+        fields: [],
+        note: `Copied — every entry for ${fmt(opts.date)} is exactly the same as the day before, including figures that change every day. A copied day counts as not filled.`,
+      };
+    }
+  }
+  const complete = total === 0 || meetsCompletePercent(filled, total);
+  const share = `${filled} of ${total} boxes filled (${percentOf(filled, total)}%)`;
+  const missingFields = [...new Set(blanks.map((x) => x.field))];
+  return {
+    status: complete ? "COMPLETE" : "INCOMPLETE",
+    layout: "DAY_BLOCKS",
+    sheet: l.sheet.name,
+    filledCount: filled,
+    missingFields,
+    blanks: blanks.slice(0, 50),
+    blankCount: blanks.length,
+    fields: missingFields.map((name) => ({ name, required: true })),
+    note: complete ? `${share}.` : `Incomplete — ${share}; at least ${COMPLETE_PERCENT}% (${boxesNeeded(total)} of ${total}) is needed.`,
+  };
+}
+
+/** The column holding the row names (the label column) is never a box. */
+function rowIsLabelColumn(k: string, earlier: Map<string, { r: number; c: number; v: unknown }>[]): boolean {
+  const [rk, c] = k.split("|");
+  if (!rk.startsWith("L:")) return false;
+  const v = earlier.map((m) => m.get(k)?.v).find((x) => !isBlank(x));
+  return v !== undefined && looseKey(v) === rk.slice(2) && Number(c) >= 0;
+}
+
+function findCellOf(l: BlockLayout, b: DayBlock, k: string, earlier: Map<string, { r: number; c: number; v: unknown }>[]) {
+  const [rk, c] = k.split("|");
+  for (let r = b.from + 1; r <= b.to; r++) {
+    const label = rowLabel(l.sheet.values[r] ?? []);
+    if ((label ? `L:${looseKey(label)}` : `@${r - b.from}`) === rk.split("#")[0]) return { r, c: Number(c) };
+  }
+  void earlier;
+  return null;
+}
+
+function labelText(l: BlockLayout, b: DayBlock, rk: string): string {
+  for (let r = b.from + 1; r <= b.to; r++) {
+    const label = rowLabel(l.sheet.values[r] ?? []);
+    if (label && `L:${looseKey(label)}` === rk.split("#")[0]) return label;
+  }
+  for (const blk of l.blocks) for (let r = blk.from + 1; r <= blk.to; r++) {
+    const label = rowLabel(l.sheet.values[r] ?? []);
+    if (label && `L:${looseKey(label)}` === rk.split("#")[0]) return label;
+  }
+  return rk.slice(2);
+}
+
+// ---------------------------------------------------------------------------
 // Entry points
 // ---------------------------------------------------------------------------
 
@@ -916,6 +1146,11 @@ export function checkMisWorkbook(sheets: MisSheetInput[], opts: MisCheckOptions)
   });
   if (only && candidates.length === 0) return empty(`Sheet "${opts.sheetName}" not found in the workbook.`);
 
+  // A sheet with one block of rows per day ("DATE: 29/10/2026" above each day) — checked first when it has the day.
+  const blockLayouts = candidates.map((s) => findBlockLayout(s, opts.date)).filter((l): l is BlockLayout => l !== null);
+  const byBlocks = checkBlocks(blockLayouts, opts);
+  if (byBlocks) return byBlocks;
+
   const colLayouts = candidates.map(findColumnLayout).filter((l): l is ColumnLayout => l !== null);
   const byColumns = checkColumns(colLayouts, opts);
   if (byColumns) return byColumns;
@@ -926,7 +1161,7 @@ export function checkMisWorkbook(sheets: MisSheetInput[], opts: MisCheckOptions)
   const byRows = checkRows(rowLayouts, opts);
   if (byRows) return byRows;
 
-  if (colLayouts.length === 0 && rowLayouts.length === 0) {
+  if (colLayouts.length === 0 && rowLayouts.length === 0 && blockLayouts.length === 0) {
     return empty("Couldn't find the dates in this workbook (no row of dates across the top, and no \"Date\" column).");
   }
   // Show the fields of the newest sheet so admins can still pick required ones.
@@ -957,6 +1192,7 @@ export function sheetsWorthReading(probes: MisSheetInput[], dates: string[], she
     if (l) {
       if (l.dates.some((d) => d.date >= oldest && d.date <= newest)) picked.add(p.name);
     } else if (findRowLayout(p, null)) picked.add(p.name);
+    else if (p.values.some((row) => blockStartDate(row ?? [], newest))) picked.add(p.name); // day blocks ("DATE: …" above each day)
   }
   if (picked.size === 0) return probes.slice(0, 5).map((p) => p.name);
   return [...picked];

@@ -355,3 +355,56 @@ describe("copied days (an exact copy of an earlier day's column)", () => {
     expect(distinctive("updated till 14-09-2026")).toBe("updated till 14-09-2026");
   });
 });
+
+describe("checkMisWorkbook — one block of rows per day (\"DATE: 29/10/2026\" above each day)", () => {
+  const codes = ["C5", "N11", "R21", "N21", "N111"];
+  const block = (date: string, n: number, opts: { blankMtm?: boolean; empty?: boolean } = {}) => {
+    const v = (x: unknown) => (opts.empty ? "" : x);
+    return [
+      ["", "", "", "", "DATE:", date],
+      [],
+      ["TODAY'S TASK (URGENT / IMMEDIATE"],
+      ["CLIENT CODE", ...codes],
+      ["SHARES VALUE", ...codes.map(() => v("NIL"))],
+      ["DR. (RS.)", ...codes.map((_, i) => v(`${i + n}.5cr`))],
+      ["MTM", ...codes.map((_, i) => (opts.blankMtm ? "" : v(1000 * i - n * 7)))],
+      [],
+      ["A) MARGIN FILE SENT, DATE", v(`${n} Oct 2026`)],
+      ["B) IF REJECTED", v("NA")],
+      ["I) Intimation by mail regarding any F & O changes", ""],
+      ["TOTAL LIMIT FAO", v(242582222)],
+      ["J.) MTMO", v("OK")],
+      [],
+    ];
+  };
+  const sheet = (...blocks: unknown[][][]) => ({ name: "19 AUG TO 29 OCT", values: blocks.flat() });
+  const days = (last: unknown[][]) =>
+    sheet(block("23 / 10 / 2026", 23), block("24/10/2026", 24), block("26 / 10 / 2026", 26), block("27 / 10 / 2026", 27), block("28 / 10 / 2026", 28), last);
+
+  it("finds the day's block and says it is complete", () => {
+    const r = checkMisWorkbook([days(block("29 / 10 / 2026", 29))], { date: "2026-10-29" });
+    expect(r).toMatchObject({ status: "COMPLETE", layout: "DAY_BLOCKS", sheet: "19 AUG TO 29 OCT" });
+    expect(r.note).toBe("19 of 19 boxes filled (100%).");
+  });
+  it("earlier days in the same sheet are read too", () => {
+    expect(checkMisWorkbook([days(block("29 / 10 / 2026", 29))], { date: "2026-10-27" }).status).toBe("COMPLETE");
+  });
+  it("a block with blank figures is incomplete, naming the row", () => {
+    const r = checkMisWorkbook([days(block("29 / 10 / 2026", 29, { blankMtm: true }))], { date: "2026-10-29" });
+    expect(r.status).toBe("INCOMPLETE");
+    expect(r.note).toBe("Incomplete — 14 of 19 boxes filled (73%); at least 80% (16 of 19) is needed.");
+    expect(r.missingFields).toEqual(["MTM"]);
+  });
+  it("a block with only the date and the labels is not filled", () => {
+    expect(checkMisWorkbook([days(block("29 / 10 / 2026", 29, { empty: true }))], { date: "2026-10-29" }).status).toBe("MISSING");
+  });
+  it("no block for the day = not started", () => {
+    const r = checkMisWorkbook([days(block("29 / 10 / 2026", 29))], { date: "2026-10-30" });
+    expect(r.status).toBe("MISSING");
+    expect(r.note).toBe("No entry dated 30-10-2026 yet.");
+  });
+  it("is picked when reading only the first rows of the sheets", () => {
+    const probe = { name: "19 AUG TO 29 OCT", values: block("08/19/2026", 19) };
+    expect(sheetsWorthReading([probe, { name: "Notes", values: [["hello"]] }], ["2026-10-29"])).toEqual(["19 AUG TO 29 OCT"]);
+  });
+});
